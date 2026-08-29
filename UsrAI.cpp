@@ -69,6 +69,19 @@ void UsrAI::processData() {
         if (!found) priestSN = -1;
     }
 
+    // ★ 战/反攻期间强制结束探路：探路模块只在 !isWar && state != COUNTERATTACK 时驱动祭司，
+    //   而 managePriest 又要求 scoutPhase>=20 才运行 → 开战时若探路未完，祭司两头都不管，
+    //   被敌人贴脸也一动不动（表现为"敌人来了祭司也不跑"）。开战即结束探路，交还祭司管理保命。
+    {
+        bool isWarNow = (state >= DEFENSE_WAVE1 && state <= DEFENSE_WAVE3);
+        if ((isWarNow || state == COUNTERATTACK) && scoutPhase < 20) {
+            scoutPhase = 20;
+            scoutReturnTry = 0;
+            scoutWalkTimer = 0;
+            scoutIssueFrame = -999999;
+        }
+    }
+
     // 3. 祭司保命（最高优先级，每帧都要检查！）
     managePriest();
 
@@ -280,39 +293,461 @@ void UsrAI::managePriest() {
 
     if (priestMoveCooldown > 0) priestMoveCooldown--;
 
-    auto convertPriority = [](int sort) -> int {
-        if (sort == AT_CHARIOT_ARCHER) return 0;
-        if (sort == AT_COMPOSITE_BOWMAN) return 1;
-        if (sort == AT_STONE_THROWER) return 2;
-        return 3;
+    // ★ 落点合法性过滤：目标格被建筑/单位占据时引擎判定移动失败（"被占据/不可达"）→单位原地不动、
+    //   每次冷却到期又重发同一坐标刷屏。所有祭司移动指令的落点都必须先过这一关。
+    auto occupiedLanding = [&](double x, double y) {
+        for (auto &b : info.buildings)
+            if (calDistance(x, y, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 2.5 * BL) return true;
+        for (auto &a : info.armies)
+            if (a.SN != priestSN && calDistance(x, y, a.DR, a.UR) < 2.0 * BL) return true;
+        for (auto &f : info.farmers)
+            if (calDistance(x, y, f.DR, f.UR) < 2.0 * BL) return true;
+        for (auto &e : info.enemy_armies)
+            if (calDistance(x, y, e.DR, e.UR) < 4.0 * BL) return true;
+        for (auto &e : info.enemy_farmers)
+            if (calDistance(x, y, e.DR, e.UR) < 4.0 * BL) return true;
+        return false;
     };
 
     auto findConvertTarget = [&](double dr, double ur, double range) -> int {
-        int bestSN = -1;
-        int bestPriority = 999;
-        double bestDist = 1e12;
+        // ★ 转化优先级：1) 投石车(AT_STONE_THROWER) > 2) 战车弓兵(AT_CHARIOT_ARCHER) > 3) 最近任意敌方单位
+        //   —— 攻城兵器与远程兵转化过来即己方重火力，优先于近战；无前者时退回"最近敌方单位"。
+        int bestCatSN = -1; double bestCatDist = 1e12;   // 范围内最近投石车(最高优先)
+        int bestChaSN = -1; double bestChaDist = 1e12;   // 范围内最近战车弓兵(第二优先)
+        int bestSN = -1;    double bestDist = 1e12;       // 范围内最近任意敌方单位（含村民）
         for (auto &e : info.enemy_armies) {
             double d = calDistance(dr, ur, e.DR, e.UR);
             if (d > range) continue;
-            int p = convertPriority(e.Sort);
-            if (p < bestPriority || (p == bestPriority && d < bestDist)) {
-                bestPriority = p;
-                bestDist = d;
-                bestSN = e.SN;
+            if (e.Sort == AT_STONE_THROWER) {
+                if (d < bestCatDist) { bestCatDist = d; bestCatSN = e.SN; }
+            } else if (e.Sort == AT_CHARIOT_ARCHER) {
+                if (d < bestChaDist) { bestChaDist = d; bestChaSN = e.SN; }
             }
+            if (d < bestDist) { bestDist = d; bestSN = e.SN; }
         }
         for (auto &e : info.enemy_farmers) {
             double d = calDistance(dr, ur, e.DR, e.UR);
             if (d > range) continue;
-            int p = 4;
-            if (p < bestPriority || (p == bestPriority && d < bestDist)) {
-                bestPriority = p;
-                bestDist = d;
-                bestSN = e.SN;
+            if (d < bestDist) { bestDist = d; bestSN = e.SN; }
+        }
+        if (bestCatSN >= 0) return bestCatSN;       // 1) 投石车
+        if (bestChaSN >= 0) return bestChaSN;       // 2) 战车弓兵
+        return bestSN;                              // 3) 最近任意敌方单位
+    };
+
+    // ★ 侦测"视野内正被敌军攻击的己方村民"：返回正在攻击该村民的敌军 SN 及其坐标。
+    //   用于"自身安全时上前感化凶手"(感化优先级 > 逃跑)。
+    //   判定：① 村民在祭司视野内(≤20格) ② 存在 enemy_armies 单位且 NowState==ATTACKING(确在攻击)
+    //        ③ 该敌距村民 ≤ 其攻击射程+余量(确实在揍这名村民,非路过)→即凶手。
+    //   取离祭司最近的一起救援(路程最短、暴露风险最低)；返回 -1 表示视野内无村民正挨打。
+    auto findAttackedVillager = [&](double &aDR, double &aUR) -> int {
+        aDR = 0; aUR = 0;
+        const double VIEW = 20.0 * BL;     // 祭司视野：只看视野内的村民
+        int bestSN = -1; double bestDist = 1e12;
+        for (auto &f : info.farmers) {     // 己方村民
+            double dP = calDistance(pDR, pUR, f.DR, f.UR);
+            if (dP > VIEW) continue;        // 超出视野
+            for (auto &e : info.enemy_armies) {
+                if (e.NowState != HUMAN_STATE_ATTACKING) continue;   // 必须正在攻击
+                double rA = (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
+                             e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
+                             e.Sort == AT_STONE_THROWER) ? 12.0 * BL : 2.5 * BL;
+                if (calDistance(e.DR, e.UR, f.DR, f.UR) <= rA + 1.5 * BL) {
+                    if (dP < bestDist) { bestDist = dP; bestSN = e.SN; aDR = e.DR; aUR = e.UR; }
+                    break;   // 该村民已锁定凶手,看下一个村民
+                }
             }
         }
         return bestSN;
     };
+
+    // ★ 朝敌靠近进入感化范围；落点做可达预检+侧向偏移重试，避免落在建筑/单位上被引擎拒收
+    //   → 祭司原地刷屏、永远走不进感化距离(表现为"一直移动却不动+不感化")。
+    //   ★ 用户要求"能感化直接感化"：已移除"身处威胁不主动迎敌"守卫——冷却好了就朝感化目标靠近。
+    double threatDist = 1e12;
+    double nearestThreatR = 2.5 * BL;   // 最近威胁的射程半径：逃/感的阈值据此算"逃出射程"的安全余量
+    {
+        auto chkThreat = [&](double x, double y, double r) {
+            double d = calDistance(pDR, pUR, x, y);
+            if (d <= r + 4.0 * BL) {
+                if (d < threatDist) { threatDist = d; nearestThreatR = r; }  // 记录最近威胁及其射程
+            }
+        };
+        for (auto &e : info.enemy_armies) {
+            double r = (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
+                        e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
+                        e.Sort == AT_STONE_THROWER) ? 12.0 * BL : 2.5 * BL;
+            chkThreat(e.DR, e.UR, r);
+        }
+        for (auto &e : info.enemy_farmers) chkThreat(e.DR, e.UR, 1.0 * BL);
+        for (auto &b : info.enemy_buildings)
+            if (b.Type == BUILDING_ARROWTOWER) chkThreat((b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL, 12.0 * BL);
+    }
+
+    auto priestApproachMove = [&](double eDR, double eUR, double stopDist) {
+        if (priestMoveCooldown > 0) return;   // 节流：冷却期内绝不重发(与 priestFlee 同闸)
+        double dx = eDR - pDR, dy = eUR - pUR;
+        double len = std::sqrt(dx*dx + dy*dy);
+        if (len < 0.01) return;
+        double ux = dx/len, uy = dy/len;
+        double bx = pDR + ux * (len - stopDist * BL);
+        double by = pUR + uy * (len - stopDist * BL);
+        const double OFF[6] = {0.0, 3.0, -3.0, 6.0, -6.0, 9.0};
+        double candX = bx, candY = by; bool ok = false;
+        for (int o = 0; o < 6; ++o) {
+            double cx = bx - uy * OFF[o] * BL;   // 垂直于"祭司-敌人"连线方向偏移,绕开挡路建筑
+            double cy = by + ux * OFF[o] * BL;
+            cx = max(0.0, min((double)MAP_L * BL, cx));
+            cy = max(0.0, min((double)MAP_U * BL, cy));
+            if (!occupiedLanding(cx, cy)) { candX = cx; candY = cy; ok = true; break; }
+        }
+        if (!ok) return;   // 全部侧向偏移都不可达→本帧不发令,下帧再试,杜绝刷屏
+        HumanMove(priestSN, candX, candY);
+        priestMoveCooldown = 20;
+    };
+
+    // ★ 祭司逃跑（螺旋避障 + 朝安全区 + 卡死检测）；enDR/enUR 为威胁敌人坐标（退路用）
+    // ★ 祭司逃跑（v7）：螺旋避障+朝安全区+卡死检测；节流(冷却期内不重发)+状态判定死锁(下发的点被引擎拒收→
+    //   祭司仍是 IDLE 且离该点远→换下一扇区)。根治"每帧重发同一不可达点刷屏、一直移动却不动"。
+    auto priestFlee = [&](double enDR, double enUR) {
+        if (priestMoveCooldown > 0) return;   // 节流：冷却期内绝不重发(旧版无此闸→每帧重发同点刷屏)
+        // 威胁半径：远程(弓/投石/战车弓/复合弓/投石车)≈12 格;近战≈2.5 格;敌方箭塔≈12 格;村民不攻击≈1 格。
+        const int MAXT = 256;
+        double thX[MAXT], thY[MAXT], thR[MAXT];
+        int nT = 0;
+        auto pushThreat = [&](double x, double y, double r) {
+            if (nT < MAXT) { thX[nT] = x; thY[nT] = y; thR[nT] = r; nT++; }
+        };
+        for (auto &e : info.enemy_armies) {
+            double d = calDistance(pDR, pUR, e.DR, e.UR);
+            double r = (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
+                        e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
+                        e.Sort == AT_STONE_THROWER) ? 12.0 * BL : 2.5 * BL;
+            if (d <= r + 4.0 * BL) pushThreat(e.DR, e.UR, r);   // 含提前量4格,进射程前就起步
+        }
+        for (auto &e : info.enemy_farmers) {
+            double d = calDistance(pDR, pUR, e.DR, e.UR);
+            if (d <= 2.0 * BL) pushThreat(e.DR, e.UR, 1.0 * BL);  // 村民不攻击,仅避免贴脸
+        }
+        for (auto &b : info.enemy_buildings)
+            if (b.Type == BUILDING_ARROWTOWER) {
+                double bx = (b.BlockDR + 1) * BL, by = (b.BlockUR + 1) * BL;
+                double d = calDistance(pDR, pUR, bx, by);
+                if (d <= 16.0 * BL) pushThreat(bx, by, 12.0 * BL);
+            }
+        // 远离所有"能打到我"的威胁合力方向(主力轴)
+        double pushX = 0, pushY = 0;
+        for (int t = 0; t < nT; ++t) {
+            double dx = pDR - thX[t], dy = pUR - thY[t];
+            double d = std::sqrt(dx*dx + dy*dy);
+            if (d < 0.01) { pushX += 1; continue; }
+            double w = 1.0 / (d * d);
+            pushX += dx / d * w; pushY += dy / d * w;
+        }
+        double baseAng;
+        if (nT > 0) baseAng = std::atan2(pushY, pushX);
+        else if (enDR != 0 || enUR != 0) baseAng = std::atan2(pUR - enUR, pDR - enDR);
+        else return;   // 无威胁也无坐标→不逃,避免朝(0,0)乱跑
+        // 偏向己方 TC(安全内部):既远离威胁又靠己方保护
+        double toTcX = tcDR - pDR, toTcY = tcUR - pUR;
+        double tlen = std::sqrt(toTcX*toTcX + toTcY*toTcY);
+        if (tlen > 0.01) {
+            double dot = (toTcX/tlen)*std::cos(baseAng) + (toTcY/tlen)*std::sin(baseAng);
+            if (dot > 0) baseAng = std::atan2(std::sin(baseAng) + toTcY/tlen*0.8,
+                                              std::cos(baseAng) + toTcX/tlen*0.8);
+        }
+        // 死锁检测(基于"下发点是否被引擎拒收"):上一帧下发 flee 点后,本帧祭司仍是 IDLE 且离该点>2格
+        //   → 说明该落点不可达/被占(引擎拒收、祭司原地不动)→换下一扇区重试;若已抵达/正在接近→重置。
+        if (priestFleeLastFrame > -999999) {
+            double distToLast = calDistance(pDR, pUR, priestFleeLastX, priestFleeLastY);
+            if (priest->NowState == HUMAN_STATE_IDLE && distToLast > 2.0 * BL) {
+                if (priestFleeTry < 30) priestFleeTry++;   // 卡死→换角度/半径重试
+            } else if (distToLast <= 2.0 * BL) {
+                priestFleeTry = 0;   // 已抵达或正在接近→正常,重置计数
+            }
+        }
+        // 落点合法性:不压己方建筑/单位;且不落在任何威胁射程内(否则逃出又进射程,继续被远程消耗)。
+        auto badLanding = [&](double x, double y) -> bool {
+            if (x < 0 || y < 0 || x > MAP_L * BL || y > MAP_U * BL) return true;
+            for (auto &b : info.buildings)
+                if (calDistance(x, y, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 2.5 * BL) return true;
+            for (auto &a : info.armies)
+                if (a.SN != priestSN && calDistance(x, y, a.DR, a.UR) < 2.0 * BL) return true;
+            for (auto &f : info.farmers)
+                if (calDistance(x, y, f.DR, f.UR) < 2.0 * BL) return true;
+            for (int t = 0; t < nT; ++t)
+                if (calDistance(x, y, thX[t], thY[t]) < thR[t]) return true;  // 仍在威胁射程内→不安全
+            return false;
+        };
+        // 扫描 24 方向(±165°,15°/档) × 7 半径:挑"完全安全(逃出所有威胁射程)且最靠近TC"的落点;
+        //   若无一完全安全,挑"相对最安全(离威胁射程余量最大)"的。从 priestFleeTry 起旋转,卡死时换扇区。
+        int start = priestFleeTry % 24;
+        double bestX = 0, bestY = 0, bestSafe = -1e9, bestTC = 1e9;
+        bool found = false, foundSafe = false;
+        for (int k = 0; k < 24; ++k) {
+            int idx = start + k; if (idx >= 24) idx -= 24;
+            double ang = baseAng + (idx - 11) * (3.141592653589793 / 12.0);
+            const double RADS[7] = {8.0, 12.0, 16.0, 22.0, 28.0, 34.0, 40.0};
+            for (int ri = 0; ri < 7; ++ri) {
+                double rad = RADS[ri] * BL;
+                double tx = pDR + std::cos(ang) * rad;
+                double ty = pUR + std::sin(ang) * rad;
+                if (badLanding(tx, ty)) continue;
+                double margin = 1e9;   // 落点到最近威胁射程边界的余量
+                for (int t = 0; t < nT; ++t)
+                    margin = std::min(margin, calDistance(tx, ty, thX[t], thY[t]) - thR[t]);
+                double dTC = calDistance(tx, ty, tcDR, tcUR);
+                if (margin >= 0 && !foundSafe) { bestX = tx; bestY = ty; bestSafe = margin; bestTC = dTC; foundSafe = true; found = true; }
+                else if (margin >= 0 && dTC < bestTC) { bestX = tx; bestY = ty; bestSafe = margin; bestTC = dTC; found = true; }
+                else if (!foundSafe && margin > bestSafe) { bestX = tx; bestY = ty; bestSafe = margin; bestTC = dTC; found = true; }
+            }
+        }
+        if (!found) {
+            // 被建筑/单位/威胁彻底封死→退回主方向最远档,交卡死检测换档
+            double rad = 40.0 * BL;
+            bestX = max(0.0, min((double)MAP_L * BL, pDR + std::cos(baseAng) * rad));
+            bestY = max(0.0, min((double)MAP_U * BL, pUR + std::sin(baseAng) * rad));
+            if (frame % 50 == 0) DebugText("Priest FLEE: 无安全落点→退回主方向");
+        }
+        // 彻底卡死(已轮换全部24扇区仍原地不动)→本帧不再发令,长冷却静默待命,避免刷屏;
+        //   下帧逻辑(感化/待命)仍可接管,不再死磕同一不可达点。
+        if (priestFleeTry >= 24 && priest->NowState == HUMAN_STATE_IDLE &&
+            calDistance(pDR, pUR, priestFleeLastX, priestFleeLastY) > 2.0 * BL) {
+            priestMoveCooldown = 40;
+            if (frame % 50 == 0) DebugText("Priest FLEE: 卡死->本帧静默");
+            return;
+        }
+        HumanMove(priestSN, bestX, bestY);
+        priestFleeLastX = bestX; priestFleeLastY = bestY; priestFleeLastFrame = frame;
+        priestMoveCooldown = 18;   // 威胁紧迫,缩短决策间隔
+        if (frame % 50 == 0)
+            DebugText(QString("Priest FLEE hp=%1 safe=%2 dTC=%3")
+                      .arg((priest->MaxBlood > 0 ? (double)priest->Blood / priest->MaxBlood : 1.0), 0, 'f', 2)
+                      .arg(foundSafe ? 1 : 0).arg(bestTC / BL, 0, 'f', 0));
+    };
+
+
+    // ★ 祭司引导中(WORKING=感化/治疗引导、ATTACKING)→绝不下发新命令打断引导。
+    //   感化是"随机时段"的引导过程，期间 ConvertCooldown 仍为0；若此时重发
+    //   HumanAction/移动命令，引导会被打断重来→永远转不完(本次bug"一直设置转换目标却没感化")。
+    //   唯一例外：残血(≤0.25)强制打断逃命(祭司死=立刻失败，保命高于感化)。
+    if (!canAct) {
+        double pBRx = (priest->MaxBlood > 0) ? priest->Blood / priest->MaxBlood : 1.0;
+        if (pBRx > 0.25) return;
+        double feDR = 0, feUR = 0, fbest = 1e12;
+        for (auto &e : info.enemy_armies) {
+            double d = calDistance(pDR, pUR, e.DR, e.UR);
+            if (d < fbest) { fbest = d; feDR = e.DR; feUR = e.UR; }
+        }
+        priestMode = 1;
+        priestFlee(feDR, feUR);
+        return;
+    }
+
+    // ★ 统一生存/感化决策（迟滞锁 priestMode + 威胁感知，根治往返走 / 走进敌人射程被消耗）
+    {
+        double nearestE = 1e12;
+        for (auto &e : info.enemy_armies)
+            nearestE = std::min(nearestE, calDistance(pDR, pUR, e.DR, e.UR));
+        for (auto &e : info.enemy_farmers)
+            nearestE = std::min(nearestE, calDistance(pDR, pUR, e.DR, e.UR));
+        for (auto &b : info.enemy_buildings)
+            if (b.Type == BUILDING_ARROWTOWER)
+                nearestE = std::min(nearestE, calDistance(pDR, pUR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL));
+        double pBR = (priest->MaxBlood > 0) ? priest->Blood / priest->MaxBlood : 1.0;
+        if (frame % 100 == 0)
+            DebugText(QString("Priest st=%1 hp=%2 nearE=%3 threat=%4 mode=%5")
+                      .arg(priest->NowState).arg(pBR, 0, 'f', 2)
+                      .arg(nearestE / BL, 0, 'f', 1).arg(threatDist / BL, 0, 'f', 1).arg(priestMode));
+        auto locateNearest = [&](double &ox, double &oy) {
+            ox = 0; oy = 0;
+            if (nearestE >= 1e11) return;
+            for (auto &e : info.enemy_armies)
+                if (calDistance(pDR, pUR, e.DR, e.UR) <= nearestE + 0.01) { ox = e.DR; oy = e.UR; return; }
+            for (auto &e : info.enemy_farmers)
+                if (calDistance(pDR, pUR, e.DR, e.UR) <= nearestE + 0.01) { ox = e.DR; oy = e.UR; return; }
+        };
+        // 受伤静养：收缩回 TC 旁可达环；已在 TC 旁(≤6格)就地待命靠被动恢复
+        auto woundedRest = [&]() {
+            double dTC = calDistance(pDR, pUR, tcDR, tcUR);
+            if (dTC > 6 * BL && priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0) {
+                double pIssueMoved = calDistance(pDR, pUR, priestIssueDR, priestIssueUR);
+                if (pIssueMoved > 1.0 * BL) {
+                    priestNearTCTry = 0;
+                    priestIssueDR = pDR; priestIssueUR = pUR; priestIssueFrame = frame;
+                } else if (priestIssueFrame > -999999 && frame - priestIssueFrame > 45) {
+                    if (priestNearTCTry + 1 < 24) priestNearTCTry++;
+                    priestIssueFrame = frame;
+                }
+                const double R[3] = {4.0, 7.0, 10.0};
+                const int NA = 8;
+                int start = priestNearTCTry; if (start >= 24) start = 23;
+                double tx = tcDR, ty = tcUR;
+                for (int k = 0; k < 24; ++k) {
+                    int idx = start + k; if (idx >= 24) idx -= 24;
+                    int ri = idx / NA; if (ri > 2) ri = 2;
+                    int ai = idx % NA;
+                    double ang = (double)ai * 3.141592653589793 / 4.0;
+                    double candX = tcDR + std::cos(ang) * R[ri] * BL;
+                    double candY = tcUR + std::sin(ang) * R[ri] * BL;
+                    candX = max(0.0, min((double)MAP_L * BL, candX));
+                    candY = max(0.0, min((double)MAP_U * BL, candY));
+                    tx = candX; ty = candY;
+                    if (!occupiedLanding(candX, candY)) break;
+                }
+                HumanMove(priestSN, tx, ty);
+                priestMoveCooldown = 30;
+            }
+            return;   // 静养期：不迎敌感化、不跑远奶人
+        };
+        // 感化检测(无安全门槛)：冷却好+视野内有可感化敌(≤20格)即可，直接感化/靠近感化。
+        //   ★ 用户要求"不用安全感化，能感化直接感化"：感化绝对优先，不再要求逃出敌射程、
+        //     不再看血量——冷却好了就转(贴身敌≤3时转走攻击者本身往往就是最好的保命)。
+        int safeConv = -1;
+        if (priest->ConvertCooldown <= 0 && nearestE <= 20 * BL) {
+            int t = findConvertTarget(pDR, pUR, 20 * BL);
+            if (t >= 0) safeConv = t;
+        }
+        // 1) ★ 感化无条件最高优先（用户要求：不用安全感化，能感化直接感化）：
+        //    a) 视野内村民正被攻击→上前感化凶手；
+        //    b) 附近(≤20格)有可感化敌→直接感化或靠近感化。
+        //    冷却好即转：不看血量、不要求逃出敌射程——贴身敌≤3时转走攻击者本身往往就是最好的保命；
+        //    即便上帧在逃(priestMode==1)也优先转，彻底消除"该感化却只逃"的问题。
+        int villConv = -1; double villDR = 0, villUR = 0;
+        if (priest->ConvertCooldown <= 0) {
+            villConv = findAttackedVillager(villDR, villUR);
+        }
+        int convSN = -1; double convDR = 0, convUR = 0; bool convRanged = false;
+        if (villConv >= 0) {
+            convSN = villConv; convDR = villDR; convUR = villUR;
+            for (auto &e : info.enemy_armies)
+                if (e.SN == convSN && (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
+                                       e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
+                                       e.Sort == AT_STONE_THROWER)) convRanged = true;
+        } else if (safeConv >= 0) {
+            convSN = safeConv;
+            for (auto &e : info.enemy_armies) if (e.SN == convSN) { convDR = e.DR; convUR = e.UR; break; }
+            if (convDR == 0 && convUR == 0)
+                for (auto &e : info.enemy_farmers) if (e.SN == convSN) { convDR = e.DR; convUR = e.UR; break; }
+            for (auto &e : info.enemy_armies)
+                if (e.SN == convSN && (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
+                                       e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
+                                       e.Sort == AT_STONE_THROWER)) convRanged = true;
+        }
+        if (convSN >= 0) {
+            // ★ 节流闸(本次bug根因)：感化引导期间 ConvertCooldown 仍为0，若无此闸会每帧
+            //   重发 HumanAction 把引导反复打断重来，转换永远完不成。冷却期内绝不再发令。
+            //   拒收检测：下发感化后≥15帧祭司仍是 IDLE 且目标未变→指令被引擎拒收
+            //   (真在引导会进入 WORKING 被上方 canAct 闸拦住)→提前放行重发，不白等150帧。
+            if (priestMoveCooldown > 0) {
+                bool rejected = (priestConvSN == convSN && priest->NowState == HUMAN_STATE_IDLE &&
+                                 priestConvFrame > -999999 && frame - priestConvFrame >= 15);
+                if (!rejected) return;
+            }
+            priestMode = 0;   // 转去感化→解除撤退迟滞锁
+            double cdist = calDistance(pDR, pUR, convDR, convUR);
+            if (cdist <= 14 * BL) {
+                HumanAction(priestSN, convSN);
+                priestConvSN = convSN; priestConvFrame = frame;
+                priestMoveCooldown = 150;
+                if (frame % 50 == 0)
+                    DebugText(QString("Priest CONVERT(defense) SN=%1 vill=%2")
+                              .arg(convSN).arg(villConv >= 0 ? 1 : 0));
+                return;
+            } else {
+                double stopDist = convRanged ? 14.0 : 13.0;   // 远程兵停14格进感化范围；近战停13
+                priestApproachMove(convDR, convUR, stopDist); return;
+            }
+        }
+        // ==== 以下均为"无法感化"(冷却中/视野内无目标)时才轮到的保命/待命逻辑 ====
+        // 1b) 受伤(血≤0.55)且无近敌威胁→回TC旁静养
+        bool nearDanger = (nearestE <= 12 * BL) || (threatDist <= nearestThreatR + 2.0 * BL);
+        if (!nearDanger && pBR <= 0.55) { woundedRest(); return; }
+        // 2) 强制撤退：贴脸(≤3)或残血(≤0.25)且无法感化→无条件逃
+        if (nearestE <= 3 * BL || pBR <= 0.25) {
+            double feDR = 0, feUR = 0; locateNearest(feDR, feUR);
+            priestMode = 1; priestFlee(feDR, feUR); return;
+        }
+        // 3) 撤退迟滞：上帧在逃且仍处最近威胁射程内(threatDist≤最近威胁射程+2)→继续逃，不切回(消除往返走)
+        if (priestMode == 1 && threatDist <= nearestThreatR + 2.0 * BL) {
+            double feDR = 0, feUR = 0; locateNearest(feDR, feUR);
+            priestFlee(feDR, feUR); return;
+        }
+        priestMode = 0;
+        // 4) 有威胁且无法感化(冷却中/无目标)→保命撤退
+        if (threatDist <= nearestThreatR + 2.0 * BL) {
+            double feDR = 0, feUR = 0; locateNearest(feDR, feUR);
+            priestMode = 1; priestFlee(feDR, feUR); return;
+        }
+        // 5) 近敌但安全且无法感化(冷却中)→安静待命，不逃跑、不迎敌(消除往返)
+        if (pBR <= 0.55) { woundedRest(); return; }
+        // 6) ★ 无事可做→回TC旁待命（探完路/战斗结束后祭司必须撤回TC附近，不能滞留野外）。
+        //    ★ 修复：原优先级5"守在TC旁"位于本决策块之后，而块末尾无条件 return→回TC是死代码，
+        //      探完路后祭司一直站在野外(本次bug)。现搬进决策块内。
+        //    用 TC 旁"空地"而非TC中心(中心不可达→引擎拒收原地不动)，多半径×多角度螺旋找可走点。
+        {
+            double dTC = calDistance(pDR, pUR, tcDR, tcUR);
+            if (priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0 && dTC > 6 * BL) {
+                // 卡死检测：记录点只在祭司真正挪窝后刷新——否则每次重发都刷新时间戳，
+                // 45帧窗口永远走不满→priestNearTCTry 永不递增→永远重发同一被占落点。
+                double pIssueMoved = calDistance(pDR, pUR, priestIssueDR, priestIssueUR);
+                if (pIssueMoved > 1.0 * BL) {
+                    priestNearTCTry = 0;
+                    priestIssueDR = pDR; priestIssueUR = pUR; priestIssueFrame = frame;
+                } else if (priestIssueFrame > -999999 && frame - priestIssueFrame > 45) {
+                    if (priestNearTCTry + 1 < 24) priestNearTCTry++;
+                    priestIssueFrame = frame;   // 该档重新计时
+                }
+                // 多半径×多角度找TC旁可走点({4,7,10}格×8角=24档)，环形扫描取首个未被占据的落点
+                const double R[3] = {4.0, 7.0, 10.0};
+                const int NA = 8;
+                int start = priestNearTCTry; if (start >= 24) start = 23;
+                double tx = tcDR, ty = tcUR;
+                for (int k = 0; k < 24; ++k) {
+                    int idx = start + k; if (idx >= 24) idx -= 24;
+                    int ri = idx / NA; if (ri > 2) ri = 2;
+                    int ai = idx % NA;
+                    double ang = (double)ai * 3.141592653589793 / 4.0;
+                    double candX = tcDR + std::cos(ang) * R[ri] * BL;
+                    double candY = tcUR + std::sin(ang) * R[ri] * BL;
+                    candX = max(0.0, min((double)MAP_L * BL, candX));
+                    candY = max(0.0, min((double)MAP_U * BL, candY));
+                    tx = candX; ty = candY;
+                    if (!occupiedLanding(candX, candY)) break;
+                }
+                HumanMove(priestSN, tx, ty);
+                priestMoveCooldown = 15;
+                if (frame % 50 == 0)
+                    DebugText(QString("Priest RETURN-TC dTC=%1").arg(dTC / BL, 0, 'f', 0));
+                return;
+            }
+        }
+        // 7) ★ 闲时治疗友军：到这里说明自身安全、血量健康(>0.55)、无敌可感化(convSN<0，含冷却中)
+        //    ——把空闲时间用在最受伤的友军身上。
+        //    ★ 修复：原优先级4.5/6位于本决策块之后，而本块末尾无条件 return→治疗逻辑是死代码，
+        //      一次都没执行过(本次bug"闲时治疗没触发"的根因)。现搬进决策块内。
+        //    ★ 铁律：绝不 HumanAction(priestSN, priestSN)(自毁=立刻游戏失败)。
+        if (priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0) {
+            int bestAlly = -1; double worstRatio = 1.0;
+            for (auto &a : info.armies) {
+                if (a.SN == priestSN) continue;      // 绝不把自己当治疗目标(=自毁)
+                if (a.MaxBlood <= 0) continue;       // 防除零
+                double r = a.Blood / a.MaxBlood;
+                if (r < 0.6 && r < worstRatio &&
+                    calDistance(pDR, pUR, a.DR, a.UR) < 14 * BL)
+                    { worstRatio = r; bestAlly = a.SN; }
+            }
+            if (bestAlly >= 0) {
+                HumanAction(priestSN, bestAlly);
+                priestMoveCooldown = 30;
+                if (frame % 50 == 0)
+                    DebugText(QString("Priest HEAL ally (idle) SN=%1 ratio=%2")
+                              .arg(bestAlly).arg(worstRatio, 0, 'f', 2));
+                return;
+            }
+        }
+        return;
+    }
 
     // ========== 优先级1：W1 感化（迎上去！15格发现→走近到12格感化）==========
     if (state == DEFENSE_WAVE1) {
@@ -343,8 +778,7 @@ void UsrAI::managePriest() {
                 double dx = eDR - pDR, dy = eUR - pUR;
                 double len = std::sqrt(dx*dx + dy*dy);
                 if (len > 0.01) {
-                    HumanMove(priestSN, pDR + dx/len * (dist - 13 * BL), pUR + dy/len * (dist - 13 * BL));
-                    priestMoveCooldown = 20;
+                    priestApproachMove(eDR, eUR, 13.0);
                     return;
                 }
             }
@@ -394,8 +828,7 @@ void UsrAI::managePriest() {
                 double dx = eDR - pDR, dy = eUR - pUR;
                 double len = std::sqrt(dx*dx + dy*dy);
                 if (len > 0.01) {
-                    HumanMove(priestSN, pDR + dx/len * (dist - 13 * BL), pUR + dy/len * (dist - 13 * BL));
-                    priestMoveCooldown = 20;
+                    priestApproachMove(eDR, eUR, 13.0);
                     return;
                 }
             }
@@ -404,6 +837,7 @@ void UsrAI::managePriest() {
 
     // ========== 优先级4：敌人靠近→迎上去感化，冷却中才逃跑 ==========
     int closeEnemy = findConvertTarget(pDR, pUR, 20 * BL);
+    if (closeEnemy < 0) priestFleeTry = 0;   // 威胁消失→重置逃跑螺旋计数，下次从最近点开始
     if (closeEnemy >= 0 && priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0) {
         // 感化冷却好了→迎上去感化
         if (priest->ConvertCooldown <= 0) {
@@ -426,13 +860,12 @@ void UsrAI::managePriest() {
                 double dx = eDR - pDR, dy = eUR - pUR;
                 double len = std::sqrt(dx*dx + dy*dy);
                 if (len > 0.01) {
-                    HumanMove(priestSN, pDR + dx/len * (dist - 13 * BL), pUR + dy/len * (dist - 13 * BL));
-                    priestMoveCooldown = 20;
+                    priestApproachMove(eDR, eUR, 13.0);
                     return;
                 }
             }
         }
-        // 感化冷却中→逃跑：远离敌人12格
+        // 感化冷却中→先找敌人坐标
         double eDR = 0, eUR = 0;
         for (auto &e : info.enemy_armies) {
             if (e.SN == closeEnemy) { eDR = e.DR; eUR = e.UR; break; }
@@ -442,12 +875,49 @@ void UsrAI::managePriest() {
                 if (e.SN == closeEnemy) { eDR = e.DR; eUR = e.UR; break; }
             }
         }
-        double dx = pDR - eDR, dy = pUR - eUR;
-        double len = std::sqrt(dx*dx + dy*dy);
-        if (len > 0.01) {
-            HumanMove(priestSN, pDR + dx/len * 12 * BL, pUR + dy/len * 12 * BL);
-            priestMoveCooldown = 40;
-            return;
+        double edist = calDistance(pDR, pUR, eDR, eUR);
+        // 自身安全（危险已由顶部全局拦截处理）→战地治疗友军
+        if (priest->ConvertCooldown > 0 &&
+            priest->Blood > priest->MaxBlood * 0.55 &&
+            edist > 6 * BL) {
+            for (auto &a : info.armies) {
+                if (a.SN == priestSN) continue;
+                if (a.Blood < a.MaxBlood * 0.6 &&
+                    calDistance(pDR, pUR, a.DR, a.UR) < 8 * BL) {
+                    HumanAction(priestSN, a.SN);
+                    priestMoveCooldown = 30;
+                    if (frame % 50 == 0)
+                        DebugText(QString("Priest HEAL ally in combat SN=%1").arg(a.SN));
+                    return;
+                }
+            }
+        }
+        // 无人可奶（安全但无伤友）→ 不逃跑(威胁已由顶部全局块统一处理)，安静待命避免往返
+        return;
+    }
+
+    // ========== 优先级4.5：感化冷却中→治疗友军（把冷却空窗用在救人上）==========
+    // ★ 祭司感化冷却好了会主动迎敌感化；但冷却中(ConvertCooldown>0)不能感化时，
+    //   不应傻站着——优先治疗范围内最受伤的友军（HumanAction 命令祭司走过去奶）。
+    //   自身须安全（危险已由顶部全局拦截处理，不会进到这里）；自身受伤则让位给"空闲自治"(优先级6)。
+    //   注意：仍绝对禁止 HumanAction(priestSN, priestSN)（自毁=输）。
+    if (priest->ConvertCooldown > 0 && priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0) {
+        if (priest->Blood > priest->MaxBlood * 0.55) {
+            int bestAlly = -1; double worstRatio = 1.0;
+            for (auto &a : info.armies) {
+                if (a.SN == priestSN) continue;       // 绝不把自己当治疗目标
+                if (a.MaxBlood <= 0) continue;
+                double r = a.Blood / a.MaxBlood;
+                if (r < 0.6 && r < worstRatio && calDistance(pDR, pUR, a.DR, a.UR) < 12 * BL)
+                    { worstRatio = r; bestAlly = a.SN; }
+            }
+            if (bestAlly >= 0) {
+                HumanAction(priestSN, bestAlly);
+                priestMoveCooldown = 30;
+                if (frame % 50 == 0)
+                    DebugText(QString("Priest HEAL ally (cooldown) SN=%1 ratio=%2").arg(bestAlly).arg(worstRatio, 0, 'f', 2));
+                return;
+            }
         }
     }
 
@@ -461,63 +931,80 @@ void UsrAI::managePriest() {
                 // 已在TC旁(≤6格)→无需移动，重置绕路计数
                 priestNearTCTry = 0;
             } else {
-                // 卡死检测：上次下指令后没挪窝→换下一档角度/半径重试（不无限重发同一点）
+                // 卡死检测：记录点只在祭司真正挪窝后刷新——否则每次重发指令都刷新时间戳，
+                // 45帧窗口永远走不满→priestNearTCTry 永不递增→永远重发同一被占据的落点。
                 double pIssueMoved = calDistance(pDR, pUR, priestIssueDR, priestIssueUR);
-                bool pStuck = (priestIssueFrame > -999999) && (frame - priestIssueFrame > 45) && (pIssueMoved < 1.0 * BL);
-                if (pStuck && priestNearTCTry + 1 < 24) priestNearTCTry++;
-                // 多半径×多角度找TC旁可走点（{4,7,10}×BL × 8角度 = 24次）
+                if (pIssueMoved > 1.0 * BL) {
+                    priestNearTCTry = 0;
+                    priestIssueDR = pDR; priestIssueUR = pUR; priestIssueFrame = frame;
+                } else if (priestIssueFrame > -999999 && frame - priestIssueFrame > 45) {
+                    if (priestNearTCTry + 1 < 24) priestNearTCTry++;
+                    priestIssueFrame = frame;   // 该档重新计时
+                }
+                // 多半径×多角度找TC旁可走点（{4,7,10}×BL × 8角度 = 24档）；
+                // 从当前档位起环形扫描，取第一个落点未被建筑/单位占据的候选（否则引擎判失败→原地不动）
                 const double R[3] = {4.0, 7.0, 10.0};
                 const int NA = 8;
-                int idx = priestNearTCTry;
-                int ri = idx / NA; if (ri > 2) ri = 2;
-                int ai = idx % NA;
-                double ang = (double)ai * 3.141592653589793 / 4.0;
-                double rad = R[ri] * BL;
-                double tx = tcDR + std::cos(ang) * rad;
-                double ty = tcUR + std::sin(ang) * rad;
-                tx = max(0.0, min((double)MAP_L * BL, tx));
-                ty = max(0.0, min((double)MAP_U * BL, ty));
+                int start = priestNearTCTry; if (start >= 24) start = 23;
+                double tx = tcDR, ty = tcUR;
+                for (int k = 0; k < 24; ++k) {
+                    int idx = start + k; if (idx >= 24) idx -= 24;
+                    int ri = idx / NA; if (ri > 2) ri = 2;
+                    int ai = idx % NA;
+                    double ang = (double)ai * 3.141592653589793 / 4.0;
+                    double candX = tcDR + std::cos(ang) * R[ri] * BL;
+                    double candY = tcUR + std::sin(ang) * R[ri] * BL;
+                    candX = max(0.0, min((double)MAP_L * BL, candX));
+                    candY = max(0.0, min((double)MAP_U * BL, candY));
+                    tx = candX; ty = candY;
+                    if (!occupiedLanding(candX, candY)) break;
+                }
                 HumanMove(priestSN, tx, ty);
-                priestIssueDR = pDR; priestIssueUR = pUR; priestIssueFrame = frame;
                 priestMoveCooldown = 15;
                 return;
             }
         }
     }
 
-    // ========== 优先级6：治疗（感化冷却中→治疗友军；空闲→治疗自己）==========
+    // ========== 优先级6：闲时治疗友军 ==========
+    // ★★★ 绝对禁止 HumanAction(priestSN, priestSN)！文档明确：「SN与obSN相同时，会按自毁逻辑处理」，
+    //      而祭司一旦死亡「立刻游戏失败」——自指调用等于直接自杀输掉整局。祭司无法自疗。
+    // ★ 治疗机制（文档）：祭司「自动」对附近生命值不满的己方单位加血，近处伤员无需下令；
+    //   只有远处伤员才需要 HumanAction 命令他走过去治疗。
+    // ★ 自身受伤时：没有自疗手段，只能收缩活动范围、别跑远送命（由优先级5拉回TC旁躲避）。
     if (priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0) {
-        // 感化冷却中：优先治疗附近受伤友军（不浪费冷却时间）
-        if (priest->ConvertCooldown > 0) {
-            for (auto &a : info.armies) {
-                if (a.SN == priestSN) continue;
-                if (a.Blood < a.MaxBlood * 0.6 &&
-                    calDistance(pDR, pUR, a.DR, a.UR) < 8 * BL) {
-                    HumanAction(priestSN, a.SN);
-                    priestMoveCooldown = 30;
-                    if (frame % 50 == 0)
-                        DebugText(QString("Priest HEAL ally (convert cooldown) SN=%1").arg(a.SN));
-                    return;
-                }
-            }
-        }
-        // 空闲且自己掉血→治疗自己
-        if (priest->Blood < priest->MaxBlood * 0.95) {
-            HumanAction(priestSN, priestSN);
-            priestMoveCooldown = 30;
+        bool priestHurt = (priest->Blood < priest->MaxBlood * 0.6);
+        // ★ 空闲且自身受伤→优先"治疗自己"：祭司无法自指治疗（自指=自毁=输），
+        //   唯一自救是撤到TC安全区、远离战斗靠被动恢复。若此刻仍远离TC，优先级5已把它拉回TC旁；
+        //   这里直接待命静养，绝不冒险远离安全区去奶友军（否则自己送命）。
+        if (priestHurt) {
             if (frame % 50 == 0)
-                DebugText(QString("Priest HEAL SELF blood=%1/%2").arg((int)priest->Blood).arg((int)priest->MaxBlood));
+                DebugText(QString("Priest SELF-HEAL(idle) hp=%1 静养").arg(priest->Blood / priest->MaxBlood, 0, 'f', 2));
             return;
         }
-        // 自己满血→顺手治疗附近受伤友军（原逻辑保留）
+        double healRange = 14.0;
+        // 找范围内最受伤的友军（血量占比最低且<60%）：近处靠自动治疗覆盖，
+        // 稍远的则命令祭司走过去，把治疗量用在最需要的人身上
+        int bestAlly = -1;
+        double worstRatio = 1.0;
         for (auto &a : info.armies) {
-            if (a.SN == priestSN) continue;
-            if (a.Blood < a.MaxBlood * 0.6) {
-                if (calDistance(pDR, pUR, a.DR, a.UR) < 8 * BL) {
-                    HumanAction(priestSN, a.SN); break;
-                }
+            if (a.SN == priestSN) continue;      // 绝不把自己当治疗目标（=自毁）
+            if (a.MaxBlood <= 0) continue;       // 防除零
+            double r = a.Blood / a.MaxBlood;
+            if (r < 0.6 && r < worstRatio &&
+                calDistance(pDR, pUR, a.DR, a.UR) < healRange * BL) {
+                worstRatio = r;
+                bestAlly = a.SN;
             }
         }
+        if (bestAlly >= 0 && bestAlly != priestSN) {
+            HumanAction(priestSN, bestAlly);
+            priestMoveCooldown = 30;
+            if (frame % 50 == 0)
+                DebugText(QString("Priest HEAL ally (idle) SN=%1 ratio=%2").arg(bestAlly).arg(worstRatio, 0, 'f', 2));
+            return;
+        }
+        // 无人需要治疗→原地待命（附近伤员会被自动治疗持续加血），不做任何自指动作
     }
 }
 
@@ -682,7 +1169,6 @@ void UsrAI::manageBuildings() {
     }
     bool postBronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
     bool upgradeStarted = (state == UPGRADING || postBronze);
-    bool rangeUnlocked = upgradeStarted;
     bool hasArmyCamp = (countBuildingsAll(BUILDING_ARMYCAMP) >= 1);
     bool hasRange = (countBuildingsAll(BUILDING_RANGE) >= 1);
     bool hasStable = (countBuildingsAll(BUILDING_STABLE) >= 1);
@@ -703,6 +1189,11 @@ void UsrAI::manageBuildings() {
         if (!builtThisFrame && countBuildingsAll(BUILDING_ARMYCAMP) == 0 &&
             houseCount >= 1 && info.Wood >= BUILD_ARMYCAMP_WOOD) {
             builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
+        }
+        // ★ 兵营建好后立刻建靶场（工具时代即可，不等铜器）
+        if (!builtThisFrame && countBuildingsAll(BUILDING_RANGE) == 0 &&
+            countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+            builtThisFrame = tryBuild(BUILDING_RANGE, 3);
         }
     }
 
@@ -760,6 +1251,65 @@ void UsrAI::manageBuildings() {
                 if (builtThisFrame) towerCount++;
             }
 
+            // ★ 靶场优先于农场：兵营已有、木材够就建（不等铜器）
+            if (!builtThisFrame && countBuildingsAll(BUILDING_RANGE) == 0 &&
+                countBuildings(BUILDING_ARMYCAMP) >= 1 &&
+                info.Wood >= BUILD_RANGE_WOOD) {
+                builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+            }
+
+            // ★ 马厩（postW1 经济阶段也可建：兵营已有 + 木材够就建，不依赖 postW2）
+            if (!builtThisFrame && countBuildingsAll(BUILDING_STABLE) == 0 &&
+                countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD) {
+                builtThisFrame = tryBuild(BUILDING_STABLE, 3);
+            }
+
+            // ★ 瞪羚群中心仓库（缩短猎人运输）：每局仅建 1 座，建在离 TC 最近的瞪羚群中心
+            if (!builtThisFrame && storageNearGazelleBuilt == 0) {
+                auto bCenter = findBuilding(BUILDING_CENTER);
+                if (bCenter) {
+                    double BL = (double)BLOCKSIDELENGTH;
+                    double tcDR = (bCenter->BlockDR + 1) * BL;
+                    double tcUR = (bCenter->BlockUR + 1) * BL;
+                    // 收集所有存活瞪羚
+                    std::vector<tagResource*> gaz;
+                    for (auto &r : info.resources)
+                        if (r.Type == RESOURCE_GAZELLE && r.Cnt > 0) gaz.push_back(&r);
+                    if (!gaz.empty()) {
+                        // 离 TC 最近的瞪羚作为"群种子"
+                        tagResource* seed = nullptr; double sd = 1e12;
+                        for (auto g : gaz) {
+                            double d = calDistance(tcDR, tcUR, g->DR, g->UR);
+                            if (d < sd) { sd = d; seed = g; }
+                        }
+                        // 取种子 6 格内的瞪羚作为同一群，求 DR/UR 平均值 = 仓库位置
+                        double sumDR = 0, sumUR = 0; int gcnt = 0;
+                        for (auto g : gaz)
+                            if (calDistance(seed->DR, seed->UR, g->DR, g->UR) < 6 * BL) {
+                                sumDR += g->DR; sumUR += g->UR; gcnt++;
+                            }
+                        if (gcnt > 0) {
+                            double centerDR = sumDR / gcnt, centerUR = sumUR / gcnt;
+                            // 已有仓库在 30 格内则不重复建
+                            bool nearGranary = false;
+                            for (auto &b : info.buildings)
+                                if (b.Type == BUILDING_GRANARY && b.Percent == 100 &&
+                                    calDistance(centerDR, centerUR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 30 * BL) {
+                                    nearGranary = true; break;
+                                }
+                            int tBlockDR = (int)(centerDR / BL) - 1;
+                            int tBlockUR = (int)(centerUR / BL) - 1;
+                            if (!nearGranary && info.Wood >= BUILD_GRANARY_WOOD) {
+                                if (tryBuild(BUILDING_GRANARY, 3, false, tBlockDR, tBlockUR)) {
+                                    storageNearGazelleBuilt = 1;
+                                    builtThisFrame = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             bool marketReady = (countBuildings(BUILDING_MARKET) >= 1);
             if (!builtThisFrame && marketReady && info.Wood >= 75 && info.Meat >= 100) {
                 int currentFarms = countBuildingsAll(BUILDING_FARM);
@@ -786,7 +1336,8 @@ void UsrAI::manageBuildings() {
         // 为未建的军事建筑保留木材
         int woodForMilitary = 0;
         if (upgradeStarted && !hasArmyCamp) woodForMilitary = BUILD_ARMYCAMP_WOOD;
-        else if (rangeUnlocked && !hasRange)  woodForMilitary = BUILD_RANGE_WOOD;
+        else if (!hasRange)  woodForMilitary = BUILD_RANGE_WOOD;
+        else if (!hasStable) woodForMilitary = BUILD_STABLE_WOOD;
 
         // 房屋
         bool popHeadroomLow = (info.Human_MaxNum <= humanPop + 2);
@@ -840,8 +1391,8 @@ void UsrAI::manageBuildings() {
             builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
         }
 
-        // 靶场
-        if (!builtThisFrame && rangeUnlocked && countBuildingsAll(BUILDING_RANGE) == 0 &&
+        // 靶场（不限铜器，兵营已有即可建）
+        if (!builtThisFrame && countBuildingsAll(BUILDING_RANGE) == 0 &&
             countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
             builtThisFrame = tryBuild(BUILDING_RANGE, 3);
         }
@@ -851,6 +1402,12 @@ void UsrAI::manageBuildings() {
             info.Stone >= 150) {
             builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
             if (builtThisFrame) towerCount++;
+        }
+
+        // ★ 马厩（postW2 反攻准备）：兵营已有 + 木材够 150 就建
+        if (!builtThisFrame && countBuildingsAll(BUILDING_STABLE) == 0 &&
+            countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD) {
+            builtThisFrame = tryBuild(BUILDING_STABLE, 3);
         }
 
         // 农场
@@ -1197,8 +1754,14 @@ void UsrAI::assignIdleFarmers() {
                     scoutWalkTimer = 0;
                     scoutIssueFrame = -999999;  // 重置，避免 managePriest 误判卡死
                     scoutCooldown = 10;
+                } else if (scoutReturnTry + 1 < 8) {
+                    // 外出探路被挡→先左右偏转绕障（档位越大偏角越大），不急着放弃这个方向
+                    scoutReturnTry++;
+                    scoutWalkTimer = 0;
+                    scoutLegStartFrame = frame;
+                    scoutCooldown = 5;
                 } else {
-                    // 外出探路卡住→放弃此方向，推进下一阶段（换下一个外向方向继续探）
+                    // 绕障8次仍不通（石头/地图边缘/建筑挡死）→放弃此方向，换下一个外向方向继续探
                     scoutPhase++;
                     if (scoutPhase >= 16) scoutPhase = 20;  // 探完→结束探路回TC待命
                     scoutReturnTry = 0;
@@ -1366,11 +1929,28 @@ void UsrAI::assignIdleFarmers() {
                                 scoutPhase++;  // 到达或遇险→进入返回阶段
                                 scoutCooldown = 10;
                             } else {
-                                HumanMove(scout->SN, wx, wy);
-                                scoutIssueDR = scout->DR; scoutIssueUR = scout->UR; scoutIssueFrame = frame;
+                                // ★ 绕障：scoutReturnTry 作为绕障档位——0=正对目标，其余左右交替偏转、档位越大偏角越大
+                                double ang = std::atan2(gdy, gdx);
+                                if (scoutReturnTry > 0) {
+                                    int t = scoutReturnTry;
+                                    double off = ((t % 2 == 1) ? 1.0 : -1.0) * (20.0 * ((t + 1) / 2));
+                                    ang += off * 3.141592653589793 / 180.0;
+                                }
+                                double wx2 = sDR + std::cos(ang) * SCOUT_STEP * BL;
+                                double wy2 = sUR + std::sin(ang) * SCOUT_STEP * BL;
+                                wx2 = max(edgeWest, min(edgeEast, wx2));
+                                wy2 = max(edgeSouth, min(edgeNorth, wy2));
+                                HumanMove(scout->SN, wx2, wy2);
+                                // ★ 记录点/计时器只在祭司真正挪窝(>1格)后才刷新——
+                                //   原来每次重发指令(冷却15帧)都刷新 scoutIssueFrame 与 scoutLegStartFrame，
+                                //   导致 20 帧的 noProgress 窗口永远走不满、leg 超时也被不断重置→
+                                //   卡死永不识别，同一不可达落点无限重发（日志里同一坐标刷屏）。
+                                if (calDistance(sDR, sUR, scoutIssueDR, scoutIssueUR) > 1.0 * BL) {
+                                    scoutIssueDR = sDR; scoutIssueUR = sUR; scoutIssueFrame = frame;
+                                    scoutLegStartFrame = frame;
+                                    scoutWalkTimer = 0;
+                                }
                                 scoutCooldown = 15;
-                                scoutWalkTimer = 0;
-                                scoutLegStartFrame = frame;
                             }
                     } else {
                         // 返回：回TC旁空地（多半径×多角度螺旋绕路，被石头堵时逐级放大半径重试）
@@ -1406,10 +1986,14 @@ void UsrAI::assignIdleFarmers() {
                             scoutCooldown = 10;
                         } else {
                             HumanMove(scout->SN, wx, wy);
-                            scoutIssueDR = scout->DR; scoutIssueUR = scout->UR; scoutIssueFrame = frame;
+                            // ★ 同样只在真正挪窝后才刷新记录点/计时器，否则 noProgress 与 leg 超时双双失效，
+                            //   返回路径被堵时会无限重发同一个 scoutReturnPoint 落点。
+                            if (calDistance(sDR, sUR, scoutIssueDR, scoutIssueUR) > 1.0 * BL) {
+                                scoutIssueDR = sDR; scoutIssueUR = sUR; scoutIssueFrame = frame;
+                                scoutLegStartFrame = frame;
+                                scoutWalkTimer = 0;
+                            }
                             scoutCooldown = 15;
-                            scoutWalkTimer = 0;
-                            scoutLegStartFrame = frame;
                         }
                     }
                 }
@@ -1718,6 +2302,7 @@ void UsrAI::assignIdleFarmers() {
 void UsrAI::assignIdleSimple() {
     std::map<int,int> assignedBush;
     std::map<int,int> assignedGazelle;
+    std::map<int,int> assignedFarm;   // ★ 本帧已派往农场的 <farmSN, workerSN>，防同场重复派工导致>1人
     double BL = (double)BLOCKSIDELENGTH;
     const int woodTarget = 6;  // ★ 伐木工目标人数（提高以加快建房/箭塔/科技）
     auto center = findBuilding(BUILDING_CENTER);
@@ -1822,16 +2407,20 @@ void UsrAI::assignIdleSimple() {
             continue;
         }
 
+        // ★ 农场：每座农场"有且仅有一人"。跳过本帧已派的农场，且已有≥1工人(实时)的也跳过，杜绝重复派工
         tagBuilding* farm = nullptr;
         for (auto &b : info.buildings) {
             if (b.Type != BUILDING_FARM || b.Percent < 100) continue;
-            bool occupied = false;
+            if (assignedFarm.count(b.SN)) continue;        // 本帧已派过，跳过
+            int onFarm = 0;
             for (auto &other : info.farmers)
-                if (other.WorkObjectSN == b.SN) { occupied = true; break; }
-            if (!occupied) { farm = &b; break; }
+                if (other.WorkObjectSN == b.SN) onFarm++;
+            if (onFarm >= 1) continue;                     // 已有工人，不再加派
+            farm = &b; break;
         }
         if (farm) {
             HumanAction(f.SN, farm->SN);
+            assignedFarm[farm->SN] = f.SN;                 // 记录，本帧内后续空闲村民不会再来这座
             continue;
         }
 
@@ -1840,6 +2429,49 @@ void UsrAI::assignIdleSimple() {
             if (tree) {
                 HumanAction(f.SN, tree->SN);
                 woodWorkers++;
+            }
+        }
+    }
+
+    // ========== ★ 农场"有且仅有一人"强制校验（兜底） ==========
+    // 任何一帧若发现某农场工人数≥2，立即把多余工人转移到空农场或伐木；
+    // 一并把本帧刚派下去(引擎尚未回写 WorkObjectSN)的工人计入，避免一帧内同场重复派工漏检。
+    {
+        std::map<int, std::vector<int>> fwMap;   // farmSN -> 工人SN列表
+        for (auto &b : info.buildings)
+            if (b.Type == BUILDING_FARM && b.Percent >= 100) fwMap[b.SN];
+        for (auto &f : info.farmers) {
+            if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+            if (f.WorkObjectSN > 0 && fwMap.count(f.WorkObjectSN))
+                fwMap[f.WorkObjectSN].push_back(f.SN);
+        }
+        for (auto &kv : assignedFarm)            // 本帧主循环刚派的工人（其 WorkObjectSN 仍是旧值），手动补入
+            if (fwMap.count(kv.first)) fwMap[kv.first].push_back(kv.second);
+
+        std::vector<int> emptyFarms;
+        for (auto &kv : fwMap) if ((int)kv.second.size() == 0) emptyFarms.push_back(kv.first);
+
+        for (auto &kv : fwMap) {
+            int farmSN = kv.first;
+            auto &workers = kv.second;
+            if ((int)workers.size() <= 1) continue;   // 已满足"恰好一人"，跳过
+            // 保留第1个工人，其余(多余)转移走
+            for (size_t i = 1; i < workers.size(); ++i) {
+                int wSN = workers[i];
+                tagFarmer* wf = nullptr;
+                for (auto &f : info.farmers) if (f.SN == wSN) { wf = &f; break; }
+                if (!wf) continue;
+                // 只移动可安全重派的工人（空闲/工作/走路中），不打断行军或建造
+                if (wf->NowState != HUMAN_STATE_IDLE && wf->NowState != HUMAN_STATE_WORKING
+                    && wf->NowState != HUMAN_STATE_WALKING) continue;
+                if (!emptyFarms.empty()) {
+                    int dst = emptyFarms.back(); emptyFarms.pop_back();
+                    HumanAction(wSN, dst);            // 多余工人→空农场（同时填补空场）
+                } else if (woodWorkers < woodTarget) {
+                    auto tree = findNearestResource(RESOURCE_TREE, wf->DR, wf->UR);
+                    if (tree) { HumanAction(wSN, tree->SN); woodWorkers++; }
+                    else break;
+                } else break;                          // 无处可去则保留（不造成更糟局面）
             }
         }
     }
@@ -2128,8 +2760,28 @@ void UsrAI::manageMilitary() {
     if (info.Meat >= FOOD_PAUSE_TECH_TRAIN && trainCooldown <= 0 && humanPop < info.Human_MaxNum) {
         bool trained = false;
 
-        // --- 工具时代：不训练军队（攒食物升铜器） ---
-        // (pre-Bronze: no training, save food)
+        // --- 工具时代：也训练廉价填线兵（凑够目标数就停，之后全力升铜器） ---
+        if (!postBronze) {
+            int toolArmy = 0;
+            for (auto &a : info.armies) if (a.Sort != AT_PRIEST) toolArmy++;
+            const int TOOL_AGE_ARMY_TARGET = 4;   // 工具时代练兵上限，扛第一波
+            if (toolArmy < TOOL_AGE_ARMY_TARGET && info.Meat >= BUILDING_ARMYCAMP_CREATE_CLUBMAN_FOOD) {
+                auto ac = findBuilding(BUILDING_ARMYCAMP);
+                if (ac && ac->Project == ACT_NULL) {
+                    bool toolTrained = false;
+                    // 有石头优先投石兵（远程），否则棍棒兵（近战）
+                    if (info.Meat >= BUILDING_ARMYCAMP_CREATE_SLINGER_FOOD &&
+                        info.Stone >= BUILDING_ARMYCAMP_CREATE_SLINGER_STONE) {
+                        BuildingAction(ac->SN, BUILDING_ARMYCAMP_CREATE_SLINGER);
+                        toolTrained = true;
+                    } else if (info.Meat >= BUILDING_ARMYCAMP_CREATE_CLUBMAN_FOOD) {
+                        BuildingAction(ac->SN, BUILDING_ARMYCAMP_CREATE_CLUBMAN);
+                        toolTrained = true;
+                    }
+                    if (toolTrained) trained = true;
+                }
+            }
+        }
 
         // --- 铜器时代：训练军事单位 ---
         if (postBronze) {
@@ -2309,32 +2961,32 @@ void UsrAI::manageMilitary() {
                     attackCmds++;
                     continue;
                 }
-                // 没找到敌人→回TC
+                // 没找到敌人→回基地外围待命（距TC 16格内为外围待命区，不再缩进TC中心→避免不可达失败刷屏）
                 double distTC = calDistance(a.DR, a.UR, centerDR, centerUR);
-                if (distTC > 6 * BL) {
-                    // ★ 回TC旁可达空地（不再用TC建筑中心centerDR/centerUR——中心被建筑占着不可达，
-                    //   单位永远走不到→距离恒>阈值→每帧重发同一坐标刷屏、单位原地不动。刀斧兵/弓箭手等通用）
-                    {
-                        int atry = armyReturnTry[a.SN];
-                        int aang = atry % 8;
-                        int arad = atry / 8; if (arad > 2) arad = 2;
-                        const int ARADII[3] = {4, 7, 10};
-                        double ara = (double)aang * 3.141592653589793 / 4.0;
-                        double aR = ARADII[arad] * BL;
-                        double atx = centerDR + std::cos(ara) * aR;
-                        double aty = centerUR + std::sin(ara) * aR;
-                        atx = max(0.0, min((double)MAP_L * BL, atx));
-                        aty = max(0.0, min((double)MAP_U * BL, aty));
-                        HumanMove(a.SN, atx, aty);
-                        // 卡死检测：idle 且上次下发后几乎没动→换下一角度/半径重试，避免同一不可达点死循环
-                        if (armyIssueFrame.count(a.SN) && a.NowState == HUMAN_STATE_IDLE &&
-                            frame - armyIssueFrame[a.SN] > 45 &&
-                            calDistance(a.DR, a.UR, armyIssueDR[a.SN], armyIssueUR[a.SN]) < 1.0 * BL) {
-                            armyReturnTry[a.SN]++;
-                        }
-                        armyIssueDR[a.SN] = a.DR; armyIssueUR[a.SN] = a.UR; armyIssueFrame[a.SN] = frame;
+                if (distTC <= 16 * BL) {
+                    armyReturnTry[a.SN] = 0;  // 已在外围待命区，清卡死计数
+                } else if (armyReturnTry[a.SN] < 24) {
+                    // 螺旋前往可达外围点（半径8/11/14格，全在TC建筑外→杜绝进入TC导致不可达失败）
+                    int atry = armyReturnTry[a.SN];
+                    int aang = atry % 8;
+                    int arad = atry / 8; if (arad > 2) arad = 2;
+                    const int ARADII[3] = {8, 11, 14};
+                    double ara = (double)aang * 3.141592653589793 / 4.0;
+                    double aR = ARADII[arad] * BL;
+                    double atx = centerDR + std::cos(ara) * aR;
+                    double aty = centerUR + std::sin(ara) * aR;
+                    atx = max(0.0, min((double)MAP_L * BL, atx));
+                    aty = max(0.0, min((double)MAP_U * BL, aty));
+                    HumanMove(a.SN, atx, aty);
+                    // 卡死检测：不可达/被堵时快速换档（8帧，避免同一不可达点失败刷屏）
+                    if (armyIssueFrame.count(a.SN) && a.NowState == HUMAN_STATE_IDLE &&
+                        frame - armyIssueFrame[a.SN] > 8 &&
+                        calDistance(a.DR, a.UR, armyIssueDR[a.SN], armyIssueUR[a.SN]) < 1.0 * BL) {
+                        armyReturnTry[a.SN]++;
                     }
+                    armyIssueDR[a.SN] = a.DR; armyIssueUR[a.SN] = a.UR; armyIssueFrame[a.SN] = frame;
                 }
+                // atry>=24：全部档失败→放弃移动，就地待命（防无限刷屏）
                 attackCmds++;
                 continue;
             }
@@ -2345,30 +2997,30 @@ void UsrAI::manageMilitary() {
                 HumanAction(a.SN, nearbyEnemy);
             } else {
                 double distToTC = calDistance(a.DR, a.UR, centerDR, centerUR);
-                if (distToTC > 8 * BL) {
-                    // ★ 回TC旁可达空地（不再用TC建筑中心centerDR/centerUR——中心被建筑占着不可达，
-                    //   单位永远走不到→距离恒>阈值→每帧重发同一坐标刷屏、单位原地不动。刀斧兵/弓箭手等通用）
-                    {
-                        int atry = armyReturnTry[a.SN];
-                        int aang = atry % 8;
-                        int arad = atry / 8; if (arad > 2) arad = 2;
-                        const int ARADII[3] = {4, 7, 10};
-                        double ara = (double)aang * 3.141592653589793 / 4.0;
-                        double aR = ARADII[arad] * BL;
-                        double atx = centerDR + std::cos(ara) * aR;
-                        double aty = centerUR + std::sin(ara) * aR;
-                        atx = max(0.0, min((double)MAP_L * BL, atx));
-                        aty = max(0.0, min((double)MAP_U * BL, aty));
-                        HumanMove(a.SN, atx, aty);
-                        // 卡死检测：idle 且上次下发后几乎没动→换下一角度/半径重试，避免同一不可达点死循环
-                        if (armyIssueFrame.count(a.SN) && a.NowState == HUMAN_STATE_IDLE &&
-                            frame - armyIssueFrame[a.SN] > 45 &&
-                            calDistance(a.DR, a.UR, armyIssueDR[a.SN], armyIssueUR[a.SN]) < 1.0 * BL) {
-                            armyReturnTry[a.SN]++;
-                        }
-                        armyIssueDR[a.SN] = a.DR; armyIssueUR[a.SN] = a.UR; armyIssueFrame[a.SN] = frame;
+                if (distToTC <= 16 * BL) {
+                    armyReturnTry[a.SN] = 0;  // 已在外围待命区，清卡死计数
+                } else if (armyReturnTry[a.SN] < 24) {
+                    // 回基地外围待命：螺旋前往可达外围点（半径8/11/14格，全在TC建筑外→避免不可达失败）
+                    int atry = armyReturnTry[a.SN];
+                    int aang = atry % 8;
+                    int arad = atry / 8; if (arad > 2) arad = 2;
+                    const int ARADII[3] = {8, 11, 14};
+                    double ara = (double)aang * 3.141592653589793 / 4.0;
+                    double aR = ARADII[arad] * BL;
+                    double atx = centerDR + std::cos(ara) * aR;
+                    double aty = centerUR + std::sin(ara) * aR;
+                    atx = max(0.0, min((double)MAP_L * BL, atx));
+                    aty = max(0.0, min((double)MAP_U * BL, aty));
+                    HumanMove(a.SN, atx, aty);
+                    // 卡死检测：不可达/被堵时快速换档（8帧，避免同一不可达点失败刷屏）
+                    if (armyIssueFrame.count(a.SN) && a.NowState == HUMAN_STATE_IDLE &&
+                        frame - armyIssueFrame[a.SN] > 8 &&
+                        calDistance(a.DR, a.UR, armyIssueDR[a.SN], armyIssueUR[a.SN]) < 1.0 * BL) {
+                        armyReturnTry[a.SN]++;
                     }
+                    armyIssueDR[a.SN] = a.DR; armyIssueUR[a.SN] = a.UR; armyIssueFrame[a.SN] = frame;
                 }
+                // atry>=24：放弃移动，就地待命（防无限刷屏）
             }
             attackCmds++;
         }
@@ -2464,110 +3116,71 @@ void UsrAI::manageCarriedResources() {
     }
 }
 
+// ============================================================
+// 村民安全（绝不让村民挡刀）：本函数不再把村民当肉盾派去攻击敌人，
+// 而是——一旦有村民暴露在敌人附近，立刻命令其撤回TC。
+// waveBlockers 在此复用为"正在撤退"集合：各分配/打猎函数已对
+// waveBlockers 内的村民跳过，避免他们被重新派往前线送死。
+// 已在TC保护圈内（安全）的村民不动，照常生产。
+// ============================================================
 void UsrAI::manageFirstWaveDefense() {
-    if (state < DEFENSE_WAVE1 || state > DEFENSE_WAVE3) {
-        waveBlockers.clear();
-        return;
-    }
-    if (countAllMilitary() >= 6) {
-        waveBlockers.clear();
-        return;
-    }
-
-    tagArmy* priest = nullptr;
-    for (auto &a : info.armies) {
-        if (a.Sort == AT_PRIEST) { priest = &a; break; }
-    }
-    if (!priest) {
-        waveBlockers.clear();
-        return;
-    }
-
     double BL = (double)BLOCKSIDELENGTH;
-    double refDR = priest->DR, refUR = priest->UR;
-    double targetRange = 25 * BL;
-    int axeSN = -1, archerSN = -1;
-    double axeBest = 1e18, archerBest = 1e18;
-    for (auto &e : info.enemy_armies) {
-        double d = calDistance(refDR, refUR, e.DR, e.UR);
-        if (d > targetRange) continue;
-        if (e.Sort == AT_SWORDSMAN) {
-            if (d < axeBest) { axeBest = d; axeSN = e.SN; }
-        } else if (e.Sort == AT_BOWMAN || e.Sort == AT_COMPOSITE_BOWMAN ||
-                   e.Sort == AT_SLINGER) {
-            if (d < archerBest) { archerBest = d; archerSN = e.SN; }
-        }
-    }
+    auto center = findBuilding(BUILDING_CENTER);
+    if (!center) { waveBlockers.clear(); return; }
 
-    // Only defend enemies already near the priest/base.
-    if (axeSN < 0 && archerSN < 0) {
-        int fallback = findNearestEnemySN(refDR, refUR, 25 * BL);
-        if (fallback < 0) {
-            waveBlockers.clear();
-            return;
-        }
+    const double DANGER      = 12.0 * BL;  // 敌人进入此范围→村民需撤退
+    const double SAFE_FROM_TC = 8.0 * BL;  // 距TC小于此值视为已在安全圈，不扰
+    double tcX = (center->BlockDR + 1) * BL;
+    double tcY = (center->BlockUR + 1) * BL;
+
+    std::set<int> fleeing;
+    for (auto &f : info.farmers) {
+        if (f.Blood <= 0) continue;
+        if (buildingFarmerType.count(f.SN)) continue;  // 正在建房，不中断
+        if (f.SN == scoutFarmerSN) continue;            // 侦察村民，不动
+        // 已在TC保护圈内→安全，无需撤退
+        if (calDistance(f.DR, f.UR, tcX, tcY) <= SAFE_FROM_TC) continue;
+
+        bool enemyNear = false;
         for (auto &e : info.enemy_armies) {
-            if (e.SN != fallback) continue;
-            if (e.Sort == AT_CHARIOT_ARCHER) {
-                waveBlockers.clear();
-                return;
+            if (calDistance(f.DR, f.UR, e.DR, e.UR) < DANGER) { enemyNear = true; break; }
+        }
+        if (!enemyNear) for (auto &e : info.enemy_farmers) {
+            if (calDistance(f.DR, f.UR, e.DR, e.UR) < DANGER) { enemyNear = true; break; }
+        }
+        if (enemyNear) {
+            // 仅在待命/采集态下令撤退；行进中(WALKING)不重复下发，避免每帧重发同一坐标刷屏。
+            // 目标点取TC旁的"可达环"（半径{3,5,7}格、8角度螺旋，均<安全圈8格），绝不用TC建筑正中心
+            // （不可达→单位永远走不到→每帧重发同一坐标刷屏、原地不动，与军队回TC逻辑同理）。
+            if (f.NowState == HUMAN_STATE_IDLE || f.NowState == HUMAN_STATE_WORKING) {
+                int ftry = farmerReturnTry[f.SN];
+                int fang = ftry % 8;
+                int frad = ftry / 8; if (frad > 2) frad = 2;
+                const int FRADII[3] = {3, 5, 7};
+                double fa = (double)fang * 3.141592653589793 / 4.0;
+                double fR = FRADII[frad] * BL;
+                double fx = tcX + std::cos(fa) * fR;
+                double fy = tcY + std::sin(fa) * fR;
+                fx = max(0.0, min((double)MAP_L * BL, fx));
+                fy = max(0.0, min((double)MAP_U * BL, fy));
+                HumanMove(f.SN, fx, fy);
+                // 卡死检测：Idle且上次下发后几乎没动→换下一角度/半径重试
+                if (farmerIssueFrame.count(f.SN) && f.NowState == HUMAN_STATE_IDLE &&
+                    frame - farmerIssueFrame[f.SN] > 45 &&
+                    calDistance(f.DR, f.UR, farmerIssueDR[f.SN], farmerIssueUR[f.SN]) < 1.0 * BL) {
+                    farmerReturnTry[f.SN]++;
+                }
+                farmerIssueDR[f.SN] = f.DR; farmerIssueUR[f.SN] = f.UR; farmerIssueFrame[f.SN] = frame;
             }
-            axeSN = fallback;
-            break;
-        }
-        if (axeSN < 0) {
-            waveBlockers.clear();
-            return;
+            fleeing.insert(f.SN);
         }
     }
+    waveBlockers = fleeing;
 
-    int axeSlots = (axeSN >= 0) ? 4 : 0;
-    int archerSlots = (archerSN >= 0) ? 2 : 0;
-    std::set<int> stillAlive;
-
-    for (int sn : waveBlockers) {
-        if (axeSlots + archerSlots == 0) break;
-        tagFarmer* f = nullptr;
-        for (auto &x : info.farmers) {
-            if (x.SN == sn) { f = &x; break; }
-        }
-        if (!f || f->Blood <= 0) continue;
-        if (buildingFarmerType.count(sn)) continue;
-        if (f->Resource > 0) continue;
-        if (axeSlots > 0 && axeSN >= 0) {
-            HumanAction(sn, axeSN);
-            axeSlots--;
-            stillAlive.insert(sn);
-        } else if (archerSlots > 0 && archerSN >= 0) {
-            HumanAction(sn, archerSN);
-            archerSlots--;
-            stillAlive.insert(sn);
-        }
+    if (frame % 75 == 0 && !fleeing.empty()) {
+        DebugText(QString("[FARMER SAFETY] %1 villagers retreating to TC (no meat-shield)")
+            .arg((int)fleeing.size()));
     }
-
-    for (int pass = 0; pass < 2 && axeSlots + archerSlots > 0; ++pass) {
-        for (auto &f : info.farmers) {
-            if (axeSlots + archerSlots == 0) break;
-            if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-            if (stillAlive.count(f.SN)) continue;
-            if (buildingFarmerType.count(f.SN)) continue;
-            if (f.Resource > 0) continue;
-            double d = calDistance(f.DR, f.UR, refDR, refUR);
-            if (pass == 0 && d > 15 * BL) continue;
-            if (pass == 1 && d > 30 * BL) continue;
-            if (axeSlots > 0 && axeSN >= 0) {
-                HumanAction(f.SN, axeSN);
-                axeSlots--;
-                stillAlive.insert(f.SN);
-            } else if (archerSlots > 0 && archerSN >= 0) {
-                HumanAction(f.SN, archerSN);
-                archerSlots--;
-                stillAlive.insert(f.SN);
-            }
-        }
-    }
-
-    waveBlockers = stillAlive;
 }
 void UsrAI::manageCounterAttack() {
     double BL = (double)BLOCKSIDELENGTH;
@@ -2655,10 +3268,22 @@ void UsrAI::manageCounterAttack() {
         int priestEnemy = findNearestEnemySN(priest->DR, priest->UR, 12 * BL);
 
         if (priestEnemy >= 0) {
-            // 有敌人！撤退
+            // 有敌人！撤退到TC旁"可达空地"（绝不用TC建筑正中心——中心被建筑占着不可达，
+            // 会每帧/每冷却反复失败刷屏、原地不动）
             if (center && priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0) {
-                double retreatDR = (center->BlockDR + 1) * BL;
-                double retreatUR = (center->BlockUR + 1) * BL;
+                // 本函数没有 centerDR/centerUR 局部变量，直接由 center 计算TC中心
+                double cDR = (center->BlockDR + 1) * BL;
+                double cUR = (center->BlockUR + 1) * BL;
+                // 取威胁敌人的坐标，目标点选在"从敌人指向TC、再外推10格"的那侧（远离威胁、可达）
+                double eX = cDR, eY = cUR;
+                for (auto &e : info.enemy_armies) {
+                    if (e.SN == priestEnemy) { eX = e.DR; eY = e.UR; break; }
+                }
+                double away = std::atan2(cUR - eY, cDR - eX);
+                double retreatDR = cDR + std::cos(away) * 10.0 * BL;
+                double retreatUR = cUR + std::sin(away) * 10.0 * BL;
+                retreatDR = max(0.0, min((double)MAP_L * BL, retreatDR));
+                retreatUR = max(0.0, min((double)MAP_U * BL, retreatUR));
                 HumanMove(priestSN, retreatDR, retreatUR);
                 priestMoveCooldown = 40;
             }
@@ -3179,7 +3804,7 @@ bool UsrAI::findFarmRingSite(int &x, int &y) {
     return findBuildSite(x, y, 3);
 }
 
-bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown) {
+bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX, int prefY) {
     if (buildCooldown > 0 && !ignoreCooldown) return false;
 
     auto f = findIdleFarmer();
@@ -3188,8 +3813,18 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown) {
 
     int x, y;
     bool placed = false;
-    // 谷仓：优先建在浆果密集处
-    if (buildingType == BUILDING_GRANARY)
+    // 指定目标（块坐标）：在目标点及其周围优先放置（用于瞪羚群中心仓库等场景）
+    if (prefX >= 0 && prefY >= 0) {
+        int offs[][2] = {{0,0},{3,0},{-3,0},{0,3},{0,-3},{6,0},{-6,0},{0,6},{0,-6},
+                         {-3,-3},{3,3},{-3,3},{3,-3}};
+        for (auto &o : offs) {
+            int nx = prefX + o[0], ny = prefY + o[1];
+            if (nx < 0 || ny < 0) continue;
+            if (isPositionFree(nx, ny, size)) { x = nx; y = ny; placed = true; break; }
+        }
+    }
+    // 谷仓：优先建在浆果密集处（未指定目标时）
+    if (!placed && buildingType == BUILDING_GRANARY)
         placed = findGranarySite(x, y);
     // 市场：建在TC 8格外（避开农场6格保护区）
     if (!placed && buildingType == BUILDING_MARKET)
@@ -3352,8 +3987,8 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
         return true;
     }
 
-    // ★ 优先级4：狩猎瞪羚（波次期间禁止！每只≤2人，WorkObjectSN实时统计）★
-    if (!isWarTime && !huntingGroup.count(f->SN)) {
+    // ★ 优先级4：狩猎瞪羚（每只≤2人，WorkObjectSN实时统计）★
+    if (!huntingGroup.count(f->SN)) {
         // 找最近的瞪羚（每只≤2人，含本帧已分）
         tagResource* bestGazelle = nullptr;
         double bestGDist = 1e12;
