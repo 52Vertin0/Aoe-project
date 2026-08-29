@@ -19,6 +19,7 @@ public:
               wave1Defeated(false), wave2Defeated(false), wave3Defeated(false),
               buildCooldown(0), techCooldown(0), trainCooldown(0),
               debugTimer(0), farmTarget(0),
+              storageNearGazelleBuilt(0),
               priestMoveCooldown(0), lastPriestMoveDR(-1), lastPriestMoveUR(-1),
               wheelResearched(false), broadswordResearched(false),
               compositeBowResearched(false), clubmanUpgraded(false),
@@ -37,7 +38,9 @@ public:
               scoutDirsDone(0), scoutWalkTimer(0), scoutLegStartFrame(0), scoutReturnTry(0), priestVisitedTower(false),
               scoutIssueDR(0), scoutIssueUR(0), scoutIssueFrame(-999999),
               priestIssueDR(0), priestIssueUR(0), priestIssueFrame(-999999),
-              priestNearTCTry(0)
+              priestNearTCTry(0), priestFleeTry(0),               priestFleeLastX(0), priestFleeLastY(0), priestFleeLastFrame(-999999),
+              priestConvSN(-1), priestConvFrame(-999999),
+              priestMode(0)
     { this->id = 0; }
     ~UsrAI() {}
 
@@ -111,6 +114,7 @@ private:
     std::set<int> depositFarmers;
     std::map<int,int> depositStartFrame;
     int farmTarget;          // 目标农场数量
+    int storageNearGazelleBuilt; // 瞪羚群中心仓库是否已建（0=未建，每局仅建1座）
 
     // 祭司移动防抖（防止HumanMove死循环）
     int priestMoveCooldown;
@@ -159,10 +163,20 @@ private:
     double priestIssueDR, priestIssueUR;// 上次给祭司下发回TC指令时的位置（managePriest防抖）
     int priestIssueFrame;               // 上次给祭司下发回TC指令的帧号
     int priestNearTCTry;               // 待机守TC旁：多半径×多角度螺旋重试绕路的计数(0~23)
+    int priestFleeTry;                 // 逃跑螺旋重试计数(0~20)：卡死时换角度/半径重试防卡
+    int priestMode;                    // 祭司决策锁：0=常态/感化, 1=撤退中(迟滞用，逃到脱离威胁才解除)
+    double priestFleeLastX, priestFleeLastY; // 上次下发的逃跑落点（判断引擎是否拒收该点→祭司原地不动）
+    int priestFleeLastFrame;           // 上次下发逃跑指令的帧号
+    int priestConvSN;                  // 上次下发感化的目标SN（引导跟踪：拒收检测/防打断重发）
+    int priestConvFrame;               // 上次下发感化指令的帧号
     // ★ 军事单位回TC旁待命的绕路状态（与主城建筑中心不可达导致的刷屏卡死对应，刀斧兵/弓箭手等通用）★
     std::map<int,int> armyReturnTry;      // 单位SN → 多半径×多角度螺旋重试计数(0~23)
     std::map<int,double> armyIssueDR, armyIssueUR; // 上次下发回TC移动指令时的位置（卡死检测）
     std::map<int,int> armyIssueFrame;     // 上次下发回TC移动指令的帧号
+    // ★ 村民撤退TC旁的绕路状态（与军队同理：TC建筑中心不可达→改环上可达空地，防刷屏卡死）★
+    std::map<int,int> farmerReturnTry;    // 村民SN → 螺旋重试计数
+    std::map<int,double> farmerIssueDR, farmerIssueUR; // 上次下发撤退指令位置（卡死检测）
+    std::map<int,int> farmerIssueFrame;   // 上次下发撤退指令帧号
     std::set<int> huntingGroup; // 正在打猎的村民SN
     std::set<int> frameFoodTargets; // 本帧已分配的食物目标SN（防同帧重复分配）
     std::map<int,int> frameBushCount; // 本帧每丛浆果已分配人数（浆果每丛≤2人，防同帧挤爆单丛）
@@ -192,7 +206,7 @@ private:
     bool findMarketSite(int &x, int &y);
     bool findHouseSite(int &x, int &y);
     bool findFarmRingSite(int &x, int &y);  // TC周围隔1格环形选址
-    bool tryBuild(int buildingType, int size, bool ignoreCooldown = false);
+    bool tryBuild(int buildingType, int size, bool ignoreCooldown = false, int prefX = -1, int prefY = -1);
     void handleBuildResults();        // 处理建造指令执行结果（失败换位置重试）
     void detectStuckGatherers();      // 检测寻路卡死的采集村民，强制打断并拉黑目标资源
 
