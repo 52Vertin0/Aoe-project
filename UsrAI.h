@@ -17,7 +17,7 @@ public:
               enemySiegeSN(-1), enemyBaseScouted(false), enemyBaseDR(0), enemyBaseUR(0),
               hasUpgraded(false),
               wave1Started(false), wave2Started(false), wave3Started(false),
-              wave1Defeated(false), wave2Defeated(false), wave3Defeated(false),
+              wave2Defeated(false),
               buildCooldown(0), techCooldown(0), trainCooldown(0),
               debugTimer(0), farmTarget(0),
               storageNearGazelleBuilt(0),
@@ -31,12 +31,11 @@ public:
               useToolDone(false),
               craftResearched(false), infantryArmorDone(false),
               archerArmorDone(false), bronzeTowerUpgraded(false),
-              militaryGuardSN(-1),
-              scoutBuilt(false), academyBuilt(false),
-              explorePhase(0), rallyDR(0), rallyUR(0),
+              scoutBuilt(false),
+              rallyDR(0), rallyUR(0),
               towerTechResearched(false), towerCount(0),
               scoutFarmerSN(-1), scoutPhase(0), scoutCooldown(0),
-              scoutDirsDone(0), scoutWalkTimer(0), scoutLegStartFrame(0), scoutReturnTry(0), priestVisitedTower(false),
+              scoutDirsDone(0), scoutWalkTimer(0), scoutLegStartFrame(0), scoutReturnTry(0),
               scoutIssueDR(0), scoutIssueUR(0), scoutIssueFrame(-999999),
               priestIssueDR(0), priestIssueUR(0), priestIssueFrame(-999999),
               priestNearTCTry(0), priestFleeTry(0), priestMode(0), priestFleeLastX(0), priestFleeLastY(0), priestFleeLastFrame(-999999),
@@ -92,7 +91,7 @@ private:
     double enemyBaseDR, enemyBaseUR;  // 已探明敌方基地坐标(区块中心→细节坐标)，供反攻直奔
     bool hasUpgraded;
     bool wave1Started, wave2Started, wave3Started;
-    bool wave1Defeated, wave2Defeated, wave3Defeated;
+    bool wave2Defeated;
 
     // 指令节流冷却
     int buildCooldown;
@@ -138,12 +137,8 @@ private:
     bool archerArmorDone;          // 弓兵护甲
     bool bronzeTowerUpgraded;      // 铜器箭塔升级
 
-    int militaryGuardSN;  // 负责保护祭司的士兵SN
-
     // 新增：完整版策略变量
     bool scoutBuilt;           // 侦察骑兵已生产
-    bool academyBuilt;         // 学院已建造
-    int explorePhase;          // 探路阶段 0=未开始 1=探资源 2=探敌人
     int rallyDR, rallyUR;      // 反攻集结点
     bool towerTechResearched;  // 箭塔科技已研究
     int towerCount;            // 已建箭塔数量
@@ -154,7 +149,6 @@ private:
     int scoutWalkTimer;        // 走路计时（超时=目标不可达）
     int scoutLegStartFrame;    // 当前探路腿开始的帧号（超时跳过方向，防卡死）
     int scoutReturnTry;        // 返回TC被石头堵时，多半径×多角度螺旋重试绕路的计数(0~23)
-    bool priestVisitedTower;   // 祭司已探过箭塔视野
     double scoutIssueDR, scoutIssueUR;  // 上次给祭司下发移动指令时的位置（检测"下指令但没动"）
     int scoutIssueFrame;                // 上次给祭司下发移动指令的帧号
     double priestIssueDR, priestIssueUR;// 上次给祭司下发回TC指令时的位置（managePriest防抖）
@@ -180,12 +174,23 @@ private:
     //   导致 "frame - issueFrame" 永远很小 → 卡死判定永不触发 → 单位永久卡死。
     std::map<int,int> marchStuckTry;      // 单位SN → 卡死重试档位(逐档换方向，绕出死角)
     std::map<int,double> marchIssueDR, marchIssueUR; // 上次记录的位置（判定是否真的有位移）
+    // ★ 2026-09-07：单位SN → 上次记录的"距推进目标(targetDR/targetUR)的距离"。
+    //   卡死判据已由此字段接管（取代 marchIssueDR/UR 的"绝对位移"判据）——
+    //   只有【距目标真的变近】才算有效推进，原地来回抖动不再刷新计时。
+    //   详见 manageCounterAttack() 内卡死检测处的注释。
+    std::map<int,double> marchIssueDist;
     std::map<int,int> marchMoveFrame;     // 单位SN → 上次"位置发生变化"的帧号
     std::map<int,int> marchCmdFrame;      // 单位SN → 上次下发推进指令的帧号（卡死重发节流，防每帧改方向抖动）
     // 单位SN → 上次下发【后撤】指令的帧号（2026-09-06：专用于"后撤保护期"）。
     // ★ 为什么不能只用 marchCmdFrame：它同时被推进/后撤/集结共用，若拿它做攻击令保护，
     //   会导致兵推进到射程内也不开火。后撤必须单独记，只有后撤才需要"撤完之前不许开火"。
     std::map<int,int> lastRetreatFrame;
+    // ★ 2026-09-08 加：远程兵"打-拉"循环状态机(SHOOT/RETREAT)与起始帧
+    //   主动拉撤节奏：SHOOT ≥ SHOOT_FRAMES(60 帧=4 秒)后自动切 RETREAT；
+    //   RETREAT 直到敌距≥R+1.5 格后再切回 SHOOT。
+    //   替代旧版"贴脸才撤(被动)"模式——新模式主动制造距离窗口，让敌"出射程外"再压制。
+    std::map<int,int> kitingPhase;        // SN → 0=SHOOT/IDLE, 1=RETREAT
+    std::map<int,int> kitingPhaseFrame;   // SN → 进入当前相位的帧号(相位内不重发指令)
     std::set<int> huntingGroup; // 正在打猎的村民SN
     std::set<int> frameFoodTargets; // 本帧已分配的食物目标SN（防同帧重复分配）
     std::map<int,int> frameBushCount; // 本帧每丛浆果已分配人数（浆果每丛≤2人，防同帧挤爆单丛）
@@ -197,45 +202,43 @@ private:
     // ---- 基础辅助函数 ----
     tagFarmer* findIdleFarmer();
     tagFarmer* findAnyFarmer();
-    tagArmy*   findMyArmy(int sort, bool idleOnly = true);
     tagBuilding* findBuilding(int type);
     tagBuilding* findBuildingIncludingUnderConstruction(int type);
     tagBuilding* findEnemyBuilding(int type);
     int findNearestEnemyBuilding(double dr, double ur, double range);  // 范围内最近敌方建筑SN(反攻直奔基地后拆建筑用)
     tagResource* findNearestResource(int type, double dr, double ur);
-    tagResource* findNearestResourceAny(const std::vector<int>& types, double dr, double ur);
     tagResource* findBestWoodTree(double dr, double ur);   // ★ 2026-09-06：砍树按"离仓库/TC 近"选树（带硬闸）
     int findNearestEnemySN(double dr, double ur, double range);
     int findNearestEnemyNoStone(double dr, double ur, double range);  // 军事单位选敌：范围内最近敌人(军队优先于村民)，但排除投石车(留给祭司感化)，不做近战优先
     int findCatapultTarget(double dr, double ur, double range);  // 投石车专用选敌(反攻)：范围内最近目标=任意敌方单位(含敌投石车)+敌方箭塔建筑
     int countBuildings(int type);
     int countBuildingsAll(int type);
-    // ★ "该类型是否已存在"判定（用于唯一建筑的存在性门槛）：统计一切实际存在的该类型建筑
-    //   （含 0% 地基、被拉黑的废弃地基——宽限期内仍算存在），外加已下发但地基尚未回写的建造指令。
-    //   与 countBuildingsAll(排除 deadBuildings、排除 pending) 的区别：后者会让"卡住的0%地基"被漏算
-    //   → 于是原地再建一座（市场被建两座的根因）。
+    // ★ "该类型是否已存在"判定（唯一建筑的存在性门槛）：统计一切实际存在的该类型建筑
+    //   （含 0% 地基、被拉黑的废弃地基、已下发未回写的指令），避免"卡住的0%地基"被漏算而原地再建一座。
     int countBuildingsExisting(int type);
-    int countUnits(int sort);
     int countAllMilitary();
-    int countFarmersByState(int state);
     bool isPositionFree(int blockDR, int blockUR, int size);
     bool isSiteReachable(int blockDR, int blockUR, int size);  // 地基可达性预检：地基旁须有路可走，避免选址被建筑围死、村民永远走不到(卡死)
     bool findBuildSite(int &x, int &y, int size = 2);
     bool findBuildSiteTowardCenter(int &x, int &y, int size, int minR, int maxR);  // 建筑选址偏向 TC→地图中心方向且离TC更远(避免堵角)
     bool findDefenseBuildSite(int &x, int &y, int size = 2);
     bool findGranarySite(int &x, int &y);
+    // 远距浆果群定位（第二座谷仓专用）：找到距 TC ≥ SECOND_GRANARY_TC_MIN_DIST、距任一已有谷仓 >12 格、
+    // 且 5 格内丛数 ≥ MIN_BUSH_FOR_SECOND_GRANARY 的最密集浆果群，输出其块坐标与丛数。
+    bool findRemoteBushCluster(int &bx, int &by, int &outCnt);
     bool findMarketSite(int &x, int &y);
     bool findHouseSite(int &x, int &y);
     bool findFarmRingSite(int &x, int &y);  // TC周围隔1格环形选址
     bool isFarmAdjacent(int blockDR, int blockUR);  // 农场不相邻：候选农场外扩1格内不得有其他农场(至少隔1格)
-    bool tryBuild(int buildingType, int size, bool ignoreCooldown = false, int prefX = -1, int prefY = -1);
+    // noFallback=true：指定 prefX/prefY 但周边放不下时【直接失败】，不再回退到默认选址
+    //   （用于"必须建在某片资源旁"的场景，否则回退可能建到完全无关的位置）
+    bool tryBuild(int buildingType, int size, bool ignoreCooldown = false, int prefX = -1, int prefY = -1,
+                  bool noFallback = false);
     void handleBuildResults();        // 处理建造指令执行结果（失败换位置重试）
     void detectStuckGatherers();      // 检测寻路卡死的采集村民，强制打断并拉黑目标资源
 
     // ---- 资源采集辅助 ----
     bool tryAssignFood(tagFarmer* f);
-    bool tryAssignWood(tagFarmer* f);
-    bool tryAssignGold(tagFarmer* f);
 
     // ---- 核心策略函数 ----
     void updateState();            // 阶段切换
