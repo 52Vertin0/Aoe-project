@@ -516,13 +516,43 @@ void UsrAI::managePriest() {
     };
 
     auto findConvertTarget = [&](double dr, double ur, double range) -> int {
-        // ★ 转化优先级（2026-09-03 用户要求：优先感化【近战单位】，投石车仍最优先）：
-        //   ① 投石车(AT_STONE_THROWER)无条件最优先——最强攻城单位，转过来即我方最强远程火力。
-        //   ② 近战单位优先于远程（除投石车）——近战能顶前排、给远程弓兵/祭司挡刀，转来价值高于远程脆皮。
-        //      (近战判定：攻击距离 DIS=0，即非 isRanged 的军队；近战含棍棒/剑士/骑兵/战车/方阵/阔剑等。)
-        //      多辆近战选血量最高者(更耐打、转来更强)，同血取近者。
-        //   ③ 无近战则退回"血量最多"的剩余远程军队兜底；仍无军队则"最近敌方村民"。
-        // 优先感化投石车
+        // ★ 转化优先级（2026-09-12 用户需求："投石车不再最优先感化"）：
+        //   ① 近战单位(非远程)最高优先——贴身 2.5 格威胁祭司（祭司死=立刻失败），护驾优先。
+        //   ② 远程军队(弓/复合弓/战车弓/投石兵)次之——削输出、保祭司与箭塔。
+        //   ③ 投石车降为第三——SPEED 1.63 慢、不直接威胁祭司，但仍能远程输出不能放过。
+        //      多同型单位选血量最高者(更耐打、转来更强)，同血取近者。
+        //   ④ 兜底：最近敌方村民。
+        // 1) 优先感化近战（贴身 2.5 格威胁祭司，祭司死=立刻失败）
+        int bestSN = -1; int bestBlood = -1; double bestDist = 1e12;
+        for (auto &e : info.enemy_armies) {
+            if (e.Blood <= 0) continue;
+            if (e.Sort == AT_STONE_THROWER) continue;            // 投石车已移到 ③
+            // 近战判定：非远程（远程=弓/复合弓/战车弓/投石兵；投石车虽 DIS=10 但已在 ③ 排除）
+            bool isMelee = !(e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
+                             e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER);
+            if (!isMelee) continue;                              // 只挑近战
+            double d = calDistance(dr, ur, e.DR, e.UR);
+            if (d > range) continue;
+            if (e.Blood > bestBlood || (e.Blood == bestBlood && d < bestDist)) {
+                bestBlood = e.Blood; bestSN = e.SN; bestDist = d;
+            }
+        }
+        if (bestSN >= 0) return bestSN;                          // 1) 近战最高优先（保命）
+        // 2) 其次远程军队（投石车已排除，近战已排除）
+        for (auto &e : info.enemy_armies) {
+            if (e.Blood <= 0) continue;
+            if (e.Sort == AT_STONE_THROWER) continue;
+            bool isMelee = !(e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
+                             e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER);
+            if (isMelee) continue;                               // 近战已在 ① 处理
+            double d = calDistance(dr, ur, e.DR, e.UR);
+            if (d > range) continue;
+            if (e.Blood > bestBlood || (e.Blood == bestBlood && d < bestDist)) {
+                bestBlood = e.Blood; bestSN = e.SN; bestDist = d;
+            }
+        }
+        if (bestSN >= 0) return bestSN;                          // 2) 远程次之
+        // 3) 投石车降为第三（虽远程输出强，但慢、不直接威胁祭司）
         int bestCatSN = -1; int bestCatBlood = -1; double bestCatDist = 1e12;
         for (auto &e : info.enemy_armies) {
             if (e.Blood <= 0) continue;
@@ -533,37 +563,7 @@ void UsrAI::managePriest() {
                 bestCatBlood = e.Blood; bestCatSN = e.SN; bestCatDist = d;
             }
         }
-        if (bestCatSN >= 0) return bestCatSN;    // 1) 范围内有投石车→最高优先感化
-        // 2) 范围内血量最多的【近战】敌方军队（投石车已排除，远程也排除）
-        int bestSN = -1; int bestBlood = -1; double bestDist = 1e12;
-        for (auto &e : info.enemy_armies) {
-            if (e.Blood <= 0) continue;             // 跳过尸体/零血
-            if (e.Sort == AT_STONE_THROWER) continue;             // 投石车已在①处理
-            // 近战判定：非远程（远程=弓/复合弓/战车弓/投石兵，DIS>0；投石车亦远程但已排除）
-            bool isMelee = !(e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
-                             e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER);
-            if (!isMelee) continue;                 // 只优先近战
-            double d = calDistance(dr, ur, e.DR, e.UR);
-            if (d > range) continue;
-            if (e.Blood > bestBlood || (e.Blood == bestBlood && d < bestDist)) {
-                bestBlood = e.Blood; bestSN = e.SN; bestDist = d;
-            }
-        }
-        if (bestSN >= 0) return bestSN;             // 2) 范围内有近战→优先感化
-        // 3) 范围内血量最多的剩余远程军队（投石车/近战已排除，作兜底）
-        for (auto &e : info.enemy_armies) {
-            if (e.Blood <= 0) continue;
-            if (e.Sort == AT_STONE_THROWER) continue;
-            bool isMelee = !(e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
-                             e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER);
-            if (isMelee) continue;                  // 近战已在②处理
-            double d = calDistance(dr, ur, e.DR, e.UR);
-            if (d > range) continue;
-            if (e.Blood > bestBlood || (e.Blood == bestBlood && d < bestDist)) {
-                bestBlood = e.Blood; bestSN = e.SN; bestDist = d;
-            }
-        }
-        if (bestSN >= 0) return bestSN;
+        if (bestCatSN >= 0) return bestCatSN;                     // 3) 投石车降到第三（仍兜底感化）
         // 兜底：无敌方军队时，最近敌方村民（保留原行为）
         int bestVilSN = -1; double bestVilDist = 1e12;
         for (auto &e : info.enemy_farmers) {
