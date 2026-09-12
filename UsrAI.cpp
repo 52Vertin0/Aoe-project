@@ -516,18 +516,32 @@ void UsrAI::managePriest() {
     };
 
     auto findConvertTarget = [&](double dr, double ur, double range) -> int {
-        // ★ 转化优先级（2026-09-12 用户需求："投石车不再最优先感化"）：
-        //   ① 近战单位(非远程)最高优先——贴身 2.5 格威胁祭司（祭司死=立刻失败），护驾优先。
-        //   ② 远程军队(弓/复合弓/战车弓/投石兵)次之——削输出、保祭司与箭塔。
-        //   ③ 投石车降为第三——SPEED 1.63 慢、不直接威胁祭司，但仍能远程输出不能放过。
+        // ★ 转化优先级（2026-09-12 用户连续需求：先"投石车不再最优先"，再"方阵兵为感化最优先"）：
+        //   ① 方阵兵(AT_HOPLITE)最高优先——克制骑兵，转过来即我方反骑主力（挡敌方骑兵冲祭司/弓兵）。
+        //   ② 其余近战(非远程)次之——贴身 2.5 格威胁祭司（祭司死=立刻失败），护驾优先。
+        //   ③ 远程军队(弓/复合弓/战车弓/投石兵)第三——削输出、保祭司与箭塔。
+        //   ④ 投石车降为第四——SPEED 1.63 慢、不直接威胁祭司。
         //      多同型单位选血量最高者(更耐打、转来更强)，同血取近者。
-        //   ④ 兜底：最近敌方村民。
-        // 1) 优先感化近战（贴身 2.5 格威胁祭司，祭司死=立刻失败）
+        //   ⑤ 兜底：最近敌方村民。
+        // 0) 方阵兵最高优先（克制骑兵，转过来即我方反骑主力）
+        int bestHopSN = -1; int bestHopBlood = -1; double bestHopDist = 1e12;
+        for (auto &e : info.enemy_armies) {
+            if (e.Blood <= 0) continue;
+            if (e.Sort != AT_HOPLITE) continue;
+            double d = calDistance(dr, ur, e.DR, e.UR);
+            if (d > range) continue;
+            if (e.Blood > bestHopBlood || (e.Blood == bestHopBlood && d < bestHopDist)) {
+                bestHopBlood = e.Blood; bestHopSN = e.SN; bestHopDist = d;
+            }
+        }
+        if (bestHopSN >= 0) return bestHopSN;                      // 0) 方阵兵第一优先
+        // 1) 其余近战（投石车/方阵兵已排除）
         int bestSN = -1; int bestBlood = -1; double bestDist = 1e12;
         for (auto &e : info.enemy_armies) {
             if (e.Blood <= 0) continue;
-            if (e.Sort == AT_STONE_THROWER) continue;            // 投石车已移到 ③
-            // 近战判定：非远程（远程=弓/复合弓/战车弓/投石兵；投石车虽 DIS=10 但已在 ③ 排除）
+            if (e.Sort == AT_STONE_THROWER) continue;            // 投石车已移到 ④
+            if (e.Sort == AT_HOPLITE) continue;                 // 方阵兵已在 0) 处理
+            // 近战判定：非远程（远程=弓/复合弓/战车弓/投石兵；投石车虽 DIS=10 但已在 ④ 排除）
             bool isMelee = !(e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
                              e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER);
             if (!isMelee) continue;                              // 只挑近战
@@ -537,22 +551,23 @@ void UsrAI::managePriest() {
                 bestBlood = e.Blood; bestSN = e.SN; bestDist = d;
             }
         }
-        if (bestSN >= 0) return bestSN;                          // 1) 近战最高优先（保命）
-        // 2) 其次远程军队（投石车已排除，近战已排除）
+        if (bestSN >= 0) return bestSN;                          // 1) 其余近战（保命）
+        // 2) 远程军队（投石车/方阵兵/近战已排除）
         for (auto &e : info.enemy_armies) {
             if (e.Blood <= 0) continue;
             if (e.Sort == AT_STONE_THROWER) continue;
+            if (e.Sort == AT_HOPLITE) continue;
             bool isMelee = !(e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
                              e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER);
-            if (isMelee) continue;                               // 近战已在 ① 处理
+            if (isMelee) continue;                               // 近战已在 1) 处理
             double d = calDistance(dr, ur, e.DR, e.UR);
             if (d > range) continue;
             if (e.Blood > bestBlood || (e.Blood == bestBlood && d < bestDist)) {
                 bestBlood = e.Blood; bestSN = e.SN; bestDist = d;
             }
         }
-        if (bestSN >= 0) return bestSN;                          // 2) 远程次之
-        // 3) 投石车降为第三（虽远程输出强，但慢、不直接威胁祭司）
+        if (bestSN >= 0) return bestSN;                          // 2) 远程
+        // 3) 投石车（虽远程输出强，但慢、不直接威胁祭司）
         int bestCatSN = -1; int bestCatBlood = -1; double bestCatDist = 1e12;
         for (auto &e : info.enemy_armies) {
             if (e.Blood <= 0) continue;
@@ -563,7 +578,7 @@ void UsrAI::managePriest() {
                 bestCatBlood = e.Blood; bestCatSN = e.SN; bestCatDist = d;
             }
         }
-        if (bestCatSN >= 0) return bestCatSN;                     // 3) 投石车降到第三（仍兜底感化）
+        if (bestCatSN >= 0) return bestCatSN;                     // 3) 投石车降为第四
         // 兜底：无敌方军队时，最近敌方村民（保留原行为）
         int bestVilSN = -1; double bestVilDist = 1e12;
         for (auto &e : info.enemy_farmers) {
