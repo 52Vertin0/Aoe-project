@@ -18,7 +18,10 @@ ins UsrIns;
 //   后期野生食物枯竭后，食物产能 = 农场座数 × 1人/座（代码强制"每座农场有且仅有一人"），
 //   8 座 = 8 个食物工，成为造兵瓶颈（食物不够 → 兵造不出 → 黄金只进不出 → 黄金过量）。
 //   农场间隔 1 格（isFarmAdjacent）仍需选址空间，若实测建不满 12 座可调回 10。
-#define MAX_FARMS 7             // 农场上限：最多7座（2026-09-04 用户要求 6→7）
+#define MAX_FARMS 12            // 农场上限：7→12（2026-09-12 用户需求"农场上限是否可以提升，基地附近位置不够的话可以建在谷仓周围"）
+                               //   ⮕ R5 末 5+20+30 = 340 食 vs TC 用率 25%：上限放宽至 12 给更多食物通道；
+                               //   ⮕ 选址回退链：findFarmRingSite（TC 环）→ findFarmNearGranarySite（谷仓环）→ findBuildSite（兜底）。
+                               //   ⮕ 谷仓环绕允许：解决"TC 周围 5 圈已被房屋/兵营/市场/箭塔挤满"的边界 case。
 // ★ 建农场时为【瞪羚中心仓库】预留的木头（2026-09-06 用户要求「建造瞪羚的仓库前先不要建农场，预留120木头」）。
 //   判据用 info.Wood >= BUILD_FARM_WOOD + WOOD_RESERVE_FOR_GAZELLE_STOCK，
 //   即"造完农场后仍留得住 120 木"，保证瞪羚仓库(BUILD_STOCK_WOOD)永远有料可建。
@@ -5474,6 +5477,78 @@ bool UsrAI::findFarmRingSite(int &x, int &y) {
     return findBuildSite(x, y, 3);
 }
 
+// ★★★ 2026-09-12：谷仓周围农场选址（MAX_FARMS 7→12 后必用）
+//   场景：TC 周围 4~30 块格已被经济建筑挤满（findFarmRingSite 返回 false），
+//         而 MAX_FARMS=12 还要再建 ⇒ 在已有谷仓（GRANARY 3x3）外扩找 3x3 农场位。
+//   设计要点：
+//   ① 遍历全部已建成谷仓（缺位 fallback ⇒ false 走 tryBuild 后续兜底 findBuildSite）；
+//   ② 在谷仓 3x3 外扩 1~10 块格（即谷仓边缘 1~10 格外）环形搜索；
+//   ③ 必须 isPositionFree + 不与现有农场 footprint 相邻（沿用 isFarmAdjacent）；
+//   ④ 不在 triedBuildPositions 集合中（避免反复在不可建点丢令）；
+//   ⑤ 优先级：谷仓 > TC 距离（先扫近 TC 的谷仓），避免农场分布过散。
+bool UsrAI::findFarmNearGranarySite(int &x, int &y) {
+    auto center = findBuilding(BUILDING_CENTER);
+    if (!center) return false;
+    int cx = center->BlockDR, cy = center->BlockUR;
+
+    // 收集已建成谷仓
+    struct GranaryRef { int bx, by; int dTC; };
+    std::vector<GranaryRef> granaries;
+    for (auto &b : info.buildings) {
+        if (b.Type != BUILDING_GRANARY || b.Percent < 100) continue;
+        GranaryRef g;
+        g.bx = b.BlockDR;
+        g.by = b.BlockUR;
+        int dx = g.bx - cx, dy = g.by - cy;
+        g.dTC = dx * dx + dy * dy;
+        granaries.push_back(g);
+    }
+    if (granaries.empty()) return false;   // ★ 没有谷仓 → false 让 tryBuild 走 findBuildSite 兜底
+    // 按距 TC 由近到远排序（先尝试 TC 附近的谷仓，农场分布不散）
+    std::sort(granaries.begin(), granaries.end(),
+              [](const GranaryRef &a, const GranaryRef &b){ return a.dTC < b.dTC; });
+
+    for (auto &g : granaries) {
+        // 谷仓 footprint = [g.bx, g.bx+2] x [g.by, g.by+2]（谷仓 3x3）；
+        // 农场 footprint = [nx, nx+2] x [ny, ny+2]；
+        // 相邻条件：两 footprint 在 X/Y 任一轴有交集（含边界）即不可；
+        // 安全候选：nx <= g.bx-3 或 nx >= g.bx+3（隔 1 块格 gap），ny 同理。
+        // 实际上 isFarmAdjacent 已经做了"外扩 1 格"判定（cpp:5422），
+        // 这里直接 nx ∈ [g.bx-r-2, g.bx+r+2] 探测即可，让 isFarmAdjacent 兜底判断。
+        for (int r = 1; r <= 10; ++r) {
+            // 上侧 + 下侧：nx 在 [g.bx-r, g.bx+r+2] 扫描
+            for (int dx = -r; dx <= r + 2; ++dx) {
+                int nx = g.bx + dx;
+                int ny = g.by - r - 1;         // 上方：农场 footprint 顶 = ny+2 ≤ g.by - 1 ⇒ ny ≤ g.by - 3 ⇒ 起始 ny = g.by - r - 1
+                int key = nx * 1000 + ny;
+                if (!triedBuildPositions.count(key) && isPositionFree(nx, ny, 3) && !isFarmAdjacent(nx, ny)) {
+                    x = nx; y = ny; return true;
+                }
+                ny = g.by + r + 1;             // 下方（对称）
+                key = nx * 1000 + ny;
+                if (!triedBuildPositions.count(key) && isPositionFree(nx, ny, 3) && !isFarmAdjacent(nx, ny)) {
+                    x = nx; y = ny; return true;
+                }
+            }
+            // 左侧 + 右侧
+            for (int dy = -r; dy <= r + 2; ++dy) {
+                int ny = g.by + dy;
+                int nx = g.bx - r - 1;         // 左侧（对称）
+                int key = nx * 1000 + ny;
+                if (!triedBuildPositions.count(key) && isPositionFree(nx, ny, 3) && !isFarmAdjacent(nx, ny)) {
+                    x = nx; y = ny; return true;
+                }
+                nx = g.bx + r + 1;             // 右侧
+                key = nx * 1000 + ny;
+                if (!triedBuildPositions.count(key) && isPositionFree(nx, ny, 3) && !isFarmAdjacent(nx, ny)) {
+                    x = nx; y = ny; return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX, int prefY, bool noFallback,
                      bool preferNearBuilder) {
     if (buildCooldown > 0 && !ignoreCooldown) return false;
@@ -5519,8 +5594,14 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     // 房屋：TC 8格外（避开农场6格保护区）
     if (!placed && buildingType == BUILDING_HOME)
         placed = findHouseSite(x, y);
-    if (!placed && buildingType == BUILDING_FARM)
+    if (!placed && buildingType == BUILDING_FARM) {
+        // ★★★ 2026-09-12 三段式选址（MAX_FARMS 7→12 后）：TC 环 → 谷仓环 → 兜底 ★★★
+        //   ① findFarmRingSite：TC 周围隔 1 格环形（已被房屋/兵营/市场/箭塔挤满时常常 false）
+        //   ② findFarmNearGranarySite：现有谷仓外扩 1~10 块格（基地附近放不下时的扩展位）
+        //   ③ findBuildSite：最后兜底（应很少触发；触发即说明地图已极密）
         placed = findFarmRingSite(x, y);
+        if (!placed) placed = findFarmNearGranarySite(x, y);
+    }
     if (!placed && buildingType == BUILDING_ARROWTOWER)
         placed = findDefenseBuildSite(x, y, size);
     // 兵营/靶场/马厩：偏向 TC→地图中心方向、离 TC 更远(12~45格)，成片铺开不堵 TC 周边
