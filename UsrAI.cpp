@@ -58,7 +58,10 @@ ins UsrIns;
 #define ELEPHANT_HUNT_MIN   4   // ★ 打大象的最低人数门槛(开团/补位都遵循)
 #define MAX_TOWERS 2            // 箭塔数量（2026-09-03 用户改需求：只需2座箭塔，多采150石建第2座，其余人力转食物）
 #define MAX_RANGES 3            // 反攻阶段靶场上限(并行产弓线，越多弓兵越快)
-#define MAX_STOCK 2             // 仓库上限：1座给瞪羚群中心 + 1座给远距瞪羚群，共2座
+// ★★★ 2026-09-12 改：允许多群瞪羚各建 1 座仓库，1+3=MAX_STOCK=4 座上限。
+//   原 MAX_STOCK=2 限制下，多群瞪羚（典型地图 3~4 群）只能有 2 群被覆盖、其余猎人空跑回最近仓库。
+//   现在 4 座可覆盖近距（首发块）+ 远距（远距块）所有主要聚类，无聚类猎人空跑交肉。
+#define MAX_STOCK 4             // 仓库上限：每群覆盖 1 座 + TC 旁首仓 1 座 + 远距覆盖 1~2 座 = 4 座
                                   // ★ 2026-09-04 实测补：此前缺此上限，旧"第二仓库"段（1676）每帧重发令+不传坐标，
                                   //   导致贴 TC 多建 3 座仓库（地图多群远距瞪羚就触发多次）
 // ★ 第二仓库（远距瞪羚群仓库）的最少瞪羚数门槛（2026-09-07 用户需求"如果没瞪羚就跳过建造第二仓库"）。
@@ -1417,59 +1420,99 @@ void UsrAI::manageBuildings() {
                 if (r.Type == RESOURCE_GAZELLE && r.Cnt > 0 &&
                     calDistance(gtcDR, gtcUR, r.DR, r.UR) <= GAZELLE_HUNT_RANGE * gBL)
                     gaz.push_back(&r);
+            // ★★★ 多聚类算法（2026-09-12 用户需求"如果有多处瞪羚聚集地可以多建几座仓库"）★★★
+            //   6 格邻域聚类得到【所有聚类中心】几何中心，不再只取最大 1 群；
+            //   按瞪羚数从多到少排序；逐个尝试建造（已有仓库覆盖的聚类跳过）。
+            //   逐座建造、每帧受 builtThisFrame 互斥锁限制 ⇒ 多群仓库天然分散到多帧建造完成。
             if (!gaz.empty()) {
-                // 6 格邻域聚类，取数量最多的群（不取距 TC 最近的群），求该群 DR/UR 几何中心 = 仓库位置
-                double bestSumDR = 0, bestSumUR = 0; int bestCnt = 0;
-                for (auto seed : gaz) {
-                    double sumDR = 0, sumUR = 0; int cnt = 0;
-                    for (auto g : gaz)
-                        if (calDistance(seed->DR, seed->UR, g->DR, g->UR) < 6 * gBL) {
-                            sumDR += g->DR; sumUR += g->UR; cnt++;
+                struct Cluster { double dr, ur; int cnt; };
+                int N = (int)gaz.size();
+                // union-find：6 格连通分量
+                std::vector<int> parent(N);
+                for (int i = 0; i < N; ++i) parent[i] = i;
+                // 两段式路径压缩（无 lambda 自调用，开销可控）
+                for (int i = 0; i < N; ++i)
+                    for (int j = i + 1; j < N; ++j)
+                        if (calDistance(gaz[i]->DR, gaz[i]->UR, gaz[j]->DR, gaz[j]->UR) < 6 * gBL) {
+                            int a = i; while (parent[a] != a) { parent[a] = parent[parent[a]]; a = parent[a]; }
+                            int b = j; while (parent[b] != b) { parent[b] = parent[parent[b]]; b = parent[b]; }
+                            if (a != b) parent[a] = b;
                         }
-                    if (cnt > bestCnt) { bestCnt = cnt; bestSumDR = sumDR; bestSumUR = sumUR; }
+                // 二次定位 root：方便后续 sum/cnt
+                std::vector<int> root(N);
+                for (int i = 0; i < N; ++i) {
+                    int r = i; while (parent[r] != r) r = parent[r];
+                    root[i] = r;
                 }
-                if (bestCnt > 0) {
-                    double centerDR = bestSumDR / bestCnt, centerUR = bestSumUR / bestCnt;
-                    // 已有仓库在 GAZELLE_HUNT_RANGE 格内则不重复建。
-                    //   ★ 2026-09-04 修：这种情况下直接置 storageNearGazelleBuilt=1 视为"已被前置库存覆盖"
-                    //     ——否则地图初始已有仓库时,tryBuild 被 nearStock 跳过、标志位永远停在 0,
-                    //     农场闸靠 storageNearGazelleBuilt==1 永远不解锁。
-                    bool nearStock = false;
+                std::map<int, std::pair<double,double>> csum;
+                std::map<int, int> ccnt;
+                for (int i = 0; i < N; ++i) {
+                    int r = root[i];
+                    csum[r].first  += gaz[i]->DR;
+                    csum[r].second += gaz[i]->UR;
+                    ccnt[r]++;
+                }
+                std::vector<Cluster> clusters;
+                clusters.reserve(csum.size());
+                for (auto &kv : csum) {
+                    int c = ccnt[kv.first];
+                    clusters.push_back({ kv.second.first / c, kv.second.second / c, c });
+                }
+                // 按瞪羚数从多到少排序（优先满足最缺肉的群）
+                std::sort(clusters.begin(), clusters.end(),
+                          [](const Cluster &a, const Cluster &b){ return a.cnt > b.cnt; });
+
+                int existingStocks = countBuildingsExisting(BUILDING_STOCK);
+                // 单帧内循环尝试建各未覆盖聚类（受 builtThisFrame / MAX_STOCK / 木 三重闸）
+                for (auto &cl : clusters) {
+                    if (builtThisFrame) break;
+                    if (info.Wood < BUILD_STOCK_WOOD) break;
+                    if (existingStocks >= MAX_STOCK) break;
+                    // ★ 该聚类是否已被现成仓库（任何已有者均视为前置库存，含初始化遗留）
+                    bool covered = false;
                     for (auto &b : info.buildings)
                         if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
-                            calDistance(centerDR, centerUR, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL) < GAZELLE_HUNT_RANGE * gBL) {
-                            nearStock = true; break;
+                            calDistance(cl.dr, cl.ur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
+                                < GAZELLE_HUNT_RANGE * gBL) {
+                            covered = true; break;
                         }
-                    int tBlockDR = (int)(centerDR / gBL) - 1;
-                    int tBlockUR = (int)(centerUR / gBL) - 1;
-                    // 第 7 参 preferNearBuilder=true：优先派【离猎场最近】的空闲村民去建，
-                    //   缩短建造者长征（打猎闸门在等这座仓库落地）。
-                    if (!nearStock) {
-                        // 50 格内没有现成仓库 → 直接在瞪羚中心建
-                        if (tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR, false, true)) {
-                            storageNearGazelleBuilt = 1;
-                            builtThisFrame = true;
-                            if (frame % 60 == 0)
-                                DebugText(QString("[GAZELLE-STOCK f=%1] 先建仓库：群中心块(%2,%3) 群内瞪羚=%4 木=%5")
-                                          .arg(frame).arg(tBlockDR).arg(tBlockUR).arg(bestCnt).arg((int)info.Wood));
-                        }
-                    } else if (countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK) {
-                        // 50 格内已有现成仓库(初始化开局/上一局遗留) —— 但 MAX_STOCK 还有余地(MAX=2)
-                        // ★ 仍要尝试在瞪羚【中心】补一座,让猎人始终能就近交付瞪羚肉
-                        if (tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR, false, true)) {
-                            storageNearGazelleBuilt = 1;
-                            builtThisFrame = true;
-                        } else {
-                            // 地基不可建(被占/塌方) → 既然地图上已有仓库、只是不在瞪羚中心,
-                            // 也算"已有前置覆盖",解锁农场闸,避免永远不建农场导致食物枯竭
-                            storageNearGazelleBuilt = 1;
-                        }
-                    } else {
-                        // 已达 MAX_STOCK=2 上限 —— 直接解锁农场闸,不再尝试建
-                        storageNearGazelleBuilt = 1;
+                    if (covered) continue;   // 已覆盖则跳过本簇、继续下一簇（多重覆盖无意义）
+                    int tBlockDR = (int)(cl.dr / gBL) - 1;
+                    int tBlockUR = (int)(cl.ur / gBL) - 1;
+                    // 第 7 参 preferNearBuilder=true：优先派【离猎场最近】的空闲村民去建
+                    if (tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR, false, true)) {
+                        existingStocks++;
+                        builtThisFrame = true;
+                        if (frame % 60 == 0)
+                            DebugText(QString("[GAZELLE-STOCK f=%1] 群中心块(%2,%3) 群内瞪羚=%4 已建仓=%5/%6 木=%7")
+                                      .arg(frame).arg(tBlockDR).arg(tBlockUR).arg(cl.cnt)
+                                      .arg(existingStocks).arg(MAX_STOCK).arg((int)info.Wood));
                     }
+                    // tryBuild 失败（位置冲突等）→ 继续试下一簇，不能 break
                 }
-            }
+
+                // ★ storageNearGazelleBuilt 释义（解锁农场阈）：任一条件满足即置 1
+                //   ① existingStocks>0（任一仓库已建好）② 已达 MAX_STOCK（4）
+                //   ③ 所有近距聚类均已被覆盖 ④ 本帧无近距瞪羚（无法判定）
+                if (existingStocks > 0 ||
+                    countBuildingsExisting(BUILDING_STOCK) >= MAX_STOCK ||
+                    clusters.empty()) {
+                    storageNearGazelleBuilt = 1;
+                } else {
+                    bool allCovered = true;
+                    for (auto &cl : clusters) {
+                        bool cov = false;
+                        for (auto &b : info.buildings)
+                            if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
+                                calDistance(cl.dr, cl.ur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
+                                    < GAZELLE_HUNT_RANGE * gBL) {
+                                cov = true; break;
+                            }
+                        if (!cov) { allCovered = false; break; }
+                    }
+                    if (allCovered) storageNearGazelleBuilt = 1;
+                }
+            }   // ★★★ 闭合 !gaz.empty()（2026-09-12 多聚类版）
         }
     }
 
