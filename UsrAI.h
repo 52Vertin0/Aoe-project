@@ -239,7 +239,6 @@ private:
     bool findMarketSite(int &x, int &y);
     bool findHouseSite(int &x, int &y);
     bool findFarmRingSite(int &x, int &y);  // TC周围隔1格环形选址
-    bool findFarmNearGranarySite(int &x, int &y);  // ★ 2026-09-12：谷仓周围外扩张展选址（MAX_FARMS 7→12 后必用）
     bool isFarmAdjacent(int blockDR, int blockUR);  // 农场不相邻：候选农场外扩1格内不得有其他农场(至少隔1格)
     // noFallback=true：指定 prefX/prefY 但周边放不下时【直接失败】，不再回退到默认选址
     //   （用于"必须建在某片资源旁"的场景，否则回退可能建到完全无关的位置）

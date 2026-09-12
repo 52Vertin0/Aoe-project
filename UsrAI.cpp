@@ -35,6 +35,21 @@ ins UsrIns;
 // ★ 打猎瞪羚选取范围（2026-09-04 用户要求"扩大一些"）：30→50 格，覆盖远距未建仓库的瞪羚群。
 //   仓库覆盖判断（1547/1705 nearStock）也用此常量同步，避免猎人跑出去 50 格打、仓库仍卡 30 格内。
 #define GAZELLE_HUNT_RANGE  50
+// ★★★ 2026-09-12 用户需求：「在村民开始狩猎瞪羚前尽量先建仓库，仓库可以比其他建筑先建」★★★
+//   参考录像 build order（见 `detail_2026-09-12_scoring_meta.md §3`）：
+//     01:35 村民抵达猎场开始猎瞪羚 → 01:47 猎人【就地】建仓库 → 02:05 仓库落成
+//     → 之后才是市场 03:58 / 兵营 05:17 / 靶场 05:58。即"仓库抢在一切其他建筑之前落地"。
+//   旧实现有两处顺序是反的：
+//     ① 【打猎在前】建造闸门是 `!huntingGroup.empty()`（已经有人在打猎才肯建仓库）
+//        ⇒ 仓库永远晚于打猎，猎人先空跑「TC↔瞪羚群」往返(2×距离)直到仓库建成；
+//     ② 【优先级在后】块埋在 `if(postW1)`(≥3.33min) 内、排在房屋/兵营/靶场【之后】
+//        ⇒ 木材被下游建筑抢光（builtThisFrame 互斥），仓库常常建不出来。
+//   新实现：块上移到【所有建筑之前】(preW1 起就检查)，闸门由"有猎人"改为"TC 可猎范围内有瞪羚"。
+#define GAZELLE_STOCK_MIN_HOUSES    1     // 抢跑前提：至少已有 N 座房屋（先保人口线，再抢仓库）
+#define GAZELLE_STOCK_WINDOW_END    16500 // 仓库建造窗口截止(帧)=11游戏分（原为硬编码 16500）
+// ★ 打猎解禁兜底（防止闸门把食物经济饿死）：仓库迟迟建不出时，不能无限期卡住打猎——
+//   frame ≥ 此值 或 木头不够造价 或 已过建造窗口 ⇒ 允许先打猎（仓库仍会继续尝试建造）。
+#define GAZELLE_STOCK_GATE_DEADLINE 9000  // 6游戏分 = 9000 帧
 // ★ 组队猎象（2026-09-03 用户需求）：大象血45/攻10/射程10/不逃跑/掉肉300，性价比远超瞪羚(血8会逃跑)。
 //   单挑村民(血25)必死，须凑够 ELEPHANT_HUNT_GROUP 人围猎快速击杀。每头象最多派此人数，集中火力不分散。
 //   ★ 2026-09-08 用户新需求"大象一定要4个人以上狩猎"：增设 ELEPHANT_HUNT_MIN=4 作为凑人门槛，
@@ -131,6 +146,19 @@ ins UsrIns;
 #define DISABLE_MARKET_WOOD_TECH false    // 市场·木材加工（120食物+75木材，伐木+50%）—— 已解禁(能解锁就解锁)
 //   ⚠ 注意：市场【建筑本身】不能停建！1483 行 `marketReady` 是农场建造的前置闸门，
 //     停建市场会导致农场永远建不出来。封禁的只是市场里的科技研究。
+// ★ 2026-09-12 用户要求：伐木科技（市场·木材加工）提为【解锁类科技最优先】。
+//   实现：判定块已从 TIER3 末尾上移到【铜器后第一个被检查的科技】位置，
+//   越过了原 `frame < WAVE3_TIME`(14min) 前置锁与 `milUnlocked`(军事解锁) 锁 ——
+//   铜器一完成，只要市场已建成且资源够，伐木就是全场第一个研究的科技。
+//   本开关只控制"与复合弓(P0)抢食物"时的行为：
+//     true  = 绝对最优先（默认）：食物≥120 且木≥75 即研究，不与复合弓比较。
+//             ★ 实测依据（2026-09-12，map.njust rotate0）：木材在 f≈12800~14000 就 ≥75，
+//             但 false 档的 300食物 门槛使伐木拖到 f=22168/18753 才研究 —— 被拖后 3~6 游戏分。
+//             ⇒ 用户要求"最优先"，故默认 true。
+//     false = 让路保护：复合弓尚未研究/排队时，需食物同时负担两项
+//             (复合弓180 + 伐木120 = 300) 才允许伐木插队；否则让复合弓先走。
+//             ⚠ 实测该门槛过高（铜器后食物常年在 158~257），会把伐木压成"永远晚于复合弓"。
+#define WOOD_TECH_ABSOLUTE_FIRST true
 #define LION_AVOID_RADIUS 10         // 建造选点避开狮子的半径(block)；狮子会攻击靠近的建筑/村民，留缓冲
 // ★ 狮子防御（2026-09-01）：引擎事实 Animal.cpp::isMonitorObject —— 狮子只攻击【村民】与【非祭司军队】，
 //   不攻击祭司、不攻击建筑；狮子视野 3 格(VISION_LION)、血量 20(BLOOD_LION)，村民单挑必死，须成组出动。
@@ -1357,6 +1385,88 @@ void UsrAI::manageBuildings() {
     bool postW1 = (frame >= WAVE1_TIME && frame < WAVE2_TIME);
     bool postW2 = (frame >= WAVE2_TIME);
 
+    // ====== ★★★ 瞪羚群中心仓库：全建筑最高优先级（2026-09-12 用户需求）★★★ ======
+    //   需求原文：「在村民开始狩猎瞪羚前尽量先建仓库，仓库可以比其他建筑先建」。
+    //   ① 【先建】块放在 preW1 之前 ⇒ 抢在房屋/兵营/靶场/市场/农场【之前】消耗木材
+    //      （builtThisFrame 互斥锁 + 本块在最前 = 本帧只能先建仓库，其余建筑下一帧再说）；
+    //   ② 【先于打猎】闸门由旧的 `!huntingGroup.empty()`（=已经在打猎）改为
+    //      「TC 可猎范围内有瞪羚」⇒ 仓库在猎人出发前就落地，猎人不再空跑 TC↔猎场往返；
+    //   ③ 【选群范围收敛】群中心聚类只在【距 TC ≤ GAZELLE_HUNT_RANGE】的瞪羚里选，
+    //      与 manageHunting()/assignIdleFarmers()/tryAssignFood() 的猎人选取范围一致——
+    //      否则会把仓库建在"全图最密但村民根本不会去打"的假群里（旧版 bug）。
+    //   建的是 BUILDING_STOCK 而非谷仓：瞪羚产物 ProductSort=HUMAN_STOCKFOOD（Core.cpp:506），
+    //   只能交付给仓库（Building.cpp:549）。
+    //   ⚠ 即使 50 格内已有现成仓库，只要 MAX_STOCK 还有余地仍要在瞪羚中心补一座——
+    //     否则猎人要空跑 50 格回老仓库交肉。
+    if (!builtThisFrame && storageNearGazelleBuilt == 0 && frame < GAZELLE_STOCK_WINDOW_END &&
+        houseCount >= GAZELLE_STOCK_MIN_HOUSES && info.Wood >= BUILD_STOCK_WOOD) {
+        const double gBL = (double)BLOCKSIDELENGTH;
+        auto gCenter = findBuilding(BUILDING_CENTER);
+        double gtcDR = gCenter ? (gCenter->BlockDR + 1) * gBL : -1.0;
+        double gtcUR = gCenter ? (gCenter->BlockUR + 1) * gBL : -1.0;
+        if (gtcDR >= 0) {
+            // 只收集【TC 可猎范围内】的存活瞪羚（与猎人选取范围同步）
+            std::vector<tagResource*> gaz;
+            for (auto &r : info.resources)
+                if (r.Type == RESOURCE_GAZELLE && r.Cnt > 0 &&
+                    calDistance(gtcDR, gtcUR, r.DR, r.UR) <= GAZELLE_HUNT_RANGE * gBL)
+                    gaz.push_back(&r);
+            if (!gaz.empty()) {
+                // 6 格邻域聚类，取数量最多的群（不取距 TC 最近的群），求该群 DR/UR 几何中心 = 仓库位置
+                double bestSumDR = 0, bestSumUR = 0; int bestCnt = 0;
+                for (auto seed : gaz) {
+                    double sumDR = 0, sumUR = 0; int cnt = 0;
+                    for (auto g : gaz)
+                        if (calDistance(seed->DR, seed->UR, g->DR, g->UR) < 6 * gBL) {
+                            sumDR += g->DR; sumUR += g->UR; cnt++;
+                        }
+                    if (cnt > bestCnt) { bestCnt = cnt; bestSumDR = sumDR; bestSumUR = sumUR; }
+                }
+                if (bestCnt > 0) {
+                    double centerDR = bestSumDR / bestCnt, centerUR = bestSumUR / bestCnt;
+                    // 已有仓库在 GAZELLE_HUNT_RANGE 格内则不重复建。
+                    //   ★ 2026-09-04 修：这种情况下直接置 storageNearGazelleBuilt=1 视为"已被前置库存覆盖"
+                    //     ——否则地图初始已有仓库时,tryBuild 被 nearStock 跳过、标志位永远停在 0,
+                    //     农场闸靠 storageNearGazelleBuilt==1 永远不解锁。
+                    bool nearStock = false;
+                    for (auto &b : info.buildings)
+                        if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
+                            calDistance(centerDR, centerUR, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL) < GAZELLE_HUNT_RANGE * gBL) {
+                            nearStock = true; break;
+                        }
+                    int tBlockDR = (int)(centerDR / gBL) - 1;
+                    int tBlockUR = (int)(centerUR / gBL) - 1;
+                    // 第 7 参 preferNearBuilder=true：优先派【离猎场最近】的空闲村民去建，
+                    //   缩短建造者长征（打猎闸门在等这座仓库落地）。
+                    if (!nearStock) {
+                        // 50 格内没有现成仓库 → 直接在瞪羚中心建
+                        if (tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR, false, true)) {
+                            storageNearGazelleBuilt = 1;
+                            builtThisFrame = true;
+                            if (frame % 60 == 0)
+                                DebugText(QString("[GAZELLE-STOCK f=%1] 先建仓库：群中心块(%2,%3) 群内瞪羚=%4 木=%5")
+                                          .arg(frame).arg(tBlockDR).arg(tBlockUR).arg(bestCnt).arg((int)info.Wood));
+                        }
+                    } else if (countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK) {
+                        // 50 格内已有现成仓库(初始化开局/上一局遗留) —— 但 MAX_STOCK 还有余地(MAX=2)
+                        // ★ 仍要尝试在瞪羚【中心】补一座,让猎人始终能就近交付瞪羚肉
+                        if (tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR, false, true)) {
+                            storageNearGazelleBuilt = 1;
+                            builtThisFrame = true;
+                        } else {
+                            // 地基不可建(被占/塌方) → 既然地图上已有仓库、只是不在瞪羚中心,
+                            // 也算"已有前置覆盖",解锁农场闸,避免永远不建农场导致食物枯竭
+                            storageNearGazelleBuilt = 1;
+                        }
+                    } else {
+                        // 已达 MAX_STOCK=2 上限 —— 直接解锁农场闸,不再尝试建
+                        storageNearGazelleBuilt = 1;
+                    }
+                }
+            }
+        }
+    }
+
     // ====== 第一波前：房屋→兵营（工具时代就能建），不建其他 ======
     if (preW1) {
         // 人口余量≤POP_HEADROOM_BUILD(=人口上限-2)时补房屋
@@ -1381,73 +1491,8 @@ void UsrAI::manageBuildings() {
     if (postW1) {
         bool rushMilitary = (upgradeStarted && frame < 16500 && !wave2Defeated);  // 升级已启动即可建兵营
 
-        // ★ 瞪羚群中心仓库（缩短猎人运输）：每局仅建 1 座，建在最密集瞪羚群的中心。
-        //   位置要点：① 窗口 5~11 分钟(frame<16500，与 rushMilitary 截止同步)；
-        //     ② 加 huntingGroup 非空前置（有猎人才有意义）；③ 排在市场/箭塔/靶场/马厩【之前】——
-        //     否则窗口被它们抢 builtThisFrame → 仓库从未建出，猎人空跑 TC↔瞪羚群 8+ 分钟。
-        //   ★ 2026-09-08 改（用户需求"探到瞪羚群，仓库优先级高于市场/兵营/靶场"）：
-        //     去掉 `!rushMilitary` 限制——旧版铜器升级启动后的 rushMilitary 期(升级→11分钟)
-        //     瞪羚仓库被跳过、兵营/靶场抢先；现在仓库在任何时期都优先于兵营/靶场/市场。
-        //   ★ 建的是 BUILDING_STOCK 而非谷仓：瞪羚产物 ProductSort=HUMAN_STOCKFOOD（Core.cpp:506），
-        //     只能交付给仓库（Building.cpp:549）。
-        //   ★ 即使 30 格内有现成仓库，只要 MAX_STOCK 还有余地仍要在瞪羚中心建——否则猎人空跑 30+ 格回老仓库。
-        if (!builtThisFrame && storageNearGazelleBuilt == 0 &&
-            frame < 16500 && !huntingGroup.empty() && info.Wood >= BUILD_STOCK_WOOD) {
-            double BL = (double)BLOCKSIDELENGTH;
-            // 收集所有存活瞪羚
-            std::vector<tagResource*> gaz;
-            for (auto &r : info.resources)
-                if (r.Type == RESOURCE_GAZELLE && r.Cnt > 0) gaz.push_back(&r);
-            if (!gaz.empty()) {
-                // 6 格邻域聚类，取数量最多的群（不取距 TC 最近的群），求该群 DR/UR 几何中心 = 仓库位置
-                double bestSumDR = 0, bestSumUR = 0; int bestCnt = 0;
-                for (auto seed : gaz) {
-                    double sumDR = 0, sumUR = 0; int cnt = 0;
-                    for (auto g : gaz)
-                        if (calDistance(seed->DR, seed->UR, g->DR, g->UR) < 6 * BL) {
-                            sumDR += g->DR; sumUR += g->UR; cnt++;
-                        }
-                    if (cnt > bestCnt) { bestCnt = cnt; bestSumDR = sumDR; bestSumUR = sumUR; }
-                }
-                if (bestCnt > 0) {
-                    double centerDR = bestSumDR / bestCnt, centerUR = bestSumUR / bestCnt;
-                    // 已有仓库在 30 格内则不重复建。
-                    //   ★ 2026-09-04 修：这种情况下直接置 storageNearGazelleBuilt=1 视为"已被前置库存覆盖"
-                    //     ——否则地图初始已有仓库时,tryBuild 被 nearStock 跳过、标志位永远停在 0,
-                    //     农场闸靠 storageNearGazelleBuilt==1 永远不解锁。
-                    bool nearStock = false;
-                    for (auto &b : info.buildings)
-                        if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
-                            // ★ 2026-09-04 覆盖半径放宽：30→GAZELLE_HUNT_RANGE(50) 格，与猎人选取同步
-                            calDistance(centerDR, centerUR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < GAZELLE_HUNT_RANGE * BL) {
-                            nearStock = true; break;
-                        }
-                    int tBlockDR = (int)(centerDR / BL) - 1;
-                    int tBlockUR = (int)(centerUR / BL) - 1;
-                    if (!nearStock) {
-                        // 30 格内没有现成仓库 → 直接在瞪羚中心建
-                        if (tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR)) {
-                            storageNearGazelleBuilt = 1;
-                            builtThisFrame = true;
-                        }
-                    } else if (countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK) {
-                        // 30 格内已有现成仓库(初始化开局/上一局遗留) —— 但 MAX_STOCK 还有余地(MAX=2)
-                        // ★ 仍要尝试在瞪羚【中心】补一座,让猎人始终能就近交付瞪羚肉
-                        if (tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR)) {
-                            storageNearGazelleBuilt = 1;
-                            builtThisFrame = true;
-                        } else {
-                            // 地基不可建(被占/塌方) → 既然地图上已有仓库、只是不在瞪羚中心,
-                            // 也算"已有前置覆盖",解锁农场闸,避免永远不建农场导致食物枯竭
-                            storageNearGazelleBuilt = 1;
-                        }
-                    } else {
-                        // 已达 MAX_STOCK=2 上限 —— 直接解锁农场闸,不再尝试建
-                        storageNearGazelleBuilt = 1;
-                    }
-                }
-            }
-        }
+        // ⚠ 注：瞪羚群中心仓库已【上移】到本函数最前面（preW1 之前，全建筑最高优先级），
+        //   见上方「★★★ 瞪羚群中心仓库（全建筑最高优先级）」段。原块位置（此处）已移除。
 
         if (rushMilitary) {
             // ★ 铜器后军事优先：兵营→靶场→阔剑科技，不建市场农场
@@ -2380,7 +2425,9 @@ void UsrAI::assignIdleSimple() {
             double d = (r.DR - f.DR)*(r.DR - f.DR) + (r.UR - f.UR)*(r.UR - f.UR);
             if (d < bestGazelleDist) { bestGazelleDist = d; bestGazelle = &r; }
         }
-        if (bestGazelle) {
+        // ★ 2026-09-12「先建仓库再打猎」：交付仓库没就位就本帧不派猎人（continue 到下一资源类型/兜底），
+        //   仓库块已在 manageBuildings 最前面以最高优先级抢建。
+        if (bestGazelle && gazelleDropoffReady(bestGazelle)) {
             HumanAction(f.SN, bestGazelle->SN);
             assignedGazelle[bestGazelle->SN]++;
             continue;
@@ -2616,6 +2663,15 @@ void UsrAI::manageHunting() {
     }
     if (!bestGazelle) return;
 
+    // ★ 2026-09-12「先建仓库再打猎」：交付仓库未就位 → 本帧不派猎人（仓库优先建，见 manageBuildings）。
+    //   参考录像同一动作：01:35 抵达猎场 → 01:47 就地建仓库 → 02:05 仓库落成。
+    if (!gazelleDropoffReady(bestGazelle)) {
+        if (frame % 300 == 0)
+            DebugText(QString("[GAZELLE f=%1] 暂缓打猎：等猎场仓库落地 (目标SN=%2)")
+                      .arg(frame).arg(bestGazelle->SN));
+        return;
+    }
+
     // ★ 只用空闲农民，不抢采浆果的 ★
     for (auto &f : info.farmers) {
         if (f.FarmerSort != FARMERTYPE_FARMER) continue;
@@ -2787,7 +2843,58 @@ void UsrAI::manageTechUpgrade() {
     }
 
     // ==================================================================
+    // ★★★ 2026-09-12 用户要求：【伐木科技 = 解锁类科技最优先】★★★
+    //   市场·木材加工（120食物+75木材 → 伐木+2 / 远程攻击距离+1）
+    //   原位置在 TIER3 末尾，且被两道锁压住：
+    //     ① `frame < WAVE3_TIME`(21000帧=14min) 前置锁
+    //     ② `milUnlocked`(军事解锁) 锁
+    //   ⇒ 最坏要 14 分钟以后、且军事科技全部研究完才轮得到它。
+    //   现将判定块整体上移到【铜器后第一个被检查的科技】位置，越过上述两锁，
+    //   成为全场最高优先科技。原 TIER3 处的判定块已删除（避免重复研究）。
+    //   ★ 保留未破的闸门：函数首 techCooldown 节流 / FOOD_PAUSE_TECH_TRAIN(<60食物)
+    //     / `if (!postBronze) return;` 铜器门槛 —— 800 食物升级费仍受保护（用户既定铁律，
+    //     铜器前一粒食物都不许被科技吃掉）。
+    //   ★ 硬依赖：必须先有【市场】建筑且 Project==ACT_NULL（研究中的建筑不能再接指令）。
+    //     市场建造条件见 tryBuild 段（谷仓已有 + 木≥150 + 食≥100，约 4~6 分钟落地）。
+    //   ★ 与复合弓(P0)的食物/木材竞争：见宏 WOOD_TECH_ABSOLUTE_FIRST。
+    // ==================================================================
+    if (!DISABLE_MARKET_WOOD_TECH && !done && !marketWoodUpgraded) {
+        auto mw = findBuilding(BUILDING_MARKET);
+        if (mw && mw->Project == ACT_NULL && info.Meat >= 120 && info.Wood >= 75) {
+            bool bowPending = (!compositeBowResearched && !compositeBowQueued);
+            bool okToGo = true;
+            if (bowPending && !WOOD_TECH_ABSOLUTE_FIRST) {
+                // 复合弓未就绪 → 要求"两项都负担得起"才允许伐木插队：
+                // 食物(伐木120 + 复合弓180) 与 木材(伐木75 + 复合弓100) 都不能被伐木吃掉，
+                // 否则会出现"伐木研究完，复合弓的木/食不够，反而延后"的负优化。
+                okToGo = (info.Meat >= 120 + BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD) &&
+                         (info.Wood >= 75 + BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD);
+            }
+            if (okToGo) {
+                BuildingAction(mw->SN, BUILDING_MARKET_WOOD_UPGRADE);
+                marketWoodUpgraded = true; done = true;
+                DebugText(QString("!! TECH WoodProcessing(伐木+2) f=%1 meat=%2 wood=%3 bowPending=%4 absFirst=%5")
+                    .arg(frame).arg((int)info.Meat).arg((int)info.Wood)
+                    .arg(bowPending ? 1 : 0).arg(WOOD_TECH_ABSOLUTE_FIRST ? 1 : 0));
+            }
+        }
+    }
+
+    // ★ 伐木科技诊断（每 100 帧，只读）：定位"为何迟迟不研究" —— 市场是否就绪 / 资源差多少
+    if (!marketWoodUpgraded && frame % 100 == 0) {
+        auto mwd = findBuilding(BUILDING_MARKET);
+        int mktProj = -9;
+        if (mwd) mktProj = (int)mwd->Project;
+        DebugText(QString("[WP f=%1] mkt=%2 proj=%3 meat=%4 wood=%5 bowPend=%6 abs=%7")
+            .arg(frame).arg(mwd ? 1 : 0).arg(mktProj)
+            .arg((int)info.Meat).arg((int)info.Wood)
+            .arg((!compositeBowResearched && !compositeBowQueued) ? 1 : 0)
+            .arg(WOOD_TECH_ABSOLUTE_FIRST ? 1 : 0));
+    }
+
+    // ==================================================================
     // ★ TIER 1：军事解锁（复合弓优先，不等阔剑）
+    //   （伐木科技已提前至本段上方，见"伐木科技 = 解锁类科技最优先"）
     // ==================================================================
     // ★ 引擎真实成本（Development.cpp:739-740）：只需「铜器时代 + 木材 + 食物」，**不需要黄金**，
     //   且引擎层无阔剑前置 → 旧代码的 info.Gold>=40 是伪门槛，黄金不足时复合弓永远研究不了。
@@ -2930,19 +3037,9 @@ void UsrAI::manageTechUpgrade() {
     // ==================================================================
     // ★ TIER 3：经济科技 — 成本价即研究 ★
     // ==================================================================
-
-    // --- 市场：木材加工（120食物+75木材，伐木+50%） ---
-    // ★ 2026-09-08 解禁（用户要求"能解锁就解锁"）：DISABLE_MARKET_WOOD_TECH 改 false，
-    //   市场建成 + 空闲 + 资源够即研究，无阶段门槛。
-    // ★ 幂等标志位 marketWoodUpgraded：原代码只有 `!done`（仅同帧有效），缺 `!marketWoodUpgraded`，
-    //   25 帧冷却一过就会重判一次 → 市场空闲且资源够时【重复研究、重复扣资源】。
-    if (!DISABLE_MARKET_WOOD_TECH && !done && !marketWoodUpgraded) {
-        auto m = findBuilding(BUILDING_MARKET);
-        if (m && m->Project == ACT_NULL && info.Meat >= 120 && info.Wood >= 75) {
-            BuildingAction(m->SN, BUILDING_MARKET_WOOD_UPGRADE);
-            marketWoodUpgraded = true; done = true;
-        }
-    }
+    // ★ 2026-09-12 用户要求：市场·木材加工（伐木）已【上移】到本函数铜器后第一位
+    //   （见上方 "伐木科技 = 解锁类科技最优先" 段，越过 WAVE3 与 milUnlocked 两锁）。
+    //   此处不再重复判定，避免二次研究/重复扣资源。
 
     // --- 市场：驯养动物（200食物+50木材） ---
     if (!DISABLE_MARKET_TECH && !done && !marketFarmUpgraded) {
@@ -4479,6 +4576,23 @@ tagFarmer* UsrAI::findIdleFarmer() {
     return nullptr;
 }
 
+// ★ 2026-09-12：离指定点【最近】的空闲村民（远距选址建筑的建造者选取）。
+//   动机：findIdleFarmer 返回的是本帧(每帧随机打乱)列表里的【第一个】空闲村民 ——
+//   对"必须建在 40+ 格外的猎场"这类远距选址，随机抽人会派到 TC 附近的村民，
+//   村民长征数十格期间仓库建不出来、打猎闸门一直挂着（食物经济空转）。
+tagFarmer* UsrAI::findIdleFarmerNear(double dr, double ur) {
+    tagFarmer* best = nullptr;
+    double bestD = 1e18;
+    for (auto &f : info.farmers) {
+        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+        if (buildingFarmerType.count(f.SN) || f.SN == scoutFarmerSN) continue;
+        if (f.NowState != HUMAN_STATE_IDLE || f.Resource > 0) continue;
+        double d = (f.DR - dr) * (f.DR - dr) + (f.UR - ur) * (f.UR - ur);
+        if (d < bestD) { bestD = d; best = &f; }
+    }
+    return best;
+}
+
 tagFarmer* UsrAI::findAnyFarmer() {
     for (auto &f : info.farmers) {
         if (f.FarmerSort != FARMERTYPE_FARMER) continue;
@@ -5207,7 +5321,8 @@ bool UsrAI::findFarmRingSite(int &x, int &y) {
     return findBuildSite(x, y, 3);
 }
 
-bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX, int prefY, bool noFallback) {
+bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX, int prefY, bool noFallback,
+                     bool preferNearBuilder) {
     if (buildCooldown > 0 && !ignoreCooldown) return false;
     // 农场硬上限：无论哪条建造路径，超过 MAX_FARMS 一律不再下发
     if (buildingType == BUILDING_FARM) {
@@ -5219,7 +5334,12 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
         if (farmCount >= MAX_FARMS) return false;
     }
 
-    auto f = findIdleFarmer();
+    // ★ 2026-09-12：指定坐标的远距建筑优先派【离该点最近的】空闲村民当建造者
+    //   （瞪羚群仓库等：打猎闸门在等它落地，不能让建造者从 TC 长征几十格）。
+    tagFarmer* f = nullptr;
+    if (preferNearBuilder && prefX >= 0 && prefY >= 0)
+        f = findIdleFarmerNear((prefX + 1) * (double)BLOCKSIDELENGTH, (prefY + 1) * (double)BLOCKSIDELENGTH);
+    if (!f) f = findIdleFarmer();
     if (!f) f = findAnyFarmer();
     if (!f) return false;
 
@@ -5382,6 +5502,35 @@ void UsrAI::detectStuckGatherers() {
     }
 }
 
+// ============================================================
+// ★★★ 2026-09-12「先建仓库、再打猎」闸门（用户需求）
+//   「在村民开始狩猎瞪羚前尽量先建仓库」——猎人出发前交付点必须已就位，
+//   否则猎人抱着肉空跑「猎场↔TC」往返（往返 2×距离），食物效率腰斩。
+//   返回 true = 现在可以去打这只瞪羚；false = 本帧先别派猎人，等仓库落地
+//   （manageBuildings 的最高优先级仓库块每帧都会重试建造）。
+//   判据顺序（任一成立即放行，确保【永远不会把食物经济饿死】）：
+//     ① 木头 < 仓库造价 → 根本建不起，不能拿食物陪葬；
+//     ② frame ≥ 解禁兜底(6游戏分) 或 已过建造窗口(11游戏分) → 仓库不会来了，放行；
+//     ③ storageNearGazelleBuilt==1 → 已建好 / 已被现成仓库覆盖 / 已达 MAX_STOCK；
+//     ④ 该瞪羚 GAZELLE_HUNT_RANGE 内已有仓库（含在建地基）→ 交付点已就位。
+//   ⚠ 判据④把"在建"也算通过：地基已在群边、村民正在施工，此时去打猎不会长距离空跑。
+// ============================================================
+bool UsrAI::gazelleDropoffReady(tagResource* r) {
+    if (!r) return true;
+    if (info.Wood < BUILD_STOCK_WOOD) return true;                         // ① 建不起
+    if (frame >= GAZELLE_STOCK_GATE_DEADLINE) return true;                 // ② 超时兜底
+    if (frame >= GAZELLE_STOCK_WINDOW_END) return true;                    // ② 窗口已关
+    if (storageNearGazelleBuilt == 1) return true;                         // ③ 已建/已覆盖
+    const double BL = (double)BLOCKSIDELENGTH;
+    for (auto &b : info.buildings) {
+        if (b.Type != BUILDING_STOCK) continue;
+        if (b.Percent < 100 && deadBuildings.count(b.SN)) continue;        // 废弃地基不算
+        double bDR = (b.BlockDR + 1) * BL, bUR = (b.BlockUR + 1) * BL;
+        if (calDistance(r->DR, r->UR, bDR, bUR) < GAZELLE_HUNT_RANGE * BL) return true;   // ④ 就近已有交付点
+    }
+    return false;
+}
+
 bool UsrAI::tryAssignFood(tagFarmer* f) {
     if (!f) return false;
 
@@ -5494,7 +5643,8 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
             double d = (r.DR - f->DR)*(r.DR - f->DR) + (r.UR - f->UR)*(r.UR - f->UR);
             if (d < bestGDist) { bestGDist = d; bestGazelle = &r; }
         }
-        if (bestGazelle) {
+        // ★ 2026-09-12「先建仓库再打猎」：仓库没就位就不派人（本函数返回 false，交由伐木/兜底接住）
+        if (bestGazelle && gazelleDropoffReady(bestGazelle)) {
             HumanAction(f->SN, bestGazelle->SN);
             huntingGroup.insert(f->SN);
             frameGazelleCount[bestGazelle->SN]++;
