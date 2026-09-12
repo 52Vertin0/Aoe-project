@@ -4197,6 +4197,16 @@ void UsrAI::manageCounterAttack() {
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
                 }
+                // ★【2026-09-12 新增：敌近提前撤】SHOOT 相位内若敌已逼近到 0.9R(=复合弓 6.3 格)内,
+                //   不必等满 30 帧——远程敌可能 0.5 秒就贴到 5 格,30 帧够吃两箭。立即切 RETREAT。
+                //   这是用户最新确认方案：「打满 30 帧 OR 敌近立即撤」双触发。
+                //   ⚠ 只在 phase=0(SHOOT)内触发,RETREAT 段本身不会重复触发此分支(已切出去)。
+                if (phase == 0 && kGot && dK > 0.5 * R && dK <= 0.9 * R && phaseAged >= 6) {
+                    // phaseAged>=6 帧≈0.24 秒最小驻留,避免刚切进 SHOOT 立刻因敌近距离又撤回去,
+                    // 造成"反复横跳"震荡(每帧切相位,实际伤害 0)。
+                    phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
+                    phaseFrame = frame; phaseAged = 0;
+                }
                 bool coolPhase = (frame - phaseFrame >= PHASE_COOLDOWN);
                 // —— 状态转移 ——
                 //   SHOOT 持续 ≥ 30 帧(≈1.2 秒@25fps)主动切 RETREAT("打一下→往回走"触发):命中用户原话"打一下就走"
@@ -4229,12 +4239,20 @@ void UsrAI::manageCounterAttack() {
                     //   观感"拉扯不成功/不往后走"。改为 >1:落点 = 1.4R(远程敌)/1.5R(近战敌) 均 > R+BREATH,
                     //   单位真正向后拉开到【射程外】,触发退出条件→回 SHOOT→重新接敌 = 标准 kiting。
                     //   节流改用 canReissue(30帧march)而非 coolPhase(phase内20帧):撤退【当帧即发令】,拉扯更跟手。
+                    // ★【2026-09-12 新增 fallback 链】旧版 5 个角度都不可走就 kitMoved=0 退出 → 实测 b_r90 KIT-R 8 次全 0:
+                    //   复合弓被压在地图边角/林缘时,"远离敌"方向可能撞海/林,整段 RETREAT 落空 → 单位永远站桩被打。
+                    //   新增二级 fallback:朝己方 TC 方向撤(更安全的方向,TC 永远在已探索且空旷)。
+                    //   三级 fallback:朝己方祭司方向撤(若祭司在场,与大军同向)。
+                    //   终极兜底:全失败则本帧不下令(下一帧再试),不让单位往海里走。
                     const double KITING_RETREAT_MULT = kMelee ? 1.5 : 1.4;
                     double ux = (a.DR - kEX) / (dK + 1e-6), uy = (a.UR - kEY) / (dK + 1e-6);
-                    double angs[5] = {0.0, 0.6, -0.6, 1.2, -1.2};
+                    const double angs[5] = {0.0, 0.6, -0.6, 1.2, -1.2};
+                    const double angsT[5] = {0.0, 0.5, -0.5, 1.0, -1.0};  // TC fallback 用更窄角度(TC 必存在,角度越准越好)
                     bool kitMoved = false;
                     double kitX = 0, kitY = 0;
-                    for (int ai = 0; ai < 5; ++ai) {
+                    int kitStage = 0;  // 1=远离敌 2=朝TC 3=朝祭司 0=失败
+                    // —— 第 1 档:沿"远离敌"方向撤 ——
+                    for (int ai = 0; ai < 5 && !kitMoved; ++ai) {
                         double ca = std::cos(angs[ai]), sa = std::sin(angs[ai]);
                         double rx = kEX + (ux*ca - uy*sa) * R * KITING_RETREAT_MULT;
                         double ry = kEY + (uy*ca + ux*sa) * R * KITING_RETREAT_MULT;
@@ -4243,17 +4261,65 @@ void UsrAI::manageCounterAttack() {
                         if (isPassableAt(rx, ry)) {
                             HumanMove(a.SN, rx, ry);
                             marchCmdFrame[a.SN] = frame;
-                            lastRetreatFrame[a.SN] = frame;   // 后撤保护期起点
+                            lastRetreatFrame[a.SN] = frame;
                             marchIssueDist[a.SN] = calDistance(a.DR, a.UR, targetDR, targetUR);
                             marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
-                            kitMoved = true; kitX = rx; kitY = ry;
-                            break;
+                            kitMoved = true; kitStage = 1; kitX = rx; kitY = ry;
                         }
                     }
+                    // —— 第 2 档:朝己方 TC 方向撤 12 格(TC 必在已探索空旷区,几乎总可走) ——
+                    if (!kitMoved) {
+                        double tcUX = rallyCtrDR - a.DR, tcUY = rallyCtrUR - a.UR;
+                        double tcLen = std::sqrt(tcUX*tcUX + tcUY*tcUY);
+                        if (tcLen > 1e-6) {
+                            tcUX /= tcLen; tcUY /= tcLen;
+                            const double TC_STEP = 12.0 * BL;
+                            for (int ai = 0; ai < 5 && !kitMoved; ++ai) {
+                                double ca = std::cos(angsT[ai]), sa = std::sin(angsT[ai]);
+                                double rx = a.DR + (tcUX*ca - tcUY*sa) * TC_STEP;
+                                double ry = a.UR + (tcUY*ca + tcUX*sa) * TC_STEP;
+                                rx = max(0.0, min((double)MAP_L * BL, rx));
+                                ry = max(0.0, min((double)MAP_U * BL, ry));
+                                if (isPassableAt(rx, ry)) {
+                                    HumanMove(a.SN, rx, ry);
+                                    marchCmdFrame[a.SN] = frame;
+                                    lastRetreatFrame[a.SN] = frame;
+                                    marchIssueDist[a.SN] = calDistance(a.DR, a.UR, targetDR, targetUR);
+                                    marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
+                                    kitMoved = true; kitStage = 2; kitX = rx; kitY = ry;
+                                }
+                            }
+                        }
+                    }
+                    // —— 第 3 档:朝己方祭司方向撤 6 格(若祭司在视野内) ——
+                    if (!kitMoved && priest && calDistance(a.DR, a.UR, priest->DR, priest->UR) < 20 * BL) {
+                        double prUX = priest->DR - a.DR, prUY = priest->UR - a.UR;
+                        double prLen = std::sqrt(prUX*prUX + prUY*prUY);
+                        if (prLen > 1e-6) {
+                            prUX /= prLen; prUY /= prLen;
+                            const double PR_STEP = 6.0 * BL;
+                            for (int ai = 0; ai < 3 && !kitMoved; ++ai) {  // 3 个角度足够(祭司附近通常没障碍)
+                                double ca = std::cos(angsT[ai]), sa = std::sin(angsT[ai]);
+                                double rx = a.DR + (prUX*ca - prUY*sa) * PR_STEP;
+                                double ry = a.UR + (prUY*ca + prUX*sa) * PR_STEP;
+                                rx = max(0.0, min((double)MAP_L * BL, rx));
+                                ry = max(0.0, min((double)MAP_U * BL, ry));
+                                if (isPassableAt(rx, ry)) {
+                                    HumanMove(a.SN, rx, ry);
+                                    marchCmdFrame[a.SN] = frame;
+                                    lastRetreatFrame[a.SN] = frame;
+                                    marchIssueDist[a.SN] = calDistance(a.DR, a.UR, targetDR, targetUR);
+                                    marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
+                                    kitMoved = true; kitStage = 3; kitX = rx; kitY = ry;
+                                }
+                            }
+                        }
+                    }
+                    // —— 终极兜底:三档全失败 → 本帧不下令,让相位机下一帧再试,不让单位往海里走 ——
                     if (frame % 50 == 0)
-                        DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 moved=%5 tgt=(%6,%7)")
+                        DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 tgt=(%6,%7)")
                                   .arg(frame).arg(a.SN).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1)
-                                  .arg(kitMoved ? 1 : 0).arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1));
+                                  .arg(kitStage).arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1));
                     marchCmds++;
                     continue;   // RETREAT 段不落站桩/推进
                 }
