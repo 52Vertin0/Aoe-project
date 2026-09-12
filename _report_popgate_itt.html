@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>人口顶格闸的增量效果（ITT）</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#f5f6f8;color:#1c1f23;font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:32px 20px}
+  .wrap{max-width:940px;margin:0 auto}
+  h1{font-size:25px;letter-spacing:-.3px}
+  .sub{color:#6b7280;font-size:13.5px;margin-top:6px}
+  .banner{margin:22px 0;background:#fff;border-left:5px solid #6b7280;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  .banner .big{font-size:19px;font-weight:700;color:#374151}
+  .banner p{color:#374151;margin-top:8px;font-size:14px}
+  h2{font-size:17px;margin:30px 0 12px;padding-bottom:7px;border-bottom:2px solid #e5e7eb}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:9px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:14px}
+  th,td{padding:10px 13px;text-align:left;border-bottom:1px solid #eef0f3}
+  th{background:#f0f2f5;font-weight:600;font-size:13px;color:#4b5563}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:none}
+  .good{color:#1a7f37;font-weight:600}
+  .warn{color:#b45309;font-weight:600}
+  .bad{color:#b52b26;font-weight:600}
+  .muted{color:#9ca3af}
+  .hl{background:#fdf6e3}
+  .hla{background:#eef4ff}
+  .card{background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:14px;font-size:14px}
+  .card b{color:#111827}
+  .card.warncard{border-left:4px solid #f0ad4e}
+  .card.okcard{border-left:4px solid #1a7f37}
+  ul{margin:8px 0 0 20px}li{margin:5px 0}
+  code{background:#eef1f5;border-radius:4px;padding:1.5px 6px;font-size:12.8px;font-family:Consolas,monospace}
+  pre{background:#1e2530;color:#d7dde5;border-radius:8px;padding:13px 16px;overflow-x:auto;font-size:12.7px;line-height:1.6;font-family:Consolas,monospace}
+  pre code{background:none;padding:0}
+  .arrow{color:#9ca3af;font-size:13px}
+  .foot{color:#9ca3af;font-size:12.5px;margin-top:26px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>人口顶格闸的增量效果（ITT）</h1>
+  <div class="sub">map 单图 · 48 局/臂 · 同并行度 PAR=8 · 2026-10-08</div>
+
+  <div class="banner">
+    <div class="big">结论：人口闸当前形态 ≈ <span style="color:#374151">中性</span>（点估计 −4.2pp，p=0.84，在噪声内）</div>
+    <p>它在 58% 的局里生效、平均把反攻提前 <b>1.28 分</b>、把超时局从 10 降到 7；
+    <b>没有</b>加剧"祭司反攻前早死"（修正口径后反而 3→<b>1</b>，三臂最优）。
+    唯一负向信号是祭司死 13→19（p=0.28，噪声内）。</p>
+  </div>
+
+  <h2>一、因果设计</h2>
+  <div class="card">
+    三臂中 <b>wbase 与 club8n 只差"人口闸"一个变量</b>（同为 <code>EARLY_CLUBMAN_TARGET 8</code>），
+    因此 <code>wbase → club8n</code> 那一行即为闸的<b>意图治疗效应（ITT）</b>；<code>club6n</code> 作旁证。
+  </div>
+
+  <h2>二、三臂总表（分母已剔伪 U）</h2>
+  <table>
+    <tr><th>臂</th><th>源码</th><th>变量差异</th><th class="num">W</th><th class="num">P</th><th class="num">T</th><th class="num">U</th><th class="num">胜率 (95%CI)</th><th class="num">祭死</th><th class="num">反攻前早死</th><th class="num">闸触发</th></tr>
+    <tr class="hl"><td><b>wbase</b></td><td><code>0565ef20</code></td><td>club8，<b>无闸</b></td><td class="num">24</td><td class="num">13</td><td class="num">1</td><td class="num">10</td><td class="num">50.0% (36.4~63.6)</td><td class="num">13</td><td class="num">3</td><td class="num">0/48</td></tr>
+    <tr><td><b>club6n</b></td><td><code>4515b55a</code></td><td>club6，无闸</td><td class="num">17</td><td class="num">22</td><td class="num">0</td><td class="num">9</td><td class="num">35.4% (23.4~49.6)</td><td class="num">22</td><td class="num">5</td><td class="num">0/48</td></tr>
+    <tr class="hla"><td><b>club8n</b></td><td><code>ca45bd24</code></td><td>club8，<b>有闸</b></td><td class="num">22</td><td class="num">19</td><td class="num">0</td><td class="num">7</td><td class="num">45.8% (32.6~59.7)</td><td class="num">19</td><td class="num good">1</td><td class="num">28/48</td></tr>
+  </table>
+  <div class="card" style="margin-top:12px">
+    <b>闸的 ITT 点估计</b>（wbase → club8n）：胜率 <span class="bad">−4.2pp</span>（Fisher p=0.838）｜祭司死 <span class="bad">+6</span>（p=0.279）｜超时 <span class="good">−3</span>｜反攻前早死 <span class="good">3→1</span>。<br>
+    <span class="muted">n=48/臂噪声带 ≈±14pp ⇒ 4.2pp 远在噪声内，不能断言"变差"，只能说"未见收益"。</span>
+  </div>
+
+  <h2>三、闸的实际行为（28 局触发）</h2>
+  <h3 style="font-size:14px;color:#4b5563;margin:14px 0 8px">按闸触发与否分组</h3>
+  <table>
+    <tr><th>组</th><th class="num">n</th><th class="num">W</th><th class="num">P</th><th class="num">U</th><th class="num">胜率</th><th class="num">祭死</th><th class="num">反攻前早死</th><th class="num">反攻时点中位</th></tr>
+    <tr><td><b>触发</b>（闸生效）</td><td class="num">28</td><td class="num">15</td><td class="num">7</td><td class="num">6</td><td class="num good">53.6%</td><td class="num">7</td><td class="num good">0</td><td class="num">31534 (21.0分)</td></tr>
+    <tr><td>未触发</td><td class="num">20</td><td class="num">7</td><td class="num">12</td><td class="num">1</td><td class="num">35.0%</td><td class="num">12</td><td class="num">1</td><td class="num">33002 (22.0分)</td></tr>
+  </table>
+  <div class="card warncard" style="margin-top:12px">
+    <b>⚠ 选择偏差</b>：触发局 = 经济好到人口能到 50 的局，本身偏顺风 ⇒ 组间差异<b>不可当因果</b>，仅说明<b>闸生效的局并未被闸拖累</b>。
+    <div style="margin-top:10px">闸帧分布：均 <b>31076</b>（20.72 分）｜中位 <b>31534</b>｜最早 28471（18.98 分）｜最晚 32930 ⇒ 平均比强制点 33000（22.00 分）<b>提前 1.28 分</b>。</div>
+  </div>
+
+  <h2>四、⚠ 观测口径修正（本轮踩到的坑）</h2>
+  <div class="card warncard">
+    <b>假象</b>：初版脚本用 <code>ALL WAVES DEFEATED! Counterattack!</code> 作为"反攻时点"，算出 club8n 有 <b>8 局</b>"祭司反攻前早死"（远高于 wbase 的 3）。<br>
+    <b>真因</b>：该行<b>只在 22 分强制反攻时打印</b>；闸提前反攻的局根本不会打印它 ⇒ 触发组 7 个 P 局全部被误判"早死"。<br>
+    <b>修正</b>：反攻时点改为 <code>min(闸帧, 强制帧)</code> ⇒ club8n 早死修正为 <b>1</b>（三臂最优），结论随之反转。<br>
+    <span style="color:#6b7280">⇒ 新口径铁律：涉及"提前触发"的改动，判"反攻前/后"必须把<b>新触发器的时间戳</b>一并纳入事件集合，否则旧事件缺失会被读成"从未发生"。</span>
+  </div>
+
+  <h2>五、判读与建议</h2>
+  <div class="card">
+    <ul>
+      <li>闸<b>确实在工作</b>：58% 局生效、提前 1.28 分、超时 −3、反攻前早死最优。</li>
+      <li>闸<b>没换来胜率</b>：−4.2pp 点估计（噪声内），祭司死 +6（噪声内）。</li>
+      <li>⇒ 定位为"<b>中性且未证实有益</b>"。三条路：
+        <ul>
+          <li><b>α 撤销</b>：退回 wbase 形态（点估计最高 50.0%），代价 = 失去"人口满即反攻"特性。</li>
+          <li><b>β 保留 + 加最低集结门槛</b>（<code>popFull &amp;&amp; near &gt;= X</code>）：消除"绕过集结闸"隐患，但可能吃掉提前量。</li>
+          <li><b>γ 保留现状 + 加跑一轮</b>（96 局/臂 ⇒ 带 ±5pp）把 −4.2pp 判清楚。</li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+
+  <h2>六、复现</h2>
+  <pre><code>MAPS="map.njust" ROT=0 N=48 PAR=8 TAG=club8n TMO=420 bash _quad_run.sh
+python _check_complete.py club8n          # 完整局过滤伪U → 48/48 完整
+python _map_cmp7.py wbase club6n club8n   # 三臂对比
+python _grp_popgate.py club8n             # 闸触发 vs 未触发分组</code></pre>
+
+  <div class="foot">
+    源码：wbase <code>0565ef20</code>｜club6n <code>4515b55a</code>｜club8n <code>ca45bd24</code>（现行工作版）<br>
+    club8n 全程 48 局无 SIGSEGV（上轮 1/20 的崩溃未复现，维持"偶发"判定）
+  </div>
+</div>
+</body>
+</html>

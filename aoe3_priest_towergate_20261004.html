@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AoE3 祭司塔闸解死锁 · 2026-10-04</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --line:#e3e6ea; --ink:#1c2024; --ink2:#5b636b;
+    --accent:#2f6df6; --ok:#12855a; --okbg:#e8f6ef; --warn:#b45309; --warnbg:#fdf4e3;
+    --bad:#b3261e; --badbg:#fdeceb; --mono:"Cascadia Mono","Consolas","Menlo",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    font-size:15px;line-height:1.72}
+  .wrap{max-width:1040px;margin:0 auto;padding:40px 24px 72px}
+  header{border-bottom:2px solid var(--ink);padding-bottom:20px;margin-bottom:8px}
+  h1{font-size:27px;margin:0 0 10px;letter-spacing:-.3px}
+  .sub{color:var(--ink2);font-size:13.5px;font-family:var(--mono)}
+  .badges{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap}
+  .badge{font-size:12.5px;padding:3px 11px;border-radius:99px;background:var(--okbg);
+    color:var(--ok);border:1px solid #bfe3d1;font-weight:600}
+  .badge.g{background:#eef1f5;color:var(--ink2);border-color:var(--line)}
+  h2{font-size:18px;margin:38px 0 14px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15.5px;margin:24px 0 10px;color:var(--ink)}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:18px 20px;margin:14px 0}
+  .kv{display:grid;grid-template-columns:210px 1fr;gap:6px 16px;font-size:14px}
+  .kv dt{color:var(--ink2)}
+  .kv dd{margin:0;font-family:var(--mono);font-size:13.5px}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.8px;background:var(--card);
+    border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line)}
+  th{background:#f0f2f5;font-weight:600;color:var(--ink2);font-size:12.8px;letter-spacing:.02em}
+  tr:last-child td{border-bottom:none}
+  tr.key td{background:var(--okbg)}
+  code{font-family:var(--mono);font-size:13px;background:#eef1f5;padding:1.5px 5px;border-radius:4px}
+  pre{background:#1e2430;color:#dfe6f0;padding:14px 16px;border-radius:9px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.8px;line-height:1.62;margin:12px 0}
+  pre .k{color:#7fd3a8}
+  pre .c{color:#8b97a8}
+  pre .hl{color:#ffd479;font-weight:600}
+  .ok{color:var(--ok);font-weight:700}
+  .bad{color:var(--bad);font-weight:700}
+  .chain{counter-reset:s;list-style:none;padding:0;margin:14px 0}
+  .chain li{counter-increment:s;position:relative;padding:9px 0 9px 44px;
+    border-bottom:1px dashed var(--line);font-size:14px}
+  .chain li:last-child{border-bottom:none}
+  .chain li::before{content:counter(s);position:absolute;left:0;top:9px;width:26px;height:26px;
+    background:var(--accent);color:#fff;border-radius:7px;display:flex;align-items:center;
+    justify-content:center;font-size:13px;font-weight:700;font-family:var(--mono)}
+  .note{background:var(--warnbg);border-left:4px solid var(--warn);padding:12px 16px;
+    border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .note.bad{background:var(--badbg);border-color:var(--bad)}
+  .note.ok{background:var(--okbg);border-color:var(--ok)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}.kv{grid-template-columns:1fr}}
+  .bar{height:9px;background:#e6eaef;border-radius:5px;overflow:hidden;min-width:70px;display:inline-block;vertical-align:middle}
+  .bar>i{display:block;height:100%;background:var(--accent)}
+  footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);
+    color:var(--ink2);font-size:12.5px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>祭司塔闸解死锁：<code>PRIEST_TOWERS_CLEAR_MAX</code> 2 → 5</h1>
+  <div class="sub">C:\new-aoe3.0.7g\UsrAI.cpp &nbsp;·&nbsp; 2026-10-04 &nbsp;·&nbsp; 6 局 map3 实测</div>
+  <div class="badges">
+    <span class="badge">语法 0 error / 16 warning（基线持平）</span>
+    <span class="badge">编译 rc=0</span>
+    <span class="badge">可判 5 局全胜</span>
+    <span class="badge g">2 局为决定性对照</span>
+  </div>
+</header>
+
+<h2>一、结论</h2>
+<div class="card">
+<p><strong>祭司"到不了武器厂"的第一道锁是塔闸，已解除。</strong>把 <code>PRIEST_TOWERS_CLEAR_MAX</code> 由 <code>2</code> 放宽到 <code>5</code>（1 行代码 + 7 行注释），
+祭司从"全程困在 19 格之外、整局未决"变为"推进到 <strong>2.1 格</strong>、起手感化、获胜"。</p>
+<p>判定为<strong>真实修复</strong>而非运气，依据是两局处在<strong>旧阈值下代码上不可能放行</strong>的局面（<code>gT</code> 全程 &gt; 2）却依然起手并获胜；
+同时 4 局记录的祭司血量<strong>全程 1.00、从未掉血</strong>，证伪了"放宽塔闸会让祭司送死"这一担忧。</p>
+</div>
+
+<h2>二、根因链（数据钉死，非推测）</h2>
+<div class="card">
+<ol class="chain">
+  <li><strong>一切都挂在同一个闸上。</strong>
+    <pre><span class="c">// UsrAI.cpp:4797 / :4800 / :4885 / :4897</span>
+<span class="hl">clearOk</span> = (enemyTowerN &lt;= PRIEST_TOWERS_CLEAR_MAX)   <span class="c">// ← 全局已探明敌箭塔数</span>
+        &amp;&amp; (enemySiegeSN != -1) &amp;&amp; (enemyBldSeenN &gt;= 1);
+allowConvertSiege = <span class="hl">clearOk</span> || priestSiegeApproach == 1;
+if (allowConvertSiege &amp;&amp; ...) { <span class="c">// ← 推进段 + 感化令下发全在这里</span></pre>
+  </li>
+  <li><strong>武器厂一探明，敌塔数就恒为 3~4。</strong>10-03 实机局 <code>[LC-DBG]</code> 中 <code>siegeSN=11421</code> 的
+    <strong>22 个采样点 <code>gT</code> 分布 = 3:9 / 4:19，无一个 ≤ 2</strong>。
+    （更早出现的 <code>gT=0/1/2</code> 全部落在 <code>siegeSN=-1</code> 的未探明时段，属未探明伪影，不能当"塔已清"。）</li>
+  <li><strong>闸恒假 ⇒ 推进段整段不执行。</strong>祭司最近只到 <code>dS = 19.2</code> 格，而感化射程是 12 格
+    ⇒ <code>[SIEGE-WAIT]</code> <strong>0 条</strong>、<code>ADVANCE to Siege</code> <strong>0 条</strong>、<code>converting Siege Workshop</code> <strong>0 条</strong> ⇒ 整局未决。</li>
+  <li><strong>祭司根本吃不到塔的伤害。</strong>同局祭司 <code>hp</code> 恒 0.80 —— 它被 <code>PRIEST_MIN_DIST_TARGET(18)</code> 锁在门外，
+    所以"等塔清完"这个顾虑<strong>在本局从未被实际检验过</strong>，而闸却已因此锁死。</li>
+</ol>
+</div>
+
+<h2>三、改动</h2>
+<div class="card">
+<dl class="kv">
+  <dt>文件</dt><dd>UsrAI.cpp（<strong>只改 .cpp，.h 未动</strong>）</dd>
+  <dt>起点 → 终点</dt><dd>5af68f2d · 7140 行 &nbsp;→&nbsp; <strong>f1ab0647 · 7147 行</strong></dd>
+  <dt>备份（回退锚点）</dt><dd>UsrAI.cpp.bak_20261004_2005_pre_towergate5</dd>
+  <dt>语义变化</dt><dd>「剩余敌箭塔 ≤ 2 才允许祭司前出」→「≤ 5」</dd>
+  <dt>未动的保命闸</dt><dd>PRIEST_SIEGE_GUARD_HP 0.45｜PRIEST_SIEGE_ABORT_HP 0.35（仍原样生效）</dd>
+</dl>
+</div>
+
+<h2>四、实测：6 局 map3</h2>
+<p>跑法 <code>-exam -offscreen -freq MAX -rotate 90</code>。胜判据 = AIText 出现
+<code>攻城武器厂(编号:11099)被祭司转换,归属阵营1->0</code>（本引擎唯一胜利条件）。</p>
+<table>
+<thead><tr><th>局</th><th>末帧</th><th>结果</th><th>武器厂探明后 gT</th><th>祭司最近 dS</th><th>起手次数</th><th>祭司 hp</th></tr></thead>
+<tbody>
+  <tr><td>1</td><td>40000</td><td><span class="bad">不可判</span>（AIText 被后续跑局覆盖）</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td>2</td><td>39032</td><td class="ok">胜</td><td>1</td><td>11.6</td><td>1</td><td>1.00</td></tr>
+  <tr><td>3</td><td>38959</td><td class="ok">胜</td><td>1 ~ 2</td><td>9.3</td><td>1</td><td>1.00</td></tr>
+  <tr class="key"><td><strong>4</strong></td><td>44502</td><td class="ok">胜</td><td><strong>3 ~ 5（全程 &gt; 2）</strong></td><td><strong>2.1</strong></td><td><strong>7</strong></td><td><strong>1.00</strong></td></tr>
+  <tr><td>5</td><td>40439</td><td class="ok">胜</td><td>2</td><td>21.4</td><td>1</td><td>1.00</td></tr>
+  <tr class="key"><td><strong>6</strong></td><td>38766</td><td class="ok">胜</td><td><strong>3（全程 &gt; 2）</strong></td><td><strong>2.2</strong></td><td>1</td><td><strong>1.00</strong></td></tr>
+</tbody>
+</table>
+
+<div class="note ok">
+<strong>局 4 / 局 6 是决定性证据。</strong>这两局的 <code>gT</code> 全程 &gt; 2 ⇒ 旧阈值下 <code>clearOk</code> 恒假
+⇒ <code>allowConvertSiege</code> 恒假 ⇒ 推进段与感化令<strong>在代码上不可能执行</strong>。
+而新版实测：祭司推进到 <strong>2.1 / 2.2 格</strong>（射程 12 格内）并获胜。
+</div>
+
+<div class="note bad">
+<strong>不能把这两组直接当"胜率对比"。</strong>可判定仅 5 局、且与 10-03 那局的局面不同（地图/敌方行为未知），
+按项目铁律<em>"单批 &lt; 24 局不得对任何改动下胜负结论"</em>，此处只能说<strong>机制已生效</strong>，不能说胜率提升了多少。
+</div>
+
+<h2>五、风险验证：放宽塔闸会不会让祭司送死？</h2>
+<div class="card">
+<p>实测回答：<strong>不会</strong>。4 局共记录 890 条祭司状态行，<code>hp</code> <strong>最小值 = 最大值 = 1.00</strong>，
+<code>hp &lt; 0.5</code> 的帧数为 <strong>0</strong>。极端情形包括局 4 ——贴着武器厂 <strong>2.1 格</strong>、场上还有 <strong>5 座敌箭塔</strong>——祭司依旧满血。</p>
+<table>
+<thead><tr><th>局</th><th>祭司状态行</th><th>hp 最小 / 最大</th><th>hp &lt; 0.5 帧数</th></tr></thead>
+<tbody>
+  <tr><td>3</td><td>178</td><td>1.00 / 1.00</td><td>0</td></tr>
+  <tr><td>4</td><td>239</td><td>1.00 / 1.00</td><td>0</td></tr>
+  <tr><td>5</td><td>274</td><td>1.00 / 1.00</td><td>0</td></tr>
+  <tr><td>6</td><td>199</td><td>1.00 / 1.00</td><td>0</td></tr>
+</tbody>
+</table>
+<p>原因合理：祭司有护甲/治疗，且大部队在前；敌箭塔的射程与伤害不足以在推进窗口内破防。</p>
+</div>
+
+<h2>六、遗留与下一刀</h2>
+<table>
+<thead><tr><th>项</th><th>说明</th><th>建议</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>边界仍脆弱</strong></td>
+    <td>阈值 5 仍是"绝对塔数"判据。局 4 的 <code>gT</code> 已顶到 <strong>5</strong>，敌方若重建到 6 会再次锁死。</td>
+    <td>下一刀候选：改<strong>"塔数停滞"判据</strong>（记录历史最小塔数，当前 ≤ min+1 即放行）</td>
+  </tr>
+  <tr>
+    <td><code>_submit/</code> 失配</td>
+    <td>仍停在 9-29（<code>f425fcb1</code> · 7199 行 / .h 507），本次又改了 .cpp，落后更多。</td>
+    <td>提交前重跑 <code>mk_submit.py</code>，<strong>.cpp + .h 成对</strong>重生成</td>
+  </tr>
+  <tr>
+    <td>反攻期农民误判采集卡死</td>
+    <td>围攻敌箭塔时空手 + <code>state=2</code> 落进 <code>detectStuckGatherers</code> 判据（10-03 记录，非本轮引入）。</td>
+    <td>独立修复，勿与本轮混批</td>
+  </tr>
+</tbody>
+</table>
+
+<h2>七、回退路径</h2>
+<pre><span class="c"># 整文件替换回改动前（md5 校验）：</span>
+cp UsrAI.cpp.bak_20261004_2005_pre_towergate5 UsrAI.cpp
+md5sum UsrAI.cpp      <span class="c"># 应得 5af68f2dbcae0de9f2102828e9455164</span>
+<span class="c"># 再 syn.py + build.py 重新编译</span></pre>
+
+<div class="note">
+<span class="bad" style="color:var(--bad)">⚠ 口径纠错（本轮踩到）：</span>
+<code>ADVANCE to Siege</code> / <code>[SIEGE-WAIT]</code> / <code>[SIEGE-HOLD]</code> 日志里的
+<code>towers=</code> / <code>nearT=</code> 都是 <code>scanTowerThreat</code> 的<strong>祭司周边</strong>塔数，
+<strong>不是</strong>判 <code>clearOk</code> 的全局量。判闸只能看 <code>[LC-DBG]</code> 里的 <code>gT=</code>。
+另外 <code>-exam -offscreen</code> 模式下 jsonl <strong>只有 <code>[OJ-ENV]</code>/<code>[OJ-HB]</code> 心跳行、没有 <code>win</code> 字段</strong>，
+胜负只能从 AIText 的「被祭司转换」事件读。
+</div>
+
+<footer>
+数据源：_tg5_2.ait … _tg5_6.ait（6 局 map3）· AIText.log.bak_20261003_priest_rate（旧版对照）<br>
+改动：PRIEST_TOWERS_CLEAR_MAX 2 → 5 ｜ 5af68f2d·7140 → f1ab0647·7147
+</footer>
+
+</div>
+</body>
+</html>

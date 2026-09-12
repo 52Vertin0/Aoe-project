@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>P0 + P2b 实测验证 — 2026-09-24</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --line:#e3e6ec; --line2:#eef1f5;
+    --tx:#1c1f26; --tx2:#4a5262; --tx3:#7b8494;
+    --red:#c62828; --redbg:#fdecec; --redln:#f5c6c6;
+    --grn:#1b7f4b; --grnbg:#eaf7ef; --grnln:#c2e6d1;
+    --amb:#a86a00; --ambbg:#fff6e5; --ambln:#f0d9a8;
+    --blu:#1f5fa8; --blubg:#eef4fc; --bluln:#c9dcf3;
+    --vio:#6b3fa0; --viobg:#f4eefc; --violn:#ddcdf3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 26px 80px;}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--tx3);font-size:13px;margin-bottom:26px}
+  h2{font-size:19px;margin:38px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  h4{font-size:14px;margin:16px 0 6px;color:var(--tx2)}
+  p{margin:9px 0}
+  code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:13px;
+       font-family:"Cascadia Mono",Consolas,monospace;color:#2a3040}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:14px 0}
+  .box{border-left:4px solid;border-radius:8px;padding:12px 16px;margin:14px 0}
+  .box.red{background:var(--redbg);border-color:var(--red)}
+  .box.grn{background:var(--grnbg);border-color:var(--grn)}
+  .box.amb{background:var(--ambbg);border-color:var(--amb)}
+  .box.blu{background:var(--blubg);border-color:var(--blu)}
+  .box.vio{background:var(--viobg);border-color:var(--vio)}
+  .box .t{font-weight:700;margin-bottom:4px}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px;
+        background:var(--panel);border-radius:8px;overflow:hidden;
+        box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  th,td{border-bottom:1px solid var(--line2);padding:7px 10px;text-align:left;
+        vertical-align:top}
+  th{background:#f1f3f7;font-weight:600;color:var(--tx2);font-size:12.5px;
+     letter-spacing:.3px}
+  tr:last-child td{border-bottom:none}
+  td.num{font-family:"Cascadia Mono",Consolas,monospace;white-space:nowrap}
+  .w{color:var(--grn);font-weight:700}
+  .l{color:var(--red);font-weight:700}
+  .u{color:var(--amb);font-weight:700}
+  .tag{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:20px;
+       font-weight:700;letter-spacing:.2px;vertical-align:2px}
+  .tag.p0{background:var(--redbg);color:var(--red);border:1px solid var(--redln)}
+  .tag.p1{background:var(--ambbg);color:var(--amb);border:1px solid var(--ambln)}
+  .tag.p2{background:var(--blubg);color:var(--blu);border:1px solid var(--bluln)}
+  .tag.p3{background:#f0f1f5;color:var(--tx2);border:1px solid var(--line)}
+  .tag.no{background:#f0f1f5;color:var(--tx3);border:1px solid var(--line)}
+  pre{background:#1e2229;color:#d7dce5;border-radius:8px;padding:12px 14px;
+      overflow-x:auto;font-size:12.5px;line-height:1.6;
+      font-family:"Cascadia Mono",Consolas,monospace;margin:10px 0}
+  pre .c{color:#7f8b9e}
+  pre .hl{color:#ff9a8b;font-weight:700}
+  pre .g{color:#8bd99c;font-weight:700}
+  ul,ol{margin:8px 0 8px 4px;padding-left:22px}
+  li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:118px 1fr;gap:4px 12px;font-size:13.5px;
+      margin:8px 0}
+  .kv b{color:var(--tx2);font-weight:600}
+  hr{border:none;border-top:1px solid var(--line);margin:30px 0}
+  .small{font-size:12.5px;color:var(--tx3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>P0 + P2b 实测验证</h1>
+<div class="sub">
+  批次 <code>pp</code>（24 局）· 对照 <code>cur</code>（12 局，旧码基线）<br>
+  源码 <code>UsrAI.cpp</code> 6652 行 · 引擎 <code>newAOE.exe</code> 09:59:05 重建 · 跑局 09:59:45 → 11:54:04（含一次机器休眠 1h23m）
+</div>
+
+<div class="box blu">
+  <div class="t">一句话结论</div>
+  <b>P0 生效、P2b 空转、净胜率零变化（25.0% vs 25.0%，Fisher p=1.000）。</b>
+  本轮最大收获不是胜率，而是 <b>P2b 被实测证伪</b>：它作用的「我方箭塔」在<b>家里</b>，
+  而祭司反攻期的死点在<b>敌方角落</b>，相距 50+ 格 —— 机制在空间上够不着出事地点。
+</div>
+
+<h2>1 · 战绩</h2>
+
+<table>
+  <tr><th>批次</th><th>n</th><th>胜</th><th>负</th><th>未决</th><th>胜率</th><th>95% CI</th><th>与 pp 的 Fisher p</th></tr>
+  <tr><td><b>pp（P0+P2b，本轮）</b></td><td class="num">24</td><td class="num w">6</td><td class="num l">14</td><td class="num u">4</td><td class="num">25.0%</td><td class="num">12.0 – 44.9</td><td class="num">—</td></tr>
+  <tr><td>cur（旧码基线）</td><td class="num">12</td><td class="num w">3</td><td class="num l">8</td><td class="num u">1</td><td class="num">25.0%</td><td class="num">8.9 – 53.2</td><td class="num">1.000</td></tr>
+  <tr><td>vf_kb2（09-22 末批）</td><td class="num">12</td><td class="num w">5</td><td class="num l">4</td><td class="num u">3</td><td class="num">41.7%</td><td class="num">19.3 – 68.0</td><td class="num">0.446</td></tr>
+  <tr><td>kb+kb2+gsk 合计</td><td class="num">36</td><td class="num w">16</td><td class="num l">13</td><td class="num u">7</td><td class="num">44.4%</td><td class="num">29.5 – 60.4</td><td class="num">0.174</td></tr>
+</table>
+
+<p class="small">
+  恒等式自检：pp 6+14+4=24 ✓ · cur 3+8+1=12 ✓（脚本 <code>_win_recount.py</code> 已内置自检）。<br>
+  ⚠ 与 kb 系三批的差距 <b>p=0.174，仍未达显著</b>，且这批混了一次机器休眠，<b>不足以判「P0+P2b 让 AI 退步」</b>。
+</p>
+
+<div class="box amb">
+  <div class="t">⚠ 判胜口径第二次踩坑（本次差点报出「0 胜」）</div>
+  引擎在<b>胜帧之后还会再写一帧 <code>win:false</code></b>。只看 jsonl <b>最后一行</b>会把胜局判成未决 ——
+  <code>pp1 / pp10 / pp11 / pp13 / pp16 / pp21</code> 六局胜局里有三局（pp10/pp13/pp21）就是这样被抹掉的，首轮统计得出「0 胜 / 24」。
+  <pre><span class="c">// pp13.jsonl 尾部两行</span>
+{"frame":39804,...,"win":<span class="g">true</span>}    <span class="c">← 真正的胜帧</span>
+{"frame":39805,...,"win":<span class="hl">false</span>}   <span class="c">← 引擎多写的一帧，不是「没赢」</span></pre>
+  <b>定稿口径：胜 = jsonl 中【存在任意一行】<code>win==true</code>（必须扫全文件）；AIText 的 <code>VICTORY</code> 只作交叉验证。</b>
+  反向也有实例：<code>pp1/pp11/pp16</code> 的 AIText <b>没有</b> VICTORY 文本，只有 jsonl 报到胜。
+</div>
+
+<h2>2 · P0 验证：<span class="w">生效 ✓</span></h2>
+
+<div class="kv">
+  <b>改动</b><span>反攻期关掉 <code>findConvertTarget</code> 第 2 档（远程军队）；保留方阵/近战/投石车三档</span>
+  <b>判据</b><span>反攻期（帧 &gt; 33000）祭司感化目标中「远程兵」的条数</span>
+  <b>基线 cur</b><span>10 / 66 = <b>15.2%</b>（战车弓兵 ×6、战车 ×1、阔剑兵 ×1）</span>
+  <b>本轮 pp</b><span><b class="w">0 / 80 = 0.0%</b></span>
+</div>
+
+<pre><span class="c">>>> pp 批 反攻期感化目标兵种合计</span>
+{方阵兵: 53, 投石车: 11, 攻城武器厂: 6, Prof.Lu: 4, 阔剑兵: 3, 战车: 2, 战车弓兵: <span class="g">0</span>, 复合弓兵: <span class="g">0</span>}</pre>
+
+<p>
+  P0 的机制目标 100% 达成。但<b>它没有换来胜率</b> —— 因为 14 个负局里，
+  祭司换掉远程目标后<b>照样死</b>：最后一条感化令落在<b>方阵兵（6 局）</b>与<b>投石车（3 局）</b>上，
+  死亡间隔 8 ~ 2300 帧。
+</p>
+
+<div class="box red">
+  <div class="t">★ 这反而是一次干净的证伪</div>
+  之前假设「祭司是因为够到战车弓兵才被打死」。P0 把这条路径彻底关掉后，<b>死亡并没有减少</b>。
+  ⇒ <b>死因不是「选错了目标」，而是「祭司在没有护卫的情况下深入敌阵」</b>。
+  换哪个目标都会死。这条结论直接改写了下一步的方向（见 §5）。
+</div>
+
+<h2>3 · P2b 验证：<span class="l">空转 ✗</span></h2>
+
+<div class="kv">
+  <b>改动</b><span>箭塔索敌从「射程内最近敌人」改为「优先打没在以本塔为目标的敌人」+ 允许锁定时纠偏</span>
+  <b>判据 1</b><span>同塔相邻两条攻击令间隔 &lt; 20 帧（只可能是「Project≠-1 时的主动纠偏」）</span>
+  <b>基线 cur</b><span><b>0</b> 次</span>
+  <b>本轮 pp</b><span><b class="l">0</b> 次（24 局全程零触发）</span>
+</div>
+
+<pre><span class="c">>>> 塔令相邻间隔分布</span>
+cur: n=41  中位=112   <span class="c">(52 帧 ×16 条 = 塔攻击周期)</span>
+pp : n=103 中位=52    <span class="c">(52 帧 ×63 条)</span>
+两批 &lt;20 帧的次数均为 <span class="hl">0</span> —— 分布形状一致，无新行为模式</pre>
+
+<pre><span class="c">>>> 各局「同塔最小相邻间隔」</span>
+[52, 213, 22, 84, 106, 42, 52, 462, 52, 283, 52, 52, 74, 52]   <span class="c">← 全是塔自然攻击周期</span></pre>
+
+<h3>为什么没触发：三条，逐条可证</h3>
+
+<table>
+  <tr><th>#</th><th>原因</th><th>证据</th></tr>
+  <tr>
+    <td class="num">①</td>
+    <td><b>真正打我塔的兵，塔够不到。</b><br>打我方箭塔的主力是 <b>投石车</b>（射程 ≈10 格），而我方箭塔射程 8 格 ⇒ 它永远不在 <code>info.enemy_armies</code> 的 8 格筛选结果里，被 <code>if (d &gt; towerRangeBL) continue;</code> 直接滤掉。</td>
+    <td><code>pp17 / pp19 / pp23</code> 帧 21001：<br><code>HumanAction:投石车 91128 设置攻击目标为 箭塔 11100</code><br>而塔在此后从未对其下令。</td>
+  </tr>
+  <tr>
+    <td class="num">②</td>
+    <td><b>「空闲时优先打非锁塔者」使当前目标几乎不可能是锁塔者。</b><br>纠偏分支要求 <code>curIsHolder</code>（当前目标自己的 <code>WorkObjectSN == 本塔</code>）。但塔空闲时已经优先挑「没在打塔」的兵，锁塔者被主动回避 ⇒ 前置条件自我抵消。</td>
+    <td>逻辑自证（<code>UsrAI.cpp:3927–3932</code>）：<br>空闲取 <code>freeSN</code> 优先 ⇒ <code>Project</code> 指向的极少是 holder。</td>
+  </tr>
+  <tr>
+    <td class="num">③</td>
+    <td><b>★ 空间不可达。</b><br>箭塔在<b>我方基地</b>（≈ 像素 680, 644）；祭司反攻期的死点在<b>敌方角落</b>（像素 2200~2700）⇒ 相距 <b>50+ 格</b>。死在塔的作战半径之外。</td>
+    <td>见 §3.1 坐标表</td>
+  </tr>
+</table>
+
+<h3>3.1 祭司死点坐标（<code>HumanMove</code> 取死亡前最后一条）</h3>
+
+<table>
+  <tr><th>局</th><th>结局</th><th>死帧</th><th>祭司最后坐标</th><th>离我方基地（≈680,644）</th></tr>
+  <tr><td>pp12</td><td class="l">负</td><td class="num">15841</td><td class="num">(559, 644)</td><td>≈ 0 格（防御期，死在家门口）</td></tr>
+  <tr><td>pp14</td><td class="l">负</td><td class="num">16011</td><td class="num">(424, 684)</td><td>≈ 7 格（防御期）</td></tr>
+  <tr><td>pp9</td><td class="l">负</td><td class="num">23720</td><td class="num">(634, 319)</td><td>≈ 9 格（防御期）</td></tr>
+  <tr><td>pp6</td><td class="l">负</td><td class="num">23952</td><td class="num">(947, 1209)</td><td>≈ 17 格（防御期）</td></tr>
+  <tr><td>pp17</td><td class="l">负</td><td class="num">36439</td><td class="num">(2376, 2247)</td><td><b>≈ 50 格</b></td></tr>
+  <tr><td>pp19</td><td class="l">负</td><td class="num">39243</td><td class="num">(2269, 2716)</td><td><b>≈ 59 格</b></td></tr>
+  <tr><td>pp24</td><td class="l">负</td><td class="num">38632</td><td class="num">(2381, 2404)</td><td><b>≈ 51 格</b></td></tr>
+  <tr><td>pp21</td><td class="w">胜</td><td class="num">39395</td><td class="num">(2701, 2756)</td><td><b>≈ 63 格</b>（敌方武器厂）</td></tr>
+</table>
+
+<p class="small">我方 TC 在块 (19, 18) ⇒ 像素 (680, 644)。BL = 35.777。反攻期死点与胜点都在敌方角落同一片区 ⇒ 塔（在家）对这片区域无任何作用。</p>
+
+<div class="box vio">
+  <div class="t">附带澄清：仇恨转移本身是真的，只是太慢</div>
+  <code>pp17</code> 实测：我方箭塔 11100 于帧 6843/6931/6983/7035 连打 <code>刀斧兵 91114</code>，
+  该兵在帧 <b>7156</b>（约 225 帧后）把目标改成 <code>箭塔 11100</code>。
+  ⇒ 「塔打谁→谁转来打塔」成立，但延迟 200+ 帧，且只对<b>近战</b>有效。
+  <code>WorkObjectSN</code> 是引擎正式字段（<code>AI接口使用指南.md:128 // 当前工作或攻击目标</code>），
+  对敌方单位会正常填充 —— 所以 P2b 失效<b>不是字段问题，是条件不可达</b>。
+</div>
+
+<h2>4 · 成功漏斗：瓶颈位置没变</h2>
+
+<table>
+  <tr><th>环节</th><th>cur（12 局）</th><th>pp（24 局）</th></tr>
+  <tr><td>① 开局</td><td class="num">12</td><td class="num">24</td></tr>
+  <tr><td>② 进入反攻期</td><td class="num">12（100%）</td><td class="num">20（83%）</td></tr>
+  <tr><td>③ 反攻期发过感化令</td><td class="num">12</td><td class="num">20</td></tr>
+  <tr><td>④ <b>胜</b></td><td class="num">3（25.0%）</td><td class="num">6（25.0%）</td></tr>
+  <tr><td>★ ③ → ④</td><td class="num">25%</td><td class="num">30%</td></tr>
+  <tr><td>祭司亡 · 防御期</td><td class="num">0 局</td><td class="num u">4 局（16.7%）</td></tr>
+  <tr><td>祭司亡 · 反攻期</td><td class="num">8 局<br>37304 ~ 39894（极差 2590）</td><td class="num l">10 局<br>35354 ~ 43409（极差 8055）</td></tr>
+</table>
+
+<p>
+  胜/负的分离度仍然 <b>100%</b>：6 个胜局的祭司最后一条感化令<b>全是</b><code>攻城武器厂</code>，
+  14 个负局<b>全是</b>别的（方阵兵 6 / 投石车 3 / 复合弓兵 1 / 战车 1 / 阔剑兵 1 / 战车弓兵 1 / 方阵兵）。
+</p>
+
+<div class="box amb">
+  <div class="t">新情况：防御期早死 4/24（16.7%），P0 的门禁没覆盖防御期</div>
+  历史四批的早死（&lt;30000 帧）合计只有 2/48 = 4.2%。pp 是 4/24。
+  <b>但 Fisher p=0.091（vs 历史）/ p=0.278（vs cur），未达显著</b>，不能据此断言是改动引起。
+  <br>这 4 局的死法与 N-2 完全同源：<b>祭司在第二/三波跑去感化兵，被 <code>战车弓兵</code>/<code>复合弓兵</code> 打死</b>
+  （pp14 最后感化令 = 战车弓兵、pp6 = 复合弓兵；pp12/pp9 虽是方阵兵/战车，但同样孤立无援）。
+</div>
+
+<h2>5 · 死前护卫状态（下一步方向的直接依据）</h2>
+
+<p>日志里有现成的状态行：<code>Priest st=? hp=? nearE=? threat=? mode=? | ally=? wound25=? nearAlly=?BL cd=?</code>。取死亡前 400 帧内最后一条：</p>
+
+<table>
+  <tr><th>局</th><th>结局</th><th>距死帧</th><th>hp</th><th>ally（我方军队总数）</th><th>nearAlly（BL）</th></tr>
+  <tr><td>pp17</td><td class="l">负</td><td class="num">39</td><td class="num">0.13</td><td class="num">1</td><td class="num">3.4</td></tr>
+  <tr><td>pp9</td><td class="l">负</td><td class="num">20</td><td class="num">0.13</td><td class="num">0</td><td class="num">∞</td></tr>
+  <tr><td>pp3</td><td class="l">负</td><td class="num">9</td><td class="num">0.14</td><td class="num">1</td><td class="num">11.5</td></tr>
+  <tr><td>pp24</td><td class="l">负</td><td class="num">32</td><td class="num">0.29</td><td class="num">3</td><td class="num">6.0</td></tr>
+  <tr><td>pp19</td><td class="l">负</td><td class="num">43</td><td class="num">0.08</td><td class="num">5</td><td class="num">2.6</td></tr>
+  <tr><td>pp1</td><td class="w">胜</td><td class="num">—</td><td class="num">0.91</td><td class="num">20</td><td class="num">2.3</td></tr>
+  <tr><td>pp13</td><td class="w">胜</td><td class="num">—</td><td class="num">0.43</td><td class="num">18</td><td class="num">3.7</td></tr>
+  <tr><td>pp21</td><td class="w">胜</td><td class="num">—</td><td class="num">1.00</td><td class="num">15</td><td class="num">1.2</td></tr>
+</table>
+
+<p class="small">
+  <b>样本很稀疏</b>（状态行每 100~300 帧才打印一条，上表只列距死帧 ≤50 帧的），
+  所以这是<b>方向性证据不是统计量</b>：负局临死前 <code>ally</code> 落在 0~5，胜局则在 5~20。
+</p>
+
+<h2>6 · 建议</h2>
+
+<table>
+  <tr><th>项</th><th>决定</th><th>理由</th></tr>
+  <tr>
+    <td><span class="tag p0">P0</span> 反攻期禁远程感化档</td>
+    <td><b class="w">保留</b></td>
+    <td>机制 100% 达成（15.2% → 0%）；纯加筛选、不换控制器；跑满 24 局零副作用；且封死了一条已证实的死亡路径。成本 6 行。</td>
+  </tr>
+  <tr>
+    <td><span class="tag p0">P2b</span> 箭塔索敌筛选</td>
+    <td><b class="l">建议撤回</b></td>
+    <td>24 局零触发（空转）；前提与现实不匹配（打我塔的投石车在我塔射程外）；<b>且作用域在我方基地，与祭司死点相距 50+ 格</b>。留着是 40 行会误导后来人的死代码。</td>
+  </tr>
+  <tr>
+    <td>P0 门禁扩到防御期</td>
+    <td><b class="u">可做，但要分开定</b></td>
+    <td>能堵住 4/24 的防御期早死（其中 2 局最后感化令确为远程兵）。⚠ 但攻略主张「第一波先转弓箭手去探路」，要决定是否只覆盖<b>第二/三波</b>（帧 13500~33000）。</td>
+  </tr>
+  <tr>
+    <td><span class="tag p1">P0b</span> 祭司前出加护卫门槛</td>
+    <td><b>推荐为下一步</b></td>
+    <td>本轮最硬的产出就是它：<b>换目标照样死</b>（P0 证伪）+ 死前 ally 中位 4.5、胜局 5~20。判据用现成的 <code>ally</code>/<code>nearAlly</code> 即可，不必新造状态。</td>
+  </tr>
+</table>
+
+<div class="box grn">
+  <div class="t">为什么 P0b 而不是继续拧「选目标」的旋钮</div>
+  P0 已经证明：把「够到即入网」的远程档整个关掉，祭司的死亡<b>一条都没少</b>。
+  这说明 <b>目标选择不是自变量</b> —— 自变量是「祭司单独站在哪」。
+  继续在 <code>findConvertTarget</code> 里调档位顺序，预期收益仍是零。
+</div>
+
+<h2>7 · 附：证据脚本</h2>
+
+<div class="kv">
+  <b>_win_recount.py</b><span>批量重数胜负；内置恒等式自检；判胜扫全 jsonl。<code>python _win_recount.py pp:24 "pp 批" cur:12 "cur 基线"</code></span>
+  <b>_priest_death.py</b><span>逐局取祭司最后一条感化令 + 死亡帧 + 死亡阶段。<code>python _priest_death.py pp</code>（本轮已改为通用前缀 + 修正判胜口径）</span>
+  <b>_pp_analyze.py</b><span>机制指标：反攻期感化兵种分布、塔令数/目标数/相邻间隔、敌方→塔/→祭司计数（按 flag 过滤阵营）</span>
+  <b>raw</b><span><code>pp1..pp24.{ait,jsonl}</code>、<code>pp_verify.sh</code>、<code>cur1..cur12.*</code></span>
+</div>
+
+<hr>
+<p class="small">
+  批次备注：<code>pp</code> 跑局在 10:18:56（pp15 结束）到 11:41:51（pp16 开始）之间有一次 <b>1h23m 机器休眠</b>，
+  空洞落在两局之间、无局被中断；休眠前后两段各自都产出了胜局（前段 pp1/10/11/13，后段 pp16/21），故数据有效。
+</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AoE3 UsrAI · o1 批机制体检与优化方向（2026-09-26）</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1b1f24; --sub:#5b6570; --line:#e3e7ec;
+    --good:#1a7f4b; --bad:#c0392b; --warn:#b8860b; --accent:#2563eb; --soft:#eef4ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+       font:15px/1.65 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.3px}
+  .meta{color:var(--sub);font-size:13px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
+  h2{font-size:18px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+  h3{font-size:15px;margin:16px 0 8px;color:var(--sub)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left}
+  th{background:#f2f5f8;font-weight:600;color:var(--sub);font-size:12.5px}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  tr.hl td{background:var(--soft);font-weight:600}
+  .win{color:var(--good);font-weight:600}
+  .lose{color:var(--bad);font-weight:600}
+  .neu{color:var(--warn);font-weight:600}
+  .kpi{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 4px}
+  .kpi div{flex:1;min-width:132px;background:var(--soft);border:1px solid #d6e4fb;border-radius:8px;padding:10px 12px}
+  .kpi b{display:block;font-size:20px;color:var(--accent);font-variant-numeric:tabular-nums}
+  .kpi span{font-size:12px;color:var(--sub)}
+  code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:12.5px;
+       font-family:"SFMono-Regular",Consolas,monospace}
+  .note{background:#fff8e6;border-left:3px solid var(--warn);padding:10px 14px;margin:12px 0;font-size:13.5px}
+  .ok{background:#eaf7ef;border-left:3px solid var(--good);padding:10px 14px;margin:12px 0;font-size:13.5px}
+  .bad{background:#fdecea;border-left:3px solid var(--bad);padding:10px 14px;margin:12px 0;font-size:13.5px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:4px 0}
+  .bar{height:9px;background:#e6eaf0;border-radius:5px;overflow:hidden;display:inline-block;width:150px;vertical-align:middle}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  .small{font-size:12.5px;color:var(--sub)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>AoE3 UsrAI · o1 批机制体检与优化方向</h1>
+<div class="meta">
+  2026-09-26 ｜ 现行版 <code>UsrAI.cpp</code> = <code>0e26e560</code>·6607 行 / <code>UsrAI.h</code> = <code>c24fd401</code>·403 行<br>
+  样本 o101~o124，n=24 ｜ 判胜口径：jsonl <b>任一行</b> <code>win:true</code> ＋ AIText <code>VICTORY</code>/<code>DEFEAT</code> 交叉验证，恒等式 胜+负+未决==n 已过
+</div>
+
+<div class="card">
+<h2>结论先行</h2>
+<div class="kpi">
+  <div><b>45.8%</b><span>胜率（11/24）</span></div>
+  <div><b>41.7%</b><span>败率（10/24）</span></div>
+  <div><b>12.5%</b><span>未决（3/24）</span></div>
+  <div><b>87.5%</b><span>进反攻期</span></div>
+</div>
+<div class="ok">
+  <b>代际差已消失。</b>现行版 11/24 = 45.8%（Wilson 95% CI 27.9~64.9），与旧码 kb 系 16/36 = 44.4%
+  <b>完全同分布（Fisher p = 1.0000）</b>；相对新码全侧合并 17/79 = 21.5% 显著提升（<b>p = 0.0339</b>），
+  相对最低点 p 批 12.5% 为 <b>p = 0.0243</b>。此前悬挂两天的 p≈0.015~0.019 代际差信号，本次证伪为「负资产兵种」，不是环境漂移。
+</div>
+<table>
+  <tr><th>对照臂</th><th class="n">胜/局</th><th class="n">胜率</th><th class="n">Fisher p（双尾）</th><th>判读</th></tr>
+  <tr><td>旧码系 gsk+kb+kb2（5000）</td><td class="n">16/36</td><td class="n">44.4%</td><td class="n">1.0000</td><td>同分布 ⇒ 回到历史最佳</td></tr>
+  <tr><td>pp 批（6000+P0+P2b）</td><td class="n">6/24</td><td class="n">25.0%</td><td class="n">0.2270</td><td>未达显著</td></tr>
+  <tr><td>w1 批（5000，本码前身）</td><td class="n">5/19</td><td class="n">26.3%</td><td class="n">0.2207</td><td>未达显著</td></tr>
+  <tr class="hl"><td>新码全侧合并 cur+pp+p0+w1</td><td class="n">17/79</td><td class="n">21.5%</td><td class="n">0.0339</td><td><b>显著提升</b></td></tr>
+  <tr><td>p 批（6000+P0）</td><td class="n">3/24</td><td class="n">12.5%</td><td class="n">0.0243</td><td><b>显著提升</b></td></tr>
+</table>
+<div class="note">
+  败率同样显著改善：现行 41.7% vs p 批 79.2%，<b>p = 0.0171</b>。
+</div>
+</div>
+
+<div class="card">
+<h2>归因：胜率由「复合弓兵占比」单调决定</h2>
+<p>跨 6 个批次按兵种重数统计（SN≥91300 记为我方造兵），得到一条<b>完美单调曲线</b>：</p>
+<table>
+  <tr><th>批次</th><th class="n">复合弓兵/局</th><th class="n">普通弓箭手/局</th><th class="n">复合弓占比</th><th class="n">胜率</th><th>占比条</th></tr>
+  <tr class="hl"><td><b>o1（现行，删兜底）</b></td><td class="n">28.0</td><td class="n">0.00</td><td class="n">100%</td><td class="n win">45.8%</td><td><span class="bar"><i style="width:100%"></i></span></td></tr>
+  <tr><td>kb 旧码（09-22）</td><td class="n">26.6</td><td class="n">3.42</td><td class="n">88.6%</td><td class="n win">44.4%</td><td><span class="bar"><i style="width:88%"></i></span></td></tr>
+  <tr><td>w1（5000）</td><td class="n">17.9</td><td class="n">9.11</td><td class="n">66.3%</td><td class="n neu">26.3%</td><td><span class="bar"><i style="width:66%"></i></span></td></tr>
+  <tr><td>cur（6000）</td><td class="n">15.3</td><td class="n">11.33</td><td class="n">57.4%</td><td class="n lose">25.0%</td><td><span class="bar"><i style="width:57%"></i></span></td></tr>
+  <tr><td>pp（6000+P0+P2b）</td><td class="n">14.1</td><td class="n">10.73</td><td class="n">56.8%</td><td class="n lose">25.0%</td><td><span class="bar"><i style="width:57%"></i></span></td></tr>
+  <tr><td>p（6000+P0）</td><td class="n">11.5</td><td class="n">12.80</td><td class="n">47.3%</td><td class="n lose">12.5%</td><td><span class="bar"><i style="width:47%"></i></span></td></tr>
+</table>
+<div class="ok">
+  <b>普通弓兵是负资产。</b>它挤占的是同一份人口与资源预算：每多产 1 个普通弓兵，就少 ~1.3 个复合弓兵。
+  <code>CREATE_BOWMAN</code> 的删除动作精确落在 <code>bak_20260924_user_woodtech</code>(6631) →
+  <code>bak_20260924_user_farm10</code>(6595) 之间，即 09-24 22:55 那批自改，凭据是该文件链上该符号由 7 处降为 1 处。
+</div>
+<p class="small">
+  排除项：复合弓兵<b>首产帧</b>各批几乎一致（o1 中位 23254 / w1 23442 / kb 23349），故差异<b>不是</b>就绪时机，而是产能分配。
+</p>
+</div>
+
+<div class="card">
+<h2>漏斗：真正质变在「③→④」</h2>
+<table>
+  <tr><th>阶段</th><th class="n">o1 批</th><th class="n">占比</th><th>对照（历史批）</th></tr>
+  <tr><td>① 总局</td><td class="n">24</td><td class="n">100%</td><td>—</td></tr>
+  <tr><td>② 进反攻期（ALL WAVES DEFEATED）</td><td class="n">21</td><td class="n">87.5%</td><td>p 批 92% / pp 批 83% —— 同量级</td></tr>
+  <tr><td>③ 反攻期祭司拿到目标</td><td class="n">14</td><td class="n">58.3%</td><td>pp 批 83%</td></tr>
+  <tr class="hl"><td>④ 胜</td><td class="n">11</td><td class="n">78.6%</td><td><b>历史 ③→④ 仅 25~30%</b></td></tr>
+</table>
+<div class="ok">
+  <b>删掉普通弓后，祭司一旦向前推进到目标，成功率从 ~28% 跳到 78.6%（×2.8）。</b>
+  机制解释：护卫部队由清一色复合弓兵构成 ⇒ 推进途中不被消耗。
+  胜局末条感化目标 <b>11/11 = 100% 是攻城武器厂</b>（与历史完全一致的分离度）。
+</div>
+</div>
+
+<div class="card">
+<h2>剩余三大瓶颈（按可夺回的百分点排序）</h2>
+
+<h3>瓶颈 ①　防御期祭司早死 —— 直接损失 3/24 = 12.5%</h3>
+<table>
+  <tr><th>局</th><th class="n">死亡帧</th><th class="n">ally</th><th class="n">nearE</th><th class="n">Mil</th><th class="n">复合弓兵</th><th>死因</th></tr>
+  <tr><td>o111</td><td class="n">15035</td><td class="n">0</td><td class="n">8.9</td><td class="n">1</td><td class="n">0</td><td>被方阵兵 91117 击杀</td></tr>
+  <tr><td>o116</td><td class="n">15627</td><td class="n">1</td><td class="n">9.2</td><td class="n">1</td><td class="n">0</td><td>被方阵兵 91154 击杀</td></tr>
+  <tr><td>o121</td><td class="n">16690</td><td class="n">1</td><td class="n">12.0</td><td class="n">0</td><td class="n">0</td><td>被战车弓兵 91130 击杀</td></tr>
+</table>
+<p class="small">
+  共同特征：<code>ally</code> 从 4→0 / 3→2→1 / 2→1 单调衰减到 <b>0~1</b>，且此时<b>第一个复合弓兵还没产出</b>（首产中位 23254）⇒ 祭司在军队成型前裸奔。<br>
+  <b>建议 P0b</b>：<code>ally &lt; N</code>（建议 3）且 <code>nearE &lt; 15</code> 时禁止前出、改发后撤令。判据现成，<code>ally</code>/<code>nearAlly</code> 已在状态行打印。
+</p>
+
+<h3>瓶颈 ②　未决：反攻期军队被消耗殆尽 —— 3/24 = 12.5%</h3>
+<table>
+  <tr><th>局</th><th class="n">末帧</th><th class="n">Mil</th><th class="n">ally</th><th class="n">祭司 hp</th><th class="n">Fd/Wd/St/Gd</th></tr>
+  <tr><td>o112</td><td class="n">45001</td><td class="n">2</td><td class="n">2</td><td class="n">0.01</td><td class="n">274/201/50/0</td></tr>
+  <tr><td>o113</td><td class="n">45001</td><td class="n">3</td><td class="n">3</td><td class="n">1.00</td><td class="n">247/135/40/0</td></tr>
+  <tr><td>o123</td><td class="n">45001</td><td class="n">2</td><td class="n">2</td><td class="n">0.16</td><td class="n">137/92/40/0</td></tr>
+</table>
+<p class="small">
+  打满 45000 帧，军队只剩 2~3 个，祭司 ADVANCE to Siege 仅 1~2 次 ⇒ 攻不进去也退不出来。<br>
+  <b>建议</b>：反攻期设军队下限触发器（Mil 跌破阈值即回撤补给），而非一味推进。
+</p>
+
+<h3>瓶颈 ③　黄金供给（根因级，限制复合弓兵总量）</h3>
+<table>
+  <tr><th>观测</th><th>实测值</th></tr>
+  <tr><td>UPG 行 <code>Gd</code> 非零占比</td><td class="n">32.1%（4228 条采样），峰值仅 70</td></tr>
+  <tr><td>村民工作目标分布（o101）</td><td>树 <b>191</b> ｜ 瞪羚 48 ｜ 浆果 25 ｜ 农场 2 ｜ <b>金矿 16</b></td></tr>
+  <tr><td><code>[GOLD-GATE f=19800~20400]</code></td><td>在用远金矿格 = <b>0</b>，金矿仓令 0/1</td></tr>
+  <tr><td><code>[GOLD-STOCK f=22551]</code></td><td>在用格 = <b>1</b>（仅 1 个村民在采金）</td></tr>
+</table>
+<div class="bad">
+  复合弓兵硬成本 20 金/个，28 个/局 ⇒ 需 560 金。当前<b>木材投入是黄金的 12 倍</b>，黄金端面几乎无供给。
+  而「复合弓兵占比 ↔ 胜率」已被 6 批数据钉死 ⇒ <b>黄金上限就是胜率上限</b>。这是优先级最高的结构性改动。
+</div>
+</div>
+
+<div class="card">
+<h2>副作用核查（均已排除）</h2>
+<table>
+  <tr><th>项</th><th>实测</th><th>判定</th></tr>
+  <tr><td>快照机制（09-24 加固）</td><td>main 累计 430,638；<b>fallback≠0 或 skip≠0 的局 = 0</b></td><td class="win">无退化</td></tr>
+  <tr><td>「删除兜底 ⇒ 靶场空转」担忧</td><td>复合弓兵 28.0/局（历史最高），反攻启动 33001 时早已成军</td><td class="win">未发生</td></tr>
+  <tr><td>普通弓兵产出</td><td>0/24 局（唯一一条弓箭手记录属敌方预生成段 911xx）</td><td class="win">兜底已净埻</td></tr>
+  <tr><td>负局死因一致性</td><td>10/10 = <code>DEFEAT: Priest killed</code></td><td class="lose">仍是单一死因</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>下一步建议</h2>
+<ol>
+  <li><b>P0b 护卫门槛</b>（夺回 ~12.5pp）：<code>ally&lt;3 且 nearE&lt;15</code> ⇒ 禁前出 / 强制后撤。判据现成、改动小，风险最低。</li>
+  <li><b>黄金供给</b>（夺回上限抑压，数量待评估）：提高采金村民配比，目标 Gd 峰值和 UPG 采集令数。<b>建议先做只读探针跑一轮</b>，确认瓶颈确在分配而非矿点距离。</li>
+  <li><b>反攻期军队下限触发器</b>（针对 3 局未决）：Mil 跌破阈值转补给。</li>
+  <li class="small">不建议方向：继续调 <code>WAVE1_TIME</code>（已证无效）、重做 P0/P2b（已分别证收益为零 / 空转）。</li>
+</ol>
+<div class="note">
+  ⚠ <b>归因可信度</b>：跨批对比为观察性相关，非单变量对照。第 1 条（删兜底）有精确的文件链凭据与时点支撑，最强；
+  用户 09-24 22:28 的伐木/复合弓前移与 22:55 的 <code>MAX_FARMS 10</code>+<code>onFarm</code> 同批混入，未做分离验证。
+</div>
+</div>
+
+<div class="meta" style="text-align:center;margin-top:24px">
+  数据：<code>o101~o124.{ait,jsonl}</code>　｜　脚本：<code>o1_verify.sh</code> · <code>_o1_analyze.py</code><br>
+  源码指纹：<code>UsrAI.cpp</code> <code>0e26e560</code>·6607（本次体检未改动任何代码）
+</div>
+
+</div>
+</body>
+</html>

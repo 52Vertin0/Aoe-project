@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>目前胜率最高的版本</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#f5f6f8;color:#1c1f23;font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:32px 20px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:25px;letter-spacing:-.3px}
+  .sub{color:#6b7280;font-size:13.5px;margin-top:6px}
+  .banner{margin:22px 0;background:#fff;border-left:5px solid #1a7f37;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  .banner .big{font-size:19px;font-weight:700;color:#166534}
+  .banner p{color:#374151;margin-top:8px;font-size:14px}
+  h2{font-size:17px;margin:30px 0 12px;padding-bottom:7px;border-bottom:2px solid #e5e7eb}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:9px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:13.6px}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid #eef0f3}
+  th{background:#f0f2f5;font-weight:600;font-size:12.6px;color:#4b5563}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:none}
+  .top1{background:#eaf7ee;font-weight:600}
+  .hl{background:#fdf6e3}
+  .muted{color:#9ca3af;font-size:12.6px}
+  code{background:#eef1f5;border-radius:4px;padding:1.5px 6px;font-size:12.6px;font-family:Consolas,monospace}
+  .card{background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:14px;font-size:14px}
+  .card b{color:#111827}
+  .card.warncard{border-left:4px solid #f0ad4e}
+  .card.okcard{border-left:4px solid #1a7f37}
+  ul{margin:8px 0 0 20px}li{margin:5px 0}
+  .foot{color:#9ca3af;font-size:12.5px;margin-top:26px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>目前胜率最高的版本</h1>
+  <div class="sub">全臂统一口径（伪 U 已剔除 · Wilson 95%CI）· 数据截至 2026-10-08 13:00</div>
+
+  <div class="banner">
+    <div class="big">已实测最稳的最高：<code>fixM</code>（<code>055e3668</code>）四图 62.1%（59/96）</div>
+    <p>点估计更高的是 <code>pe4</code> 64.6% / <code>wb4</code> 62.5%，但只有 48 局（12 局/图）。
+    <b>⚠ 它们全部是「复合弓」版</b>；<b>当前工作版 <code>ca45bd24</code>（战车弓）从未跑过四图</b>——而它在 map 单图上比 fixM 高 <b>16.6pp</b>，很可能才是真正最高。</p>
+  </div>
+
+  <h2>一、四图合计排行（Top 12）</h2>
+  <table>
+    <tr><th>#</th><th>臂</th><th>弓种</th><th class="num">n</th><th class="num">W</th><th class="num">总胜率</th><th class="num">95%CI</th><th class="num">map</th><th class="num">map1</th><th class="num">map2</th><th class="num">map3</th></tr>
+    <tr><td>1</td><td><code>pe4</code></td><td>复合弓</td><td class="num">48</td><td class="num">31</td><td class="num">64.6%</td><td class="num">50.4~76.6</td><td class="num">4/12</td><td class="num">8/12</td><td class="num">10/12</td><td class="num">9/12</td></tr>
+    <tr><td>2</td><td><code>wb4</code></td><td>复合弓</td><td class="num">48</td><td class="num">30</td><td class="num">62.5%</td><td class="num">48.4~74.8</td><td class="num">2/12</td><td class="num">7/12</td><td class="num">11/12</td><td class="num">10/12</td></tr>
+    <tr class="top1"><td>3</td><td><code>fixM</code></td><td>复合弓</td><td class="num"><b>96</b></td><td class="num">59</td><td class="num">62.1%</td><td class="num">52.1~71.2</td><td class="num">7/24</td><td class="num">16/24</td><td class="num">18/24</td><td class="num">18/24</td></tr>
+    <tr><td>4</td><td><code>fixN2</code></td><td>复合弓</td><td class="num">32</td><td class="num">19</td><td class="num">59.4%</td><td class="num">42.3~74.5</td><td class="num">2/8</td><td class="num">4/8</td><td class="num">6/8</td><td class="num">7/8</td></tr>
+    <tr><td>5</td><td><code>sprd</code></td><td>复合弓</td><td class="num">96</td><td class="num">55</td><td class="num">57.3%</td><td class="num">47.3~66.7</td><td class="num">7/24</td><td class="num">12/24</td><td class="num">14/24</td><td class="num">22/24</td></tr>
+    <tr><td>6</td><td><code>sprd2</code></td><td>复合弓</td><td class="num">96</td><td class="num">51</td><td class="num">53.7%</td><td class="num">43.7~63.4</td><td class="num">5/24</td><td class="num">14/24</td><td class="num">16/24</td><td class="num">16/24</td></tr>
+    <tr><td>7</td><td><code>fix1</code></td><td>复合弓</td><td class="num">48</td><td class="num">25</td><td class="num">52.1%</td><td class="num">38.3~65.5</td><td class="num">4/12</td><td class="num">3/12</td><td class="num">7/12</td><td class="num">11/12</td></tr>
+    <tr><td>8</td><td><code>base0</code></td><td>复合弓</td><td class="num">48</td><td class="num">25</td><td class="num">52.1%</td><td class="num">38.3~65.5</td><td class="num">3/12</td><td class="num">6/12</td><td class="num">7/12</td><td class="num">9/12</td></tr>
+    <tr><td>9</td><td><code>fixK</code></td><td>复合弓</td><td class="num">96</td><td class="num">49</td><td class="num">51.0%</td><td class="num">41.2~60.8</td><td class="num">3/24</td><td class="num">16/24</td><td class="num">16/24</td><td class="num">14/24</td></tr>
+    <tr class="hl"><td>10</td><td><code>fixN3</code></td><td>复合弓</td><td class="num">96</td><td class="num">46</td><td class="num">49.5%</td><td class="num">39.5~59.4</td><td class="num">3/24</td><td class="num">16/24</td><td class="num">12/24</td><td class="num">15/24</td></tr>
+    <tr class="hl"><td>11</td><td><code>current</code></td><td>复合弓</td><td class="num">96</td><td class="num">47</td><td class="num">49.0%</td><td class="num">39.2~58.8</td><td class="num">2/24</td><td class="num">14/24</td><td class="num">14/24</td><td class="num">17/24</td></tr>
+    <tr class="hl"><td>12</td><td><code>fixL</code></td><td>复合弓</td><td class="num">96</td><td class="num">46</td><td class="num">47.9%</td><td class="num">38.2~57.8</td><td class="num">1/24</td><td class="num">12/24</td><td class="num">15/24</td><td class="num">18/24</td></tr>
+  </table>
+  <div class="muted" style="margin-top:8px">注：<code>fix3</code>(62 局截断)、<code>arb1</code>(10 局截断) 等因数据不完整未列入。</div>
+
+  <h2>二、map 单图排行（本项目的优化焦点）</h2>
+  <table>
+    <tr><th>#</th><th>臂</th><th>说明</th><th class="num">n</th><th class="num">W</th><th class="num">胜率 (95%CI)</th><th class="num">祭死率</th></tr>
+    <tr class="top1"><td>1</td><td><code>wbase</code></td><td>club8 · 无人口闸 · <code>0565ef20</code></td><td class="num">48</td><td class="num">24</td><td class="num">50.0% (36.4~63.6)</td><td class="num">27.1%</td></tr>
+    <tr class="top1"><td>1</td><td><code>pe5</code></td><td>祭司卫队闸（10-07 dsh）</td><td class="num">48</td><td class="num">24</td><td class="num">50.0% (36.4~63.6)</td><td class="num">27.1%</td></tr>
+    <tr class="top1"><td>1</td><td><code>pe2</code></td><td>祭司卫队闸（10-07 dsh）</td><td class="num">48</td><td class="num">24</td><td class="num">50.0% (36.4~63.6)</td><td class="num">22.9%</td></tr>
+    <tr><td>4</td><td><code>farm6</code></td><td>—</td><td class="num">48</td><td class="num">22</td><td class="num">45.8% (32.6~59.7)</td><td class="num">31.2%</td></tr>
+    <tr class="hl"><td>5</td><td><code>club8n</code></td><td><b>当前工作版</b> · club8 + 人口闸 · <code>ca45bd24</code></td><td class="num">48</td><td class="num">22</td><td class="num">45.8% (32.6~59.7)</td><td class="num">39.6%</td></tr>
+  </table>
+
+  <h2>三、⚠ 三条必须知道的前提</h2>
+  <div class="card warncard">
+    <b>① 62~65% 那批全是「复合弓」版。</b>战车弓的切换发生在 10-07 23:35（<code>bak_20261007_chariot</code>）。<code>pe4</code>/<code>wb4</code>/<code>fixM</code>/<code>sprd</code> 等<b>都不含</b>当前代码里的战车弓、armypush24、clubman8 与人口闸。<br><br>
+    <b>② 当前工作版 <code>ca45bd24</code> 从未跑过四图。</b>它只有 map 单图 48 局的 45.8%。<br><br>
+    <b>③ 跨批不可严格比。</b>不同日期/并行度存在批次效应；n=48 噪声带 ±14pp、n=96 约 ±5~10pp。
+  </div>
+
+  <h2>四、★ 最重要的推断：当前版可能已经超过 fixM</h2>
+  <div class="card okcard">
+    同一张 map.njust，<b>当前版 45.8%（22/48） vs fixM 29.2%（7/24）⇒ +16.6pp</b>。<br>
+    若其余三图维持 fixM 的水平（map1 67% / map2 75% / map3 75%），当前版四图合计大致可达
+    <b>(45.8 + 67 + 75 + 75) / 4 ≈ 65.7%</b> —— 高于 <code>fixM</code> 的 62.1%。<br>
+    <span class="muted">这只是外推，不是实测；但方向明确：<b>当前版很可能才是目前真正最高的版本</b>。</span>
+  </div>
+
+  <h2>五、建议</h2>
+  <div class="card">
+    <ul>
+      <li>跑 <b>当前版 <code>ca45bd24</code> 四图 ×24 = 96 局</b>（与 fixM 同口径、同局数），约 30~50 分钟 ⇒ 即可回答"当前代码的真实胜率上限"。</li>
+      <li>若确认 ≥62%，则当前版即为最优，可直接以它为准继续迭代。</li>
+      <li>若低于 fixM，则说明后面几刀（战车弓/armypush/clubman/人口闸）有净负项，需要按图分层回溯是哪一刀。</li>
+    </ul>
+  </div>
+
+  <div class="foot">
+    口径：<code>W</code>=祭司转换敌武器厂｜<code>P</code>=祭司死｜<code>T</code>=TC 被毁｜<code>U</code>=超时（伪 U 已剔除）<br>
+    脚本：<code>_allarms.py</code>（单图）｜<code>_allarms4.py</code>（四图 + 分层）
+  </div>
+</div>
+</body>
+</html>

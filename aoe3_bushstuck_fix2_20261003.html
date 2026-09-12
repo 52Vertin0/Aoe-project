@@ -1,0 +1,159 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>浆果卡死修复 · 第二轮</title>
+<style>
+body{font-family:-apple-system,'Microsoft Yahei',sans-serif;margin:22px;background:#f6f7f9;color:#1a1a1a;line-height:1.65}
+.wrap{max-width:1000px;margin:0 auto}
+h1{font-size:21px;margin:0 0 4px}h2{font-size:17px;margin:22px 0 8px;border-left:4px solid #3a6ea5;padding-left:9px}
+h3{font-size:14px;margin:12px 0 5px}
+.card{background:#fff;border:1px solid #e3e6ea;border-radius:8px;padding:12px 16px;margin:10px 0}
+.tldr{background:#fdf4f3;border-left:5px solid #c0392b}
+.ok{background:#f0f9f3;border-left:5px solid #1e7e46}
+.warn{background:#fffbf0;border-left:5px solid #d9a400}
+.note{color:#666;font-size:12.5px}
+table{border-collapse:collapse;font-size:13px;width:100%;margin:8px 0}
+td,th{border:1px solid #e3e6ea;padding:5px 9px;text-align:left;vertical-align:top}
+th{background:#eef1f5;font-weight:600}
+tbody tr:nth-child(even){background:#fafbfc}
+pre{background:#1e242c;color:#e6edf3;padding:11px 14px;border-radius:7px;font-size:12.5px;
+    overflow-x:auto;line-height:1.5;font-family:Consolas,'Courier New',monospace}
+pre .c{color:#8b949e}pre .hl{color:#ff8b81;font-weight:700}pre .g{color:#7ee2a8;font-weight:700}
+code{font-family:Consolas,monospace;font-size:12.5px;background:#eef1f5;padding:1px 4px;border-radius:3px}
+.mono{font-family:Consolas,monospace;font-size:12.5px}
+.tag{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 6px;border-radius:4px}
+.t-red{background:#fdf1f0;color:#c0392b;border:1px solid #f0c6c1}
+.t-grn{background:#eef8f1;color:#1e7e46;border:1px solid #c2e5d0}
+.t-amb{background:#fff8e6;color:#9a6700;border:1px solid #f0dcae}
+.k{color:#3a6ea5;font-weight:600}
+</style></head><body><div class="wrap">
+
+<h1>「采集者一直不动」修复 · 第二轮 —— 补齐农场 / 大象闭环</h1>
+<p class="note">2026-10-03 · 基线 = 上轮修复版 <code>db51d94e</code>（7113 行）·
+本轮 <code>UsrAI.cpp</code> <b>7140 行</b>（+27）· <code>UsrAI.h</code> <b>508 行</b>（注释更新）</p>
+
+<div class="card tldr">
+<h3 style="margin-top:0">TL;DR</h3>
+上轮把「<b>树 / 浆果 / 瞪羚 / 金 / 石</b>」五类目标接进了「卡死 → 拉黑 → 换目标」闭环。
+本轮的发现是：<b>还有两条同形态的漏网路径 —— 大象和农场</b>，它们既不记录目标、也不查黑名单，
+所以村民在这两类目标上卡死时，兜底<b>完全失效</b>（和上轮浆果的病一模一样）。<br>
+本轮把这些补齐，并按目标类型<b>区分拉黑时限</b>（农场 36 秒 / 资源点 10 分钟），
+再给 <code>[STUCK]</code> 诊断加上「<b>该目标当时在采几人</b>」这个判据。<br>
+<span class="note">验收：语法 0 err / 16 warn · 编译成功（rc=0）· 时间戳链完整 · 冒烟活满 22.3 s · 新旧格式串在 exe 中「1 次 / 0 次」互斥。</span>
+</div>
+
+<h2>1. 本轮的决定性证据：凶手丛 <code>21218</code></h2>
+<p>先用你上次那局的现场日志（<code>AIText.log.bak_20261003_user_bushstuck</code>）做了一次派工序列反推，
+结论<b>推翻了我自己上轮的"超派"假设</b>：</p>
+
+<table>
+<thead><tr><th>浆果丛</th><th>被派过的村民</th><th>每丛同时人数</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td><code>21192</code></td><td>41157, 41135, 41113, 41331, 41158</td><td><b>1~2 人</b></td><td><span class="tag t-grn">采完 f=8788</span></td></tr>
+<tr><td><code>21193</code></td><td>41158, 41320, 41135, 41323, 41317, 41113</td><td><b>1~2 人</b></td><td>日志截断</td></tr>
+<tr><td><code>21194</code></td><td>41317, 41316</td><td>1 人</td><td><span class="tag t-grn">采完 f=8670</span></td></tr>
+<tr><td><code>21208</code></td><td>41113, 41102, 41316</td><td><b>1~2 人</b></td><td><span class="tag t-grn">采完 f=7007</span></td></tr>
+<tr><td><code>21218</code></td><td>41159, 41157, 41158, 41313, <b>41159(再次)</b></td><td><b>1~2 人</b></td><td><span class="tag t-red">吃人不吐骨头</span></td></tr>
+<tr><td><code>21226</code></td><td>41328, 41316, 41158</td><td><b>1~2 人</b></td><td>日志截断</td></tr>
+</tbody></table>
+
+<div class="card warn">
+<b>两条推论</b><br>
+<b>① 上限 3 vs 2 不是病根</b> —— 整整一局里<b>从没出现 3 人同采一丛</b>（最多 2 人）。
+所以"主路径允许 3 人 / 冷路径 2 人"这个不一致<b>在本局没有实际危害</b> ⇒ 降级为"待 A/B"，<b>本轮不动</b>。<br>
+<b>② <code>21218</code> 是凶手</b> —— 看它的派工时间点：f13 → f4236 → f4316 → f5329 → f7762，
+五次派工，<b>每一次都紧跟着一个村民从此沉默</b>（末条指令分别是 f13 / f4238 / f4319 / f5331 / f7765）。<br>
+它离 TC 最近 ⇒ <code>score = d × (1 + n×0.8)</code> 最低 ⇒ <b>每帧都被优先选中</b>，
+而它<b>从未进入黑名单</b>（<code>[STUCK]</code> 拉黑的是旧树 <code>50908</code>）⇒ 反复送人送死。
+</div>
+
+<p class="note">⇒ 这正好解释了为什么上轮的修复方向（拉黑正确目标 + 主路径查黑名单 + 真正复位重派）是对的：
+只要 <code>21218</code> 被正确拉黑，主派工就会跳过它、把人送去别的丛。</p>
+
+<h2>2. 漏网路径体检表</h2>
+<table>
+<thead><tr><th>目标类型</th><th>派工点</th><th>记录目标<br><span class="note">(villLastResourceSN)</span></th><th>查黑名单<br><span class="note">(stuckResourceUntil)</span></th><th>本轮</th></tr></thead>
+<tbody>
+<tr><td>树</td><td class="mono">issueTreeOrder / findBestWoodTree</td><td><span class="tag t-grn">✓</span></td><td><span class="tag t-grn">✓</span></td><td>—</td></tr>
+<tr><td>浆果</td><td class="mono">主 :3347 / 冷 :7059</td><td><span class="tag t-grn">✓</span></td><td><span class="tag t-grn">✓</span></td><td>上轮已修</td></tr>
+<tr><td>瞪羚</td><td class="mono">主 :3376 / 冷 :7122</td><td><span class="tag t-grn">✓</span></td><td><span class="tag t-grn">✓</span></td><td>上轮已修</td></tr>
+<tr><td>金 / 石</td><td class="mono">findNearestResource :5975</td><td><span class="tag t-grn">✓</span></td><td><span class="tag t-grn">✓</span></td><td>上轮已修</td></tr>
+<tr><td><b>大象</b></td><td class="mono">整队块 :3257 / 冷路径 :7087</td><td><span class="tag t-red">✗ 原先不记录</span></td><td><span class="tag t-red">✗ 只读 elephantBanUntil</span></td><td><b>本轮补</b></td></tr>
+<tr><td><b>农场</b></td><td class="mono">主 :3402 / 冷 :7104</td><td><span class="tag t-red">✗ 原先不记录</span></td><td><span class="tag t-red">✗ 两处都不查</span></td><td><b>本轮补</b></td></tr>
+</tbody></table>
+
+<div class="card">
+<b>大象那条为什么要单独说</b><br>
+大象本来有一套自己的拉黑（<code>elephantBanUntil</code>），但那是「<b>凑不齐 4 人 → 主动召回孤兵</b>」专用。
+而 <code>detectStuckGatherers</code> 判定打象卡死时写的是 <code>stuckResourceUntil</code> ——
+<b>两套拉黑互不相通</b>，所以"卡死拉黑"一旦对象是大象就<b>完全打空</b>，村民被重派回来继续送死。<br>
+<span class="note">这是铁律 26（同语义只写一遍）的典型违反：同一个概念（"这个目标暂时不要碰"）在代码里有两个各自为政的实现。</span>
+</div>
+
+<h2>3. 改动清单（6 处）</h2>
+<table>
+<thead><tr><th>#</th><th>位置</th><th>改法</th></tr></thead>
+<tbody>
+<tr><td>1</td><td class="mono">:3241 <span class="note">eleDispatch lambda</span></td><td>整队猎象下发的每一人加 <code>villLastResourceSN[sn] = tgt-&gt;SN;</code> —— 原先整队不记录 ⇒ 打象卡死时兜底无值可拉</td></tr>
+<tr><td>2</td><td class="mono">:3257 <span class="note">整队块</span></td><td>补 <code>if (stuckResourceUntil.count(r.SN)) continue;</code> —— 与 <code>elephantBanUntil</code> 并列，两套拉黑终于汇流</td></tr>
+<tr><td>3</td><td class="mono">:3402 / :3410 <span class="note">主路径农场</span></td><td>农场的 <code>for</code> 循环补黑名单检查；派工成功后记录目标 SN</td></tr>
+<tr><td>4</td><td class="mono">:7104 / :7109 <span class="note">冷路径 tryAssignFood</span></td><td>同上（铁律 26：主/冷两条路径同口径）</td></tr>
+<tr><td>5</td><td class="mono">:6976-6997 <span class="note">detectStuckGatherers</span></td><td>① 拉黑时限<b>按目标类型区分</b>（见 §4）② 诊断行新增「该目标在采几人」+「目标类型」</td></tr>
+<tr><td>6</td><td class="mono">:449-462 <span class="note">常量区</span></td><td>新增 <code>FARM_BLACKLIST_FRAMES 900</code>；顺带修掉一处<b>注释错位</b>（原先"空手且非空闲超时(60秒)"挂在了树常量上、而"10分钟"挂在了 <code>PROF_SAMPLE_FRAMES</code> 上）</td></tr>
+</tbody></table>
+
+<h2>4. 为什么农场要单独用短时限</h2>
+<table>
+<thead><tr><th>目标</th><th>拉黑时长</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>资源点<br><span class="note">树/浆果/瞪羚/金/石/大象</span></td><td><code>15000</code> 帧<br><span class="note">= 10 游戏分</span></td><td>资源点可以<b>换一个采</b>，拉长无害 —— 就算误判，也只是换个地方挖</td></tr>
+<tr><td><b>农场</b></td><td><code>900</code> 帧<br><span class="note">= 36 秒</span></td><td>农场是<b>固定食物源</b>：10 分钟拉黑 ≈ 白扔一个食物源。<br>而农场"卡死"多半只是<b>去路被在建建筑临时堵住</b> ⇒ 短拉黑既止损、又能很快重试</td></tr>
+</tbody></table>
+
+<h2>5. 验收</h2>
+<table>
+<thead><tr><th>项</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>源码</td><td><code>UsrAI.cpp</code> <b>7140 行 / 纯 LF</b>（CRLF=0）；<code>UsrAI.h</code> <b>508 行 / 纯 CRLF</b></td></tr>
+<tr><td>语法</td><td><code>errors = 0 ; warnings = 16</code>（同口径 <code>grep warning:</code> = 12，与基线一致）</td></tr>
+<tr><td>编译</td><td><code>rc = 0, errors = 0</code>，28 s；时间戳链 <code>.cpp</code> 22:24:17 &lt; <code>.h</code> 22:24:44 &lt; <code>.o</code> 22:25:52 &lt; <code>exe</code> 22:26:02 ✓</td></tr>
+<tr><td>产物</td><td>exe <b>2210816 B</b>（+1024 B）</td></tr>
+<tr><td><b>二进制判据</b></td><td>在 exe 字节流里直接查完整格式串（避开注释干扰）：<br>
+新串 <code>[STUCK … 在采%7人 … 拉黑%9帧+待重派]</code> → <b>1 次</b>；旧串 <code>位置=(%6,%7)…已拉黑+待重派</code> → <b>0 次</b>；农场子串 → <b>1 次</b> ⇒ 代码确实重编进 exe</td></tr>
+<tr><td>冒烟</td><td><code>exit=124</code>（活满 <b>22.3 s</b>），日志跑到「初始化结束，游戏开始;」✓</td></tr>
+</tbody></table>
+
+<h2>6. 下一局请重点看 <code>[STUCK]</code> 行</h2>
+<p>诊断行现在长这样：</p>
+<pre><span class="g">[STUCK f=5817] 村民SN=41157 state=2 空手1579帧 目标SN=21218(资源) 在采1人 位置=(x,y) 距TC=8.3格 拉黑15000帧+待重派</span></pre>
+<table>
+<thead><tr><th>字段</th><th>怎么读</th></tr></thead>
+<tbody>
+<tr><td><code>state</code></td><td><code>1=WALKING</code>（一直在走路 ⇒ 到不了）｜<code>2=WORKING</code>（在采但采不到 ⇒ 位置/容量问题）｜<code>3=ATTACKING</code>（真值见 <code>config.h:228</code>）</td></tr>
+<tr><td><code>目标SN(类型)</code></td><td>现在<b>必须指向真正卡死的目标</b>（上轮起已修），不再是张冠李戴的旧树</td></tr>
+<tr><td><b><code>在采N人</code></b></td><td><b>本轮新增的判据</b>：卡死时该目标上已有几人。<br>若为浆果且 <code>N≥2</code> ⇒ 坐实"<b>满员超派</b>"（那就该去统一 §1 里那个 3 vs 2）；<br>若 <code>N=0~1</code> ⇒ 是"<b>不可达 / 地形问题</b>"，与容量无关</td></tr>
+<tr><td><code>拉黑N帧</code></td><td>资源 = 15000（10 分）；农场 = 900（36 秒）</td></tr>
+</tbody></table>
+<p><b>判定修复是否起效的最简口径</b>：同一村民若再次出现 <code>[STUCK]</code>，它的 <b><code>目标SN</code> 必须与上一次不同</b>。<br>
+<span class="note">改前铁证是三次触发帧号严格等间隔（5817 → 7319 → 8822，间隔 1502/1503 帧）—— 那表示"完全没换目标"。</span></p>
+
+<h2>7. 本轮未做（明确列出，不是遗漏）</h2>
+<table>
+<thead><tr><th>项</th><th>为什么没做</th><th>下一步</th></tr></thead>
+<tbody>
+<tr><td><b>浆果上限 3 vs 2 不一致</b></td><td>本局数据显示<b>从没出现 3 人同采</b> ⇒ 无实际危害；但收紧/放宽都属<b>行为改动</b>，按铁律 81 需 ≥24 局/臂</td><td>等 <code>[STUCK]</code> 的"在采N人"跑出 ≥2 的证据再定</td></tr>
+<tr><td><b><code>assignedBush</code> 与 <code>frameBushCount</code> 双份实现</b></td><td>两者语义重复（都是"本帧已派往该丛的人数"），但<b>合并会改变边界</b>：冷路径只写 <code>frameBushCount</code>，所以主路径的判据当前<b>低估</b>了已派人数 ⇒ 合并＝行为改动</td><td>与上一条一起做 A/B</td></tr>
+<tr><td><b>建造者卡死不畅</b></td><td><code>detectStuckGatherers</code> 直接跳过 <code>buildingFarmerType</code> 里的村民；建造者走的是 <code>BUILDER_HARD_TIMEOUT 1800</code> 另一套机制</td><td>需先确认那套机制的实效，属独立课题</td></tr>
+</tbody></table>
+
+<div class="card ok">
+<b>回滚</b><br>
+本轮改动前版本 = 上轮修复版，已留档：<br>
+<code>cp UsrAI.cpp.bak_20261003_fix_bushstuck UsrAI.cpp</code> ＋ <code>cp UsrAI.h.bak_20261003_fix_bushstuck UsrAI.h</code><br>
+本轮成果存档：<code>UsrAI.cpp.bak_20261003_2219_fix_farm_ele</code>（<code>5af68f2d</code>）／同名 <code>.h</code>
+</div>
+
+<footer class="note" style="margin-top:22px">
+判据来源：① 用户那局实机日志的派工序列反推（§1 表）② 源码全量 grep 的使用点交叉核对（§2 体检表）
+③ exe 二进制里的完整格式串互斥检查（§5）。所有验收命令与输出均已实跑，未使用推断值。
+</footer>
+
+</div></body></html>

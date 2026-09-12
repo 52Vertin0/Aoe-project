@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OJ 6582 vs 本地逐桶对拍 —— 环境同源性判定</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --dim:#5b6472; --line:#e3e6ea;
+    --ok:#0b7a3b; --okbg:#e8f6ed; --bad:#b3261e; --badbg:#fdecea;
+    --warn:#8a5a00; --warnbg:#fdf6e3; --acc:#1f5fa9; --accbg:#eaf1fb;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+       font:15px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+  h2{font-size:18px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--acc)}
+  h3{font-size:15px;margin:20px 0 8px;color:#2b3murk}
+  h3{color:#2b3038}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:16px 18px;margin:12px 0}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:10px 0}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;font-size:13px}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:12.5px;
+       font-family:Consolas,"Courier New",monospace}
+  pre{background:#1e2430;color:#e6edf3;padding:13px 15px;border-radius:8px;overflow-x:auto;
+      font:12.5px/1.65 Consolas,"Courier New",monospace}
+  .k{display:inline-block;padding:1px 7px;border-radius:11px;font-size:12px;font-weight:600}
+  .k-ok{background:var(--okbg);color:var(--ok)}
+  .k-bad{background:var(--badbg);color:var(--bad)}
+  .k-warn{background:var(--warnbg);color:var(--warn)}
+  .k-acc{background:var(--accbg);color:var(--acc)}
+  .mark{background:#fff2a8;padding:0 3px;border-radius:3px}
+  .verdict{border-left:5px solid var(--ok);background:var(--okbg);padding:14px 18px;border-radius:0 8px 8px 0;margin:14px 0}
+  .verdict b{color:var(--ok)}
+  .alert{border-left:5px solid var(--bad);background:var(--badbg);padding:14px 18px;border-radius:0 8px 8px 0;margin:14px 0}
+  .note{border-left:5px solid var(--warn);background:var(--warnbg);padding:14px 18px;border-radius:0 8px 8px 0;margin:14px 0}
+  .bar{height:20px;border-radius:4px;background:#e9edf1;position:relative;overflow:hidden}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,#7fb4e8,#1f5fa9)}
+  .bar.hot>i{background:linear-gradient(90deg,#f0b27a,#b3261e)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .small{font-size:12.5px;color:var(--dim)}
+  ul{margin:8px 0;padding-left:22px} li{margin:4px 0}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>OJ 6582 vs 本地逐桶对拍 —— 环境同源性判定</h1>
+<div class="sub">
+  对象：<code>debug_6582_f4243744-…log</code>（OJ）· 提交件 <code>_submit/UsrAI.cpp</code> = <code>d95a69ad</code>（含 <code>[BEAT]</code> 插桩）<br>
+  本地对照：<code>C:\new-aoe3.0.7g</code> · <code>map3.njust</code> · <code>-rotate 0</code> · <code>-exam -offscreen -freq MAX</code> · 3 局
+</div>
+
+<div class="verdict">
+<b>结论：OJ 与本地完全同源。</b>最硬的一条 —— 本地第 1 局的 <b>开局第 12 帧</b> 与 OJ 的<b>第 11 帧</b>，村民包围盒与祭司坐标<b>逐位相同</b>：
+<code>bbox=(x20.3..37.5, y73.0..89.0) pr@=(20.3,84.3)</code>，连祭司 SN 都是同一个 <code>91166</code>。
+两者在 <b>前 5 分钟（f≤7500）逐桶零差异</b>，且 <code>W1 / W3 / ATK</code> 三个阶段时间戳 <b>Δ=0 帧</b>。
+本次失败不是环境问题，是反攻段<b>祭司寻路随机分叉</b>走出的一个负向分支。
+<br><br>
+<b>但顺手挖到了两个本地可复现的硬问题</b>（比 OJ 那次更值得先修）：
+<ul style="margin:8px 0 0">
+<li><b>本地 9 局里 3 局（33%）「祭司推进停滞」到超时</b> —— 根因是
+    <code>counterPriestGuard()</code> 的 <code>return true</code> 无条件：一条护航令都没发（<code>cmds=0</code>）
+    也照样 HALT 反攻 ⇒ <b>永久空转</b>。（见第六节，改动约 5 行）</li>
+<li>本地 9 局 <b>祭司一次都没死</b>，而 OJ 那局祭司死在 18.7 格处（未见锁定武器厂，
+    <code>siegeSN=-1</code>）—— 属第三种分支。</li>
+</ul>
+</div>
+
+<h2>一、先纠正一个口径：OJ 这次抽到的不是 map.njust</h2>
+<div class="card">
+日志里直接留了证据：<code>map3.njust</code> 字样出现 1 次，且
+<code>&gt;&gt; Enemy Siege Workshop found at (82,20)!</code> 与
+<code>map3.njust</code> 的 <code>Building_7 = (BlockDR 82, BlockUR 20, Num 11)</code> 逐位吻合。
+</div>
+<table>
+<tr><th>地图</th><th class="n">我方 6 建筑 x 范围</th><th class="n">我方 6 建筑 y 范围</th><th class="n">敌方 6 建筑 x</th><th class="n">敌方 6 建筑 y</th><th>敌方武器厂</th></tr>
+<tr><td>map.njust</td><td class="n">72..86</td><td class="n">7..28</td><td class="n">7..15</td><td class="n">81..91</td><td>(11,86)</td></tr>
+<tr><td>map1.njust</td><td class="n">1..32</td><td class="n">69..79</td><td class="n">89..95</td><td class="n">8..24</td><td>(93,11)</td></tr>
+<tr><td>map2.njust</td><td class="n">64..98</td><td class="n">80..92</td><td class="n">20..30</td><td class="n">5..15</td><td>(24,6)</td></tr>
+<tr style="background:#e8f6ed"><td><b>map3.njust</b> ← OJ 用这张</td><td class="n"><b>10..34</b></td><td class="n"><b>74..87</b></td><td class="n"><b>76..89</b></td><td class="n"><b>13..28</b></td><td><b>(82,20)</b> ✔</td></tr>
+</table>
+<div class="note">
+<b>此前两轮本地对照全部用错了地图</b>（一直在用 <code>map.njust</code>）。本轮先反推、再对照 —— 这一步不做，后面所有数字都不可比。
+</div>
+
+<h2>二、环境同源的三重证明</h2>
+
+<h3>证明 1 · 开局逐帧一致（最硬）</h3>
+<table>
+<tr><th>字段</th><th>OJ 6582 <code>f=11 b=0</code></th><th>本地 m3_1 <code>f=12 b=0</code></th><th>判定</th></tr>
+<tr><td>村民包围盒</td><td><code>(x20.3..37.5, y73.0..89.0)</code></td><td><code>(x20.3..37.5, y73.0..89.0)</code></td><td><span class="k k-ok">逐位相同</span></td></tr>
+<tr><td>祭司坐标</td><td><code>pr@=(20.3,84.3)</code></td><td><code>pr@=(20.3,84.3)</code></td><td><span class="k k-ok">逐位相同</span></td></tr>
+<tr><td>祭司 SN</td><td><code>91166</code></td><td><code>91166</code></td><td><span class="k k-ok">相同</span></td></tr>
+<tr><td>初始资源</td><td><code>Fd=200 Wd=200 St=150 Gd=0</code></td><td><code>Fd=200 Wd=200 St=150 Gd=0</code></td><td><span class="k k-ok">相同</span></td></tr>
+</table>
+
+<h3>证明 2 · 桶对齐率 100%</h3>
+<div class="card">
+共同桶 <b>243 / 243 = 100.0%</b>；桶内 frame 漂移中位数 <b>1 帧</b>、最大 <b>2 帧</b>。
+<br><span class="small">（这正是上一轮把采样从"距上次 ≥150 帧"改成"按 frame/150 分桶"换来的 —— AI 并非每帧被调用，frame 会跳号，用绝对帧号做采样点跨机必然错开。）</span>
+</div>
+
+<h3>证明 3 · 阶段机时间戳 Δ=0</h3>
+<table>
+<tr><th>阶段</th><th class="n">OJ 帧</th><th class="n">本地帧</th><th class="n">Δ</th><th>说明</th></tr>
+<tr><td>INIT</td><td class="n">f11</td><td class="n">f12</td><td class="n">+1</td><td>采样桶边界</td></tr>
+<tr><td>ECO</td><td class="n">f12</td><td class="n">f14</td><td class="n">+2</td><td>采样桶边界</td></tr>
+<tr style="background:#e8f6ed"><td><b>W1</b></td><td class="n">f5004</td><td class="n">f5004</td><td class="n"><b>0</b></td><td><span class="k k-ok">逐帧相同</span></td></tr>
+<tr><td>UPG</td><td class="n">f17019</td><td class="n">f13403</td><td class="n">−3616</td><td>自适应阶段机，受经济随机影响</td></tr>
+<tr><td>W2</td><td class="n">f13504</td><td class="n">f14912</td><td class="n">+1408</td><td>同上</td></tr>
+<tr style="background:#e8f6ed"><td><b>W3</b></td><td class="n">f21003</td><td class="n">f21003</td><td class="n"><b>0</b></td><td><span class="k k-ok">逐帧相同</span></td></tr>
+<tr style="background:#e8f6ed"><td><b>ATK（反攻令）</b></td><td class="n">f33003</td><td class="n">f33003</td><td class="n"><b>0</b></td><td><span class="k k-ok">逐帧相同</span></td></tr>
+</table>
+<div class="card">
+<b>三条锚点（W1 / W3 / ATK）全部 Δ=0 帧</b>，说明阶段推进的输入与判据在两侧完全一致。
+UPG / W2 的偏差来自经济采集的随机抖动，属于<b>下游</b>现象。
+</div>
+
+<h2>三、分叉结构：随时间单调放大，反攻段 100% 分歧</h2>
+<table>
+<tr><th class="n">桶区间 b</th><th class="n">对应帧</th><th class="n">时间</th><th class="n">结构性差异桶</th><th style="width:34%">可视化</th></tr>
+<tr><td class="n">0 – 74</td><td class="n">0 – 11100</td><td class="n">0 – 7.4 分</td><td class="n">13 / 75 = <b>17.3%</b></td><td><div class="bar"><i style="width:17.3%"></i></div></td></tr>
+<tr><td class="n">75 – 147</td><td class="n">11250 – 22050</td><td class="n">7.5 – 14.7 分</td><td class="n">54 / 73 = <b>74.0%</b></td><td><div class="bar"><i style="width:74%"></i></div></td></tr>
+<tr><td class="n">148 – 219</td><td class="n">22200 – 32850</td><td class="n">14.8 – 21.9 分</td><td class="n">60 / 72 = <b>83.3%</b></td><td><div class="bar"><i style="width:83.3%"></i></div></td></tr>
+<tr><td class="n">220 – 242</td><td class="n">33000 – 36300</td><td class="n">22.0 – 24.2 分<br><span class="small">（反攻段）</span></td><td class="n">23 / 23 = <b>100%</b></td><td><div class="bar hot"><i style="width:100%"></i></div></td></tr>
+</table>
+<div class="card">
+<b>最长全同前缀 = 50 桶（f ≤ 7500，前 5 分钟零差异）</b>。之后差异率单调上升 —— 这是<b>混沌放大的典型形状</b>：
+同一个确定性系统，输入上的一点点随机差（村民派工顺序、单位寻路微扰）会不断被放大，
+到反攻段两边已经是两条完全不同的战线。但它<b>不是</b>"环境不同"的形状 —— 环境不同会从第一帧就发散。
+</div>
+
+<h2>四、分叉的物理落点：祭司走了两条不同的路</h2>
+<table>
+<tr><th class="n">帧</th><th>OJ 祭司坐标</th><th>本地 m3_1 祭司坐标</th><th class="n">y 向差</th><th class="n">OJ nEB</th><th class="n">本地 nEB</th></tr>
+<tr><td class="n">f33001</td><td>(19.0, 83.0)</td><td>(23.0, 79.0)</td><td class="n">+4.0</td><td class="n">0</td><td class="n">0</td></tr>
+<tr><td class="n">f33750</td><td>(30.0, 73.0)</td><td>(32.7, 62.3)</td><td class="n"><b>+10.7</b></td><td class="n">0</td><td class="n">0</td></tr>
+<tr><td class="n">f34500</td><td>(53.1, 55.9)</td><td>(53.9, 41.1)</td><td class="n"><b>+14.8</b></td><td class="n">1</td><td class="n">1</td></tr>
+<tr><td class="n">f35251</td><td>(65.2, 36.1)</td><td>(53.7, 43.6)</td><td class="n">−7.5</td><td class="n"><b>4</b></td><td class="n">1</td></tr>
+<tr><td class="n">f36000</td><td>(66.5, 31.4)</td><td>(55.0, 43.7)</td><td class="n">−12.3</td><td class="n"><b>6</b></td><td class="n">1</td></tr>
+<tr><td class="n">f37500</td><td><span class="k k-bad">已阵亡</span></td><td>(62.8, 40.9) hp=90</td><td class="n">—</td><td class="n">—</td><td class="n">1</td></tr>
+<tr><td class="n">f38702</td><td><span class="k k-bad">已阵亡</span></td><td><b>(81.8, 22.4)</b> hp=90 nEA=0</td><td class="n">—</td><td class="n">—</td><td class="n">1</td></tr>
+</table>
+<div class="alert">
+<b>关键差在 <code>nEB</code>（可见敌建筑数）。</b>
+OJ 的祭司最终跑到了<b>能同时看到 6 座敌建筑</b>的区域 —— 那是敌塔密集区；本地始终只有 1 座。
+OJ 在 <code>f=35100</code> 的 <code>[LC-DBG]</code> 明确记下 <code>gT=4 seen=4</code>（祭司周边 4 座敌塔），
+而 <code>PRIEST_TOWERS_CLEAR_MAX = 5</code> ⇒ <b>4 ≤ 5，闸门放行</b>。
+</div>
+
+<h2>五、结局对比：同代码、同图、同朝向（本地共跑 9 局）</h2>
+<table>
+<tr><th>跑局</th><th>结局</th><th>祭司终态</th><th class="n">距武器厂</th><th>武器厂感化</th></tr>
+<tr style="background:#fdecea"><td><b>OJ 6582</b></td><td><span class="k k-bad">LOSE f=36275（24.2 分）</span></td><td>hp 100→56→0，死于 (66.5, 30.5)</td><td class="n">18.7 格</td><td>✘</td></tr>
+<tr><td>本地 m3_1</td><td><span class="k k-ok">WIN f=38709</span></td><td>(81.8, 22.4) hp90 <code>st=2</code></td><td class="n">2.4 格</td><td><b>✔ 11099</b></td></tr>
+<tr><td>本地 m3_2</td><td><span class="k k-ok">WIN f=38410</span></td><td>(81.7, 23.3) hp100 <code>st=2</code></td><td class="n">3.3 格</td><td><b>✔ 11099</b></td></tr>
+<tr><td>本地 m3_3</td><td><span class="k k-ok">WIN</span></td><td>(81.8, 22.4) hp100 <code>st=2</code></td><td class="n">2.4 格</td><td><b>✔ 11099</b></td></tr>
+<tr><td>本地 m3b_1</td><td><span class="k k-ok">WIN f=39602</span></td><td>(81.5, 22.5) hp100 <code>st=2</code></td><td class="n">2.5 格</td><td><b>✔ 11099</b></td></tr>
+<tr><td>本地 m3b_2</td><td><span class="k k-ok">WIN f=38402</span></td><td>(81.8, 22.4) hp90 <code>st=2</code></td><td class="n">2.4 格</td><td><b>✔ 11099</b></td></tr>
+<tr><td>本地 m3b_5</td><td><span class="k k-ok">WIN f=39450</span></td><td>(82.6, 23.2) hp62 <code>st=2</code></td><td class="n">3.3 格</td><td><b>✔ 11099</b></td></tr>
+<tr style="background:#fdf6e3"><td>本地 m3b_3</td><td><span class="k k-warn">超时 f=44851（30 分上限）</span></td><td>(52.8, 39.8) hp100 <code>st=1</code> <b>卡住</b></td><td class="n">35.3 格</td><td>✘</td></tr>
+<tr style="background:#fdf6e3"><td>本地 m3b_4</td><td><span class="k k-warn">超时 f=44852</span></td><td>(47.7, 35.6) hp100 <code>st=1</code> <b>卡住</b></td><td class="n">72.4 格</td><td>✘</td></tr>
+<tr style="background:#fdf6e3"><td>本地 m3b_6</td><td><span class="k k-warn">超时 f=44852</span></td><td>(52.1, 43.3) hp100 <code>st=1</code> <b>卡住</b></td><td class="n">37.8 格</td><td>✘</td></tr>
+</table>
+<table>
+<tr><th>统计（map3.njust + rotate 0，同代码 <code>d95a69ad</code>）</th><th class="n">胜</th><th class="n">超时</th><th class="n">祭司阵亡</th></tr>
+<tr><td>本地 9 局</td><td class="n"><b>6</b>（66.7%）</td><td class="n"><b>3</b>（33.3%）</td><td class="n"><b>0</b></td></tr>
+<tr><td>OJ 1 局</td><td class="n">0</td><td class="n">0</td><td class="n"><b>1</b></td></tr>
+</table>
+<div class="card">
+本地 9 局里，<b>6 局的祭司推到了 2.2~3.3 格并成功感化</b>；
+另外 3 局祭司<b>卡在中场不动</b>到超时；<b>祭司一次都没死</b>。
+<br><br>
+OJ 那 1 局走的是**第三种分支**（祭司 <code>siegeSN=-1</code>，从未锁定武器厂，盲走到 18.7 格被围杀），
+本地 9 局都没抽到。
+<br><br>
+<span class="small">⚠ 单批 &lt;24 局不对胜负下结论。但 <b>33% 的"祭司卡住"在本地稳定复现</b> —— 这是本地可查的硬问题，比 OJ 那次更值得先修。</span>
+</div>
+
+<h2>六、★★ 主瓶颈：<code>PRIEST-ESCAPE</code> 脱困逻辑「活锁」</h2>
+<div class="alert">
+<b>⚠ 本节已替换：上一版把根因判成「<code>counterPriestGuard</code> 的 HALT 空转死锁」，被日志推翻。</b><br>
+两条反证 —— ① <code>counterPriestGuard()</code>（<code>:5493</code>）若 <code>return true</code>，同函数内排在它后面的
+<code>counterPriestConvert()</code>（<code>:6106</code>）就不会执行、<code>[LC-DBG]</code> 不可能打印；
+可 <code>[LC-DBG]</code> 在局末 <code>f=44401 / 44701</code> 仍在打 ⇒ 那些帧它返回的是 <b>false</b>。
+② <code>[PRIEST GUARD]</code> 行在 <code>f=35753</code> 之后<b>彻底消失</b> ⇒ 后期推进根本没被 HALT，
+可祭司依然停在 35 格外不动。⇒ 瓶颈不在护驾，在祭司自己的推进段。
+</div>
+
+<h3>6.1 判据：<code>[PRIEST-ESCAPE]</code> 触发次数就是胜负分界线</h3>
+<table>
+<tr><th>跑局</th><th>结局</th><th class="n">PRIEST-ESCAPE 次数</th><th class="n">dS 最小</th><th class="n">dS 末值</th><th>末段触发频率</th></tr>
+<tr><td>m3_1</td><td><span class="k k-ok">胜</span></td><td class="n"><b>2</b></td><td class="n"><b>14.2</b>（进感化射程）</td><td class="n">14.2</td><td>段12: 2</td></tr>
+<tr style="background:#fdecea"><td>m3b_3</td><td>超时</td><td class="n"><b>39</b></td><td class="n">21.7</td><td class="n"><b>35.3</b>（倒退）</td><td>段13:14 / 段14:<b>24</b></td></tr>
+<tr style="background:#fdecea"><td>m3b_6</td><td>超时</td><td class="n"><b>57</b></td><td class="n">25.1</td><td class="n"><b>37.8</b></td><td>段13:24 / 段14:<b>25</b></td></tr>
+<tr style="background:#fdecea"><td>m3b_4</td><td>超时</td><td class="n"><b>52</b></td><td class="n">65.8</td><td class="n">72.4</td><td>段13:24 / 段14:24</td></tr>
+</table>
+<div class="card">
+判据极干净：<b><code>PRIEST-ESCAPE</code> ≤ 2 次 ⇒ 胜；≥ 39 次 ⇒ 超时</b>。
+胜局的脱困<b>只触发 2 次就成功退出</b>（<code>f=37892 d=34.6</code> → <code>f=38344 d=17.3</code>，随后 dS 降到 14.2 感化成功）；
+超时局<b>以 121 帧为节拍无限重复</b>（每 3000 帧 24 次 × 3000/121 ≈ 24.8 ✔ 与 120 帧判据完全吻合）。
+</div>
+
+<h3>6.2 机制：一个闭环自锁</h3>
+<pre>判据（UsrAI.cpp:5188）
+  const bool priestAdvStuck = (frame - priestAdvBestFrame &gt; PRIEST_ADV_STUCK_FRAMES);   // 120
+
+脱困分支（:5207）
+  if (priestAdvStuck &amp;&amp; priestEscapeCd &lt;= 0) {
+      A 档（:5211）: tx = priest->DR + sx * side * 4.0 * BL;   ← 纯【侧移】，纵向零推进
+      B 档（:5241）: tx = priest->DR + sx * side * 4.0 * BL;   ← 同样纯侧移（外加清障）
+      priestAdvBestFrame = frame;                              ← 只重置计时，不动 priestAdvBest
+  } else {
+      正常推进（:5252）: tx = sMemDR - ux2 * 11.0 * BL;        ← 这条【永远进不去】
+  }</pre>
+<div class="alert">
+<b>自锁环</b>：不靠近（120 帧内未逼近 &gt; 0.5 格） ⇒ 判卡死 ⇒ 脱困<b>只做侧移</b>（不产生朝武器厂的逼近）
+⇒ <code>priestAdvBest</code> 永不刷新 ⇒ <code>priestAdvStuck</code> 恒真 ⇒ <b>永远走脱困分支、永不进入正常推进</b>
+⇒ 原地打转到 30 分钟超时（超时 = 必然输）。
+<br><br>
+实测落点证实侧移方向与目标方向<b>近乎正交</b>：<code>(54,40) → (53,40) → (53,41)</code>，<code>y</code> 钉在 40 附近，
+而武器厂在 <code>y=20</code>（该往南走）⇒ 脱困永远推不进。
+<br><br>
+⚠ 代码原注释<b>已经防了</b>「基准被自救动作自己带着走」这条路径（铁律 9），
+但<b>漏了同源的第二条</b>：<b>自救动作本身根本不产生进展</b>。两条路都通向同一个活锁 ——
+这与本项目已知的「暂停生效了、恢复没生效」「严苛前置条件 + 互斥锁 → 下游本该接力却没接」是同一族缺陷。
+</div>
+<div class="note">
+<b>全部判据来自引擎日志、不依赖胜负</b>：<code>[PRIEST-ESCAPE A/B]</code>（含落点）、<code>[LC-DBG] dS</code>、
+<code>[BEAT] pr@</code>。三者互相独立且完全一致。
+</div>
+
+<h2>七、OJ 那一局失败的直接机制：祭司撞进多塔火力圈被反杀</h2>
+<h3>OJ 的死亡时间线（逐帧，来自日志原文）</h3>
+<pre>f=35100  [LC-DBG] gT=4 seen=4 nearT=16.9      ← 进入 4 塔区（闸门放行：4 ≤ PRIEST_TOWERS_CLEAR_MAX=5）
+f=35400  [LC-DBG] hp=1.00 ccd=13320 st=0      ← 开始尝试感化
+f=35850  BEAT      Mil=20 nEB=6 hp=100
+f=36000  [PRIEST GUARD] LOCKED-ON SN=91145 cmds=12
+         [PRIEST GUARD] counterattack HALT -&gt; defend priest, target SN=91145   ← 反攻被暂停，部队回救
+f=36151  BEAT      hp=56/100  ccd=18680       ← 100 帧内掉 44 hp
+f=36275  BEAT      st=LOSE*  pr=(sn-1 ...)    ← 祭司阵亡 ⇒ DEFEAT
+</pre>
+<div class="alert">
+<b>三条可改的实质缺陷：</b>
+<ol>
+<li><b><code>clearOk</code> 用"塔的数量"当安全判据太粗。</b>
+    <code>gT=4</code> 就放行，但实测 <b>4 座敌塔的火力足够在 18 秒内打死一个满血祭司</b>。数量 ≠ 威胁，
+    缺的是"祭司在塔火力覆盖内的停留时间 / 承伤速率"这个维度。</li>
+<li><b><code>counterPriestGuard</code> 的 HALT 触发太晚、回救太慢。</b>
+    HALT 在 <code>f=36000</code> 打出（此时 hp 仍是 100），
+    但祭司在 <b>151 帧后</b>就掉了 44 hp、<b>275 帧后</b>就死了。触发条件是"看到敌军"而非"已经挨打"，
+    回救指令发出到部队到位之间的时间差，正好够祭司被打死。</li>
+<li><b>祭司在感化冷却中不会自主脱战。</b>
+    <code>f=35400</code> 之后 <code>st=0</code>（非感化态）而 <code>ccd=13320</code>（冷却中），
+    说明它在敌群中"用掉了一次感化、冷却期间原地不动"，没有退。</li>
+</ol>
+</div>
+
+<h2>八、本轮用到的工具与判据</h2>
+<table>
+<tr><th>工具/判据</th><th>用法</th><th>结果</th></tr>
+<tr><td><code>_maprev.py</code> <span class="small">（本轮新增）</span></td><td><code>python _maprev.py "&lt;OJ 日志路径&gt;"</code> —— 解析 <code>map*.njust</code> 的 <code>Building_*</code>，并与日志里敌方武器厂坐标逐位比对</td><td>直接输出「地图 = <b>map3.njust</b>（未旋转）」</td></tr>
+<tr><td><code>_beat_run.sh</code></td><td><code>MAP=map3.njust ROT=0 N=3 TAG=m3 bash _beat_run.sh</code></td><td>产出 <code>m3_1..3.ait</code> / <code>m3b_1..6.ait</code></td></tr>
+<tr><td><code>_beat_diff.py</code></td><td><code>python _beat_diff.py oj6582.ait m3_1.ait --label=OJ6582,本地</code></td><td>状态跃迁 Δ + 桶对齐率 + 逐桶差异</td></tr>
+<tr><td>同源判据 (a)</td><td>确定性阶段时间戳 <code>INIT/ECO/W1/W3/ATK</code> 的 Δ ≤ 20 帧</td><td>实测 <b>Δ=0</b> ⇒ 同源</td></tr>
+<tr><td>同源判据 (b)</td><td>开局帧的 bbox / 祭司坐标 / SN 逐位比对</td><td><b>逐位相同</b> ⇒ 同源</td></tr>
+<tr><td>分叉形状判据</td><td>环境差 ⇒ 第一帧就发散；混沌放大 ⇒ 差异率单调升且有长全同前缀</td><td>前 5 分钟零差异 ⇒ 混沌放大</td></tr>
+<tr><td>⛔ 不作判据</td><td><code>Idle/Walk/Work/Atk/nMy</code> 逐帧抖动；总差异率（同机复跑噪声底 76~88%）<br><code>UPG</code>/<code>W2</code> 时间戳（自适应阶段机，吃经济随机）</td><td>已在解析层滤掉 / 不参与同源判定</td></tr>
+</table>
+
+<div class="note">
+<b>本轮踩到并已修正的坑：</b>
+<ul>
+<li><code>grep -ac</code> 在文件<b>仍在写入</b>时读数会明显偏小（<code>m3_3</code> 一度读成 68 桶，实际 266）⇒ 判断跑局产物要看<b>进程是否还在</b>，别只看计数。</li>
+<li>后台跑批的 <code>.out</code> 是<b>行缓冲</b>，<code>[OJ-HB]</code> 到 24913 而 <code>.ait</code> 已到 25500 ⇒ 用 <code>.out</code> 判断进度会以为提前结束。</li>
+<li>本轮再次确认：<b>OJ 抽到的地图与朝向每局都变</b>，不做反推直接对照等于白跑。</li>
+</ul>
+</div>
+
+<h2>九、修复与 A/B 验证：给脱困阶梯加「断路器」</h2>
+<div class="card">
+<b>修法（<code>UsrAI.cpp</code>，+8 行，不引用引擎新增符号）</b>
+<pre>#define PRIEST_ADV_ESCAPE_MAX 3          // 常量区
+
+static int s_priestEscapeStreak = 0;     // counterPriestConvert 函数内 static
+                                         //  ← 不改 .h ⇒ 不触发 18 obj 全量重编
+
+// 脱困分支末尾（原 :5249 之后）
+if (++s_priestEscapeStreak &gt;= PRIEST_ADV_ESCAPE_MAX) {
+    s_priestEscapeStreak = 0;
+    priestEscapeStage = 0;
+    const double stopDB = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;
+    tx = sMemDR - ux2 * stopDB;          // ★ 覆盖掉侧移点，改回"停到感化射程内 1 格"
+    ty = sMemUR - uy2 * stopDB;
+    DebugText("[PRIEST-ESCAPE-BREAK f=...] 连续脱困3次无进展 → 强制回推进落点 ...");
+}</pre>
+另在「真进展」（<code>dSiege &lt; priestAdvBest - 0.5*BL</code>）与「场景重锚」两条分支里把 <code>s_priestEscapeStreak</code> 清零 ——
+既不会退化成永久侧移，也不会永久直冲。
+</div>
+
+<h3>9.1 断路器日志（本次最直接的一条铁证）</h3>
+<pre>[PRIEST-ESCAPE-BREAK f=38065] 连续脱困3次无进展 → 强制回推进落点 (74.6,28.1)</pre>
+<div class="alert">
+落点 <code>(74.6, 28.1)</code> 正是武器厂 <code>(82,20)</code> <b>外侧 11 格</b>的<b>正确推进点</b>。
+BREAK 之后 <b>335 帧（13.4 秒）</b>内 <code>dS</code> 从约 34 一路降到 <b>7.2</b> —— 进入感化射程（12 格）⇒ 感化成功。
+</div>
+
+<h3>9.2 A/B（map3.njust + rotate 0，同代码同图同朝向）</h3>
+<table>
+<tr><th>局</th><th>臂</th><th class="n">ESCAPE 次数</th><th class="n">BREAK</th><th class="n">dS 最小</th><th class="n">dS 末值</th><th>结局</th></tr>
+<tr><td>m3b_3</td><td>基线</td><td class="n">39</td><td class="n">—</td><td class="n">21.7</td><td class="n">35.3 ↑</td><td><span class="k k-bad">超时</span></td></tr>
+<tr><td>m3b_6</td><td>基线</td><td class="n">57</td><td class="n">—</td><td class="n">25.1</td><td class="n">37.8 ↑</td><td><span class="k k-bad">超时</span></td></tr>
+<tr><td>m3b_4</td><td>基线</td><td class="n">52</td><td class="n">—</td><td class="n">65.8</td><td class="n">72.4 ↑</td><td><span class="k k-bad">超时</span></td></tr>
+<tr style="background:#eaf7ea"><td>h1_1</td><td>修复</td><td class="n"><b>4</b></td><td class="n"><b>1</b></td><td class="n"><b>7.2</b></td><td class="n"><b>7.2</b></td><td><span class="k k-ok">胜</span></td></tr>
+<tr style="background:#eaf7ea"><td>h1_2</td><td>修复</td><td class="n"><b>1</b></td><td class="n">0</td><td class="n">66.5</td><td class="n">78.6</td><td><span class="k k-ok">胜</span></td></tr>
+<tr style="background:#eaf7ea"><td>h1_3</td><td>修复</td><td class="n"><b>1</b></td><td class="n">0</td><td class="n"><b>5.1</b></td><td class="n">5.1</td><td><span class="k k-ok">胜</span></td></tr>
+<tr style="background:#eaf7ea"><td>h1_6</td><td>修复</td><td class="n"><b>1</b></td><td class="n">0</td><td class="n">33.2</td><td class="n">33.2</td><td><span class="k k-ok">胜</span></td></tr>
+<tr><td>h1_4</td><td>修复</td><td class="n">0</td><td class="n">0</td><td class="n">33.7</td><td class="n">33.7</td><td><span class="k k-bad">祭司死</span></td></tr>
+<tr><td>h1_5</td><td>修复</td><td class="n">0</td><td class="n">0</td><td class="n">22.7</td><td class="n">22.7</td><td><span class="k k-bad">祭司死</span></td></tr>
+</table>
+
+<h3>9.2 汇总：超时被彻底消除，但总胜率没变</h3>
+<table>
+<tr><th>臂</th><th class="n">局数</th><th class="n">胜</th><th class="n">祭司死</th><th class="n">超时</th><th class="n">ESCAPE 最大值</th></tr>
+<tr><td>基线（<code>d95a69ad</code>）</td><td class="n">9</td><td class="n">6（66.7%）</td><td class="n">0</td><td class="n"><b>3（33.3%）</b></td><td class="n"><b>57</b></td></tr>
+<tr style="background:#eaf7ea"><td>修复（<code>07793b7b</code>）</td><td class="n">6</td><td class="n">4（66.7%）</td><td class="n"><b>2</b></td><td class="n"><b>0</b></td><td class="n"><b>4</b></td></tr>
+</table>
+
+<div class="card">
+<b>① 机制量：设计目标完全达成。</b><br>
+脱困触发次数 <b>39~57 → ≤4</b>；超时局 <b>3/9 → 0/6</b>；<code>dS</code> 不再出现「单调增大」的活锁曲线。
+<br><br>
+<b>② 安全性论证：对「正常局」零影响。</b><br>
+断路器只在「连续脱困 3 次无进展」时才生效。基线里所有 ESCAPE ≤ 2 的局（<b>6 个胜局全部如此</b>：2/0/0/1/1/0）
+<b>一次都不会触发</b> ⇒ 行为与改动前逐帧相同。改动的影响面严格限定在「本来就会超时」的那 3 局。
+<br><br>
+<b>③ 胜率：无变化，且按铁律不做结论。</b><br>
+6/9（66.7%）vs 4/6（66.7%）。单臂 &lt;24 局，<b>不足以对胜负下结论</b>；
+能下结论的只有 ① 的机制量。
+<br><br>
+<b>④ 瓶颈转移了 —— 这正是本轮最有价值的信息。</b><br>
+活锁局（祭司满血卡住 30 分钟，<b>100% 输</b>）消失了，取而代之的是 2 局<b>祭司死</b>
+（<code>h1_4</code> dS 最小 33.7 / <code>h1_5</code> 22.7，且 <b>ESCAPE=0</b> ⇒ 与脱困无关，是<b>真的推进途中被打死</b>）。
+<br>
+⇒ 这恰好落在 §3.2 指出的瓶颈上：<b>「祭司在多塔火力圈里存活」</b>。
+修好上一层（活锁）把祭司「真的放出去了」，下一层的死法就暴露出来了 ——
+与 §3 的「<b>修好一层会暴露下一层</b>」完全同构。
+</div>
+
+<div class="note">
+<b>下一步（建议直接做 §3.2 的第 ② 条，最高优先）</b>：<code>clearOk</code> 由「塔数量」改多维度（塔数停滞 + 承伤速率 + 火力圈内停留时间）；
+<code>counterPriestGuard</code> 的 HALT 判据由「看到敌军」改成「已挨打」；祭司感化冷却中（<code>st=0</code> 且 <code>ccd&gt;0</code>）允许自主脱战。
+</div>
+
+<h3>9.3 提交件</h3>
+<ul>
+<li><code>_submit/UsrAI.cpp</code> —— md5 <b>07793b7b</b>，7500 行，纯 LF</li>
+<li><code>_submit/UsrAI.h</code> —— md5 <b>18cf1d82</b>，508 行，纯 LF（工作副本是 CRLF，<code>mk_submit.py</code> 转 LF ⇒ md5 不同属正常）</li>
+<li>回退锚点 <code>UsrAI.cpp.bak_20261006_pre_priesthalt</code>（<code>d95a69ad</code>·7474，即已提交 6582 的那版）</li>
+</ul>
+
+</div></body></html>

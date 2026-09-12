@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OJ 6263 败因：反攻部队不出发 / 近战被「两遍共享预算」饿死（2026-10-05）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1c1f24; --sub:#5b6470; --line:#e2e6ec;
+    --red:#c0392b; --redbg:#fdf0ee; --grn:#1e7e34; --grnbg:#eef8f0;
+    --blu:#1c5fb0; --blubg:#eef4fc; --amb:#9a6700; --ambbg:#fdf6e3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+       font:14px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px;letter-spacing:.2px}
+  .meta{color:var(--sub);font-size:12.5px;margin-bottom:22px}
+  h2{font-size:16.5px;margin:30px 0 10px;padding-left:10px;border-left:3px solid var(--blu)}
+  h3{font-size:14px;margin:18px 0 8px;color:var(--sub)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin:12px 0}
+  .verdict{border-left:4px solid var(--red);background:var(--redbg)}
+  .ok{border-left:4px solid var(--grn);background:var(--grnbg)}
+  .info{border-left:4px solid var(--blu);background:var(--blubg)}
+  .warn{border-left:4px solid var(--amb);background:var(--ambbg)}
+  code{background:#eef1f5;padding:1px 5px;border-radius:3px;font-family:Consolas,Menlo,monospace;font-size:12.5px}
+  pre{background:#1e2229;color:#e6e9ee;padding:12px 14px;border-radius:6px;overflow-x:auto;
+      font-family:Consolas,Menlo,monospace;font-size:12.5px;line-height:1.6;margin:10px 0}
+  pre .r{color:#ff8a7a} pre .g{color:#7ee08a} pre .y{color:#ffd479} pre .d{color:#8b95a3}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f0f3f7;font-weight:600}
+  td.n{text-align:right;font-family:Consolas,Menlo,monospace}
+  .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11.5px;font-weight:600}
+  .p-red{background:#f8d7d3;color:#8c2417}
+  .p-grn{background:#d6efdb;color:#155724}
+  .p-blu{background:#d6e6fa;color:#134a8e}
+  .p-amb{background:#fbeec2;color:#7a5200}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:4px 0}
+  .foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);color:var(--sub);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OJ 6263 败因：反攻部队<b>不出发</b>，近战被「两遍共享预算」<b>饿死</b></h1>
+<div class="meta">提交 6263 复盘 ｜ 引擎 <code>v3.0.7h</code> ｜ 地图 <code>map.njust</code>（<code>-rotate 0</code>）｜ A/B 各 3 局 ｜ 2026-10-05</div>
+
+<div class="card verdict">
+  <b>一句话：</b>指令层（<code>self</code>／<code>obj</code> 两层自检）已经修好了 —— 引擎这次真的收到了
+  <b>设置工作目标 576 条 / 设置攻击目标 1366 条 / 移动至 2075 条</b>。但败因换了个地方：
+  <b>反攻段的行军循环把一个「单份预算」跨两个 pass 共享</b>，而远程单位一多就把预算吃光，
+  ⇒ <b>近战（方阵兵）整段代码从头到尾一次都没执行</b>，1027/1066 条移动令全落回自己家。
+  祭司 22:00 接到反攻令，部队 26 分钟才摸到敌基地，<b>30 分钟到了，武器厂还没开始转</b>。
+</div>
+
+<h2>一、先确认「上一层已经好了」：指令层不再是瓶颈</h2>
+
+<div class="card ok">
+<p>对比三次提交的引擎侧动作计数（最可靠的机制量，不受日志采样影响）：</p>
+<table>
+<tr><th>指标</th><th>提交 6121</th><th>提交 6204</th><th>提交 6263（本次）</th></tr>
+<tr><td><code>设置工作目标</code>（引擎实收）</td><td class="n">0</td><td class="n">0</td><td class="n"><b>576</b></td></tr>
+<tr><td><code>设置攻击目标</code></td><td class="n">0</td><td class="n">0</td><td class="n"><b>1366</b></td></tr>
+<tr><td><code>移动至</code></td><td class="n">23</td><td class="n">—</td><td class="n"><b>2075</b></td></tr>
+<tr><td><code>INS-BAD</code> 累计丢弃</td><td class="n">67291</td><td class="n">n=12 drop=12</td><td class="n"><b>1686</b></td></tr>
+<tr><td>ECO 状态行</td><td class="n">Idle:7 Work:1</td><td class="n">Idle:7 Work:1</td><td class="n"><b>Idle:0 Work:8</b>（后期 Work:15）</td></tr>
+</table>
+<p>⇒ <code>self</code>／<code>obj</code> 两层判据统一为「<b>键不存在⇒丢；值为 NULL⇒丢；键存在且非空⇒填当前权威指针</b>」之后，
+AI 的指令 <b>真的落地了</b>。这次失败<b>不是</b>指令被丢。</p>
+</div>
+
+<h2>二、败因第三层：行军预算「两遍共享」⇒ 近战整段跳过</h2>
+
+<div class="card info">
+<p>反攻段的行军循环写成「先远程、后近战」两遍（<code>pass 0</code> 只跑远程/投石车，<code>pass 1</code> 才跑近战），
+但 <b>外层循环条件里带了 <code>marchCmds &lt; maxMarchCmds</code></b>，而 <code>marchCmds</code> 是<b>跨两个 pass 累计</b>的同一个计数器：</p>
+<pre><span class="d">// 修改前（UsrAI.cpp:5469 附近）</span>
+const int maxMarchCmds = readyToAttack ? <span class="r">8</span> : (armyCount + 4);
+for (int pass = 0; pass &lt; 2 <span class="r">&amp;&amp; marchCmds &lt; maxMarchCmds</span>; ++pass) {   <span class="d">// ★ 预算跨两遍共享</span>
+    for (auto &amp;a : infoPtr-&gt;armies) {
+        bool ranged = sortIsRanged(a.Sort);
+        if (pass == 0 &amp;&amp; !ranged) continue;   <span class="d">// pass 0：只跑远程/投石车</span>
+        if (pass == 1 &amp;&amp;  ranged) continue;   <span class="d">// pass 1：才跑近战</span>
+        ...
+        if (++marchCmds &gt;= maxMarchCmds) break;
+</pre>
+<p><b>几何结论</b>：<code>readyToAttack</code> 为真时上限被硬编码成 <b>8</b>。
+只要<b>远程单位数 ≥ 8</b>，<code>pass 0</code> 一个人就把 8 份预算吃光
+⇒ 外层条件 <code>marchCmds &lt; maxMarchCmds</code> 恒假 ⇒ <b><code>pass 1</code>（近战）一次都不进</b>。</p>
+</div>
+
+<div class="card warn">
+<h3>OJ 6263 日志铁证</h3>
+<pre><span class="d"># 方阵兵数量早已超过那个硬编码的 8</span>
+[HOPLITE-LATE f=29301] 现役hop=5 comp=<span class="y">7</span> limit=7
+[HOPLITE-LATE f=30623] 现役hop=6 comp=<span class="y">9</span> limit=8    <span class="d">← 9 &gt; 8</span>
+[HOPLITE-LATE f=32019] 现役hop=7 comp=<span class="y">11</span> limit=10  <span class="d">← 11 &gt; 8</span>
+
+[TOWER-TGT]   近战条目      = <span class="r">0 条</span>
+[TOWER-APPROACH]            = 14 条，<span class="r">全部是「复合弓兵/远程」</span>，且全部指向同一座塔 11166、停在 30 格外
+[PRIEST GUARD] cmds=0       = 81 条
+方阵兵 HumanMove 落点       = 1027/1066 条落在<b>自己基地</b>（≈TC 外 12 格）
+</pre>
+<p>⇒ <b>反攻期只有弓兵在打</b>；方阵兵全程被"钉"在家里，祭司身边没有肉盾可以顶上去。</p>
+</div>
+
+<h3>为什么"不出发"会直接等于"超时"</h3>
+<div class="card info">
+<p>本机复跑（<code>map.njust</code>、<code>-rotate 0</code>、<code>-exam</code>、<code>-freq MAX</code>）插了 <code>[EB]</code> 心跳，
+每 1500 帧打印一次"已探明的敌建筑数 + 我军包围盒"：</p>
+<pre><span class="d"># 基线 _n0_1（未修）</span>
+[EB f=1500]  nEB=0 | nMy=1 bbox=(<span class="r">79.0..79.0, 14.0..14.0</span>)   <span class="d">← 自己家</span>
+[EB f=7500]  ...  bbox=(<span class="r">68..88, 13..33</span>)
+[EB f=31500] ...  bbox=(<span class="r">68..88, 13..33</span>)   <span class="d">← 21 分钟里一步没挪</span>
+[EB f=34500] nEB=<span class="g">3</span> ...              <span class="d">← 23 分钟才第一次看到敌建筑</span>
+[EB f=43500] 塔清完                                  <span class="d">← 29 分钟</span>
+</pre>
+<p>反攻令在 <b>Frame=33001（22:00）</b> 下发，可部队 <b>23 分钟</b>才第一次接近敌方建筑、<b>29 分钟</b>才清完塔
+⇒ 留给祭司感化武器厂的时间 <b>不到 1 分钟</b> ⇒ <b>必然 30:00 超时</b>。
+（本引擎唯一的胜利条件就是"攻城武器厂被祭司转换"，见 <code>MainWidget::isWin()</code>。）</p>
+</div>
+
+<h2>三、修法：预算<b>按遍独立</b>，上限改 <code>armyCount + 4</code></h2>
+
+<div class="card ok">
+<pre><span class="d">// 修改后</span>
+const int maxMarchCmds = armyCount + 4;          <span class="d">// ★ 去掉 readyToAttack ? 8 这个硬编码</span>
+for (int pass = 0; pass &lt; 2; ++pass) {
+    marchCmds = 0;                               <span class="d">// ★ 每遍独立预算（恢复"远程先走/近战补位"两遍设计的本意）</span>
+    for (auto &amp;a : infoPtr-&gt;armies) {
+        bool ranged = sortIsRanged(a.Sort);
+        if (pass == 0 &amp;&amp; !ranged) continue;
+        if (pass == 1 &amp;&amp;  ranged) continue;
+</pre>
+<p><b>安全性论证</b>：<code>marchCmds</code> 声明于本循环之前（<code>:5345</code>），<b>循环外无任何引用</b>
+（已 <code>grep</code> 全文件确认），所以"每遍清零"不会影响其它语义；上一轮加的
+"卡死朝 TC 内缩 <code>stuckTry</code> 格"逻辑在循环体内，行为不变。</p>
+<p><b>静态验证</b>：<code>syn.py</code> ⇒ <code>errors = 0 ; warnings = 16</code>（与基线一致，未引入新 warning）。</p>
+</div>
+
+<h2>四、A/B 验证（同图、同朝向、同参数，各 3 局）</h2>
+
+<div class="card">
+<table>
+<tr><th>跑局</th><th>结局</th><th>末帧</th><th>感化武器厂</th><th>方阵兵移动令落「敌区」</th><th>首次 <code>nEB&gt;0</code></th></tr>
+<tr><td><code>_n0_1</code> 基线</td><td><span class="pill p-red">超时</span></td><td class="n">44984</td><td class="n">0</td><td class="n">96 / 356 = <b>27.0%</b></td><td class="n">f=43500</td></tr>
+<tr><td><code>_n0_2</code> 基线</td><td><span class="pill p-red">祭司死</span></td><td class="n">23484</td><td class="n">0</td><td class="n">0 / 0 = <b>0%</b></td><td class="n">—</td></tr>
+<tr><td><code>_n0_3</code> 基线</td><td><span class="pill p-red">超时</span></td><td class="n">44900</td><td class="n">0</td><td class="n">52 / 108 = <b>48.1%</b></td><td class="n">f=39000</td></tr>
+<tr><td><code>_fix_1</code> 修复后</td><td><span class="pill p-grn">胜 28.5 分</span></td><td class="n">42750</td><td class="n"><b>1</b></td><td class="n">55 / 55 = <b>100%</b></td><td class="n"><b>f=34500</b></td></tr>
+<tr><td><code>_fix_2</code> 修复后</td><td><span class="pill p-red">祭司死</span></td><td class="n">44500</td><td class="n">0</td><td class="n">152 / 152 = <b>100%</b></td><td class="n">f=37500</td></tr>
+<tr><td><code>_fix_3</code> 修复后</td><td><span class="pill p-grn">胜 27.9 分</span></td><td class="n">42794</td><td class="n"><b>1</b></td><td class="n">165 / 165 = <b>100%</b></td><td class="n"><b>f=36000</b></td></tr>
+</table>
+<p><b>结论</b>：胜率 <b>0/3 → 2/3</b>；最关键的那条机制量 ——
+「方阵兵移动令落点是否在敌区」——从 <b>27% / 0% / 48%</b> 直接变成 <b>100% / 100% / 100%</b>。
+<b>近战被钉在家里这个现象，被彻底消除。</b></p>
+<p>⚠ <b>别把 2/3 当胜率</b>：单批 <b>&lt;24 局</b>不足以对任何改动下胜负结论（同 exe 复跑胜负会翻转，见记忆 §2 铁律）。
+这里能下结论的是<b>机制量</b>：预算按遍独立 ⇒ 近战一定会拿到属于自己的那一遍 ⇒ 100% 指向敌区。</p>
+</div>
+
+<h2>五、提交件与复跑判读</h2>
+
+<div class="card ok">
+<table>
+<tr><th>文件</th><th>md5</th><th>行数</th><th>字节</th><th>行尾</th></tr>
+<tr><td><code>_submit/UsrAI.cpp</code></td><td><code>9432212b</code></td><td class="n">7340</td><td class="n">520575</td><td><span class="pill p-grn">纯 LF</span></td></tr>
+<tr><td><code>_submit/UsrAI.h</code></td><td><code>18cf1d82</code></td><td class="n">508</td><td class="n">39599</td><td><span class="pill p-grn">纯 LF</span></td></tr>
+</table>
+<p><b>两个文件必须成对提交</b>（<code>.h</code> 含 <code>UsrAICore</code> 拆分与 5 个隐藏入口声明，只换一个是链接不过的）。
+回退锚点：<code>UsrAI.cpp.bak_20261005_pre_marchbudget</code>（<code>632386fe</code>，即本次提交 6263 那一版）。</p>
+</div>
+
+<div class="card info">
+<h3>下次跑局，先看这三条就能定性</h3>
+<ol>
+<li><code>grep -c "设置工作目标"</code> / <code>设置攻击目标</code> / <code>移动至</code> —— 若又变成 <b>0</b>，说明指令层回退，先查 <code>self/obj</code> 两层判据。</li>
+<li><code>[HOPLITE-LATE] comp=</code> 与<b>方阵兵 HumanMove 落点</b> —— 若落点仍集中在自己基地，说明有新的预算/闸门把近战拦住了。</li>
+<li><code>被祭司转换</code> 出现的帧号 —— 唯一胜利条件；它是"下一帧 <code>win:true</code>"的充分条件。</li>
+</ol>
+</div>
+
+<div class="card warn">
+<h3>本轮已知未修（下一刀候选）</h3>
+<ul>
+<li><b><code>[TOWER-APPROACH]</code> 的 <code>towerBiasSN</code> 命中后永不清除</b> —— 日志去重后兵种不再前出，
+反复往"塔外 10 格"这个够不着的点发令（本次 52/28 条仍全是远程）。</li>
+<li><b><code>PRIEST_TOWERS_CLEAR_MAX = 5</code> 仍是绝对塔数判据</b> —— <code>gT&gt;5</code> 会再次锁死，
+建议改成"塔数停滞"判据（记历史最小塔数，当前 ≤ min+1 即放行）。</li>
+<li><b>末段钉死（锚退化）</b>代码已改但本地 30 局 0 次触发，仍需专局复现「反攻后 <code>Mil=0</code> + 祭司存活」。</li>
+</ul>
+</div>
+
+<div class="foot">
+数据来源：<code>C:\new-aoe3.0.7g\_n0_1..3.dbg</code>（基线）／<code>_fix_1..3.dbg</code>（修复后）／
+OJ <code>debug_6263_*.log</code>　·　分析脚本 <code>_march_ab.py</code>／<code>_ab2.py</code>　·　2026-10-05
+</div>
+
+</div>
+</body>
+</html>

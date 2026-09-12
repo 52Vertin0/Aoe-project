@@ -1,0 +1,155 @@
+====================================================================================================
+### 改前：bak_20260920_pre_tierb_UsrAI.cpp   （共 6640 行）
+----------------------------------------------------------------------------------------------------
+--- ARROWTOWER 下发/调用 ---
+  【第 1 处】调用行 3201:
+       3191 |     if (techCooldown > 0) return;
+       3192 |     if (info.Meat < FOOD_PAUSE_TECH_TRAIN) return;
+       3194 |     bool done = false;
+       3195 |     bool postBronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
+       3199 |     if (!towerTechResearched) {
+       3200 |         auto g = findBuilding(BUILDING_GRANARY);
+       3201 |         if (g && g->Project == BUILDING_GRANARY_ARROWTOWER) {
+
+  【第 2 处】调用行 3204:
+       3195 |     bool postBronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
+       3199 |     if (!towerTechResearched) {
+       3200 |         auto g = findBuilding(BUILDING_GRANARY);
+       3201 |         if (g && g->Project == BUILDING_GRANARY_ARROWTOWER) {
+       3202 |             towerTechResearched = true;  // 引擎已在研究中（已扣资源）
+       3203 |         } else if (g && g->Project == ACT_NULL && info.Meat >= 50) {
+       3204 |             BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
+
+  【第 3 处】调用行 3345:
+       3337 |             done = true;
+       3338 |         }
+       3339 |     }
+       3342 |     if (!done && !towerTechResearched) {
+       3343 |         auto g = findBuilding(BUILDING_GRANARY);
+       3344 |         if (g && g->Project == ACT_NULL && info.Meat >= 50) {
+       3345 |             BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
+
+  【第 4 处】调用行 3372:
+       3365 |     }
+       3367 |     bool milUnlocked = (broadswordResearched || compositeBowResearched);
+       3368 |     if (!milUnlocked) {
+       3369 |         if (!done && !towerTechResearched) {
+       3370 |             auto g = findBuilding(BUILDING_GRANARY);
+       3371 |             if (g && g->Project == ACT_NULL && info.Meat >= 50) {
+       3372 |                 BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
+
+  【第 5 处】调用行 3481:
+       3473 |             prevStockProject = curStockProj;
+       3474 |         }
+       3475 |     }
+       3478 |     if (!done && !towerTechResearched && info.Meat >= 50) {
+       3479 |         auto g = findBuilding(BUILDING_GRANARY);
+       3480 |         if (g && g->Project == ACT_NULL) {
+       3481 |             BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
+
+----------------------------------------------------------------------------------------------------
+--- UPGRADE   下发/调用 ---
+  【第 1 处】调用行 3353:
+       3346 |             towerTechResearched = true; done = true;
+       3347 |         }
+       3348 |     }
+       3350 |     if (!DISABLE_TOWER_UPGRADE && !done && !bronzeTowerUpgraded && towerTechResearched) {
+       3351 |         auto g = findBuilding(BUILDING_GRANARY);
+       3352 |         if (g && g->Project == ACT_NULL && info.Meat >= 120 && info.Stone >= 50) {
+       3353 |             BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWE_UPGRADE);
+
+  【第 2 处】调用行 3490:
+       3482 |             towerTechResearched = true; done = true;
+       3483 |         }
+       3484 |     }
+       3487 |     if (!DISABLE_TOWER_UPGRADE && !done && !bronzeTowerUpgraded && towerTechResearched) {
+       3488 |         auto g = findBuilding(BUILDING_GRANARY);
+       3489 |         if (g && g->Project == ACT_NULL && info.Meat >= 120 && info.Stone >= 50) {
+       3490 |             BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWE_UPGRADE);
+
+====================================================================================================
+### 当前：UsrAI.cpp   （共 6462 行）
+----------------------------------------------------------------------------------------------------
+--- ARROWTOWER 下发/调用 ---
+  【第 1 处】调用行 3128:
+       3118 |     bool done = false;
+       3119 |     bool postBronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
+       3124 |     auto tryArrowTowerTech = [&]() {
+       3125 |         if (!done && !towerTechResearched) {
+       3126 |             auto g = findBuilding(BUILDING_GRANARY);
+       3127 |             if (g && g->Project == ACT_NULL && info.Meat >= 50) {
+       3128 |                 BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
+
+  【第 2 处】调用行 3147:
+       3138 |                 bronzeTowerUpgraded = true; done = true;
+       3139 |             }
+       3140 |         }
+       3141 |     };
+       3145 |     if (!towerTechResearched) {
+       3146 |         auto g = findBuilding(BUILDING_GRANARY);
+       3147 |         if (g && g->Project == BUILDING_GRANARY_ARROWTOWER) {
+
+  【第 3 处】调用行 3150:
+       3141 |     };
+       3145 |     if (!towerTechResearched) {
+       3146 |         auto g = findBuilding(BUILDING_GRANARY);
+       3147 |         if (g && g->Project == BUILDING_GRANARY_ARROWTOWER) {
+       3148 |             towerTechResearched = true;  // 引擎已在研究中（已扣资源）
+       3149 |         } else if (g && g->Project == ACT_NULL && info.Meat >= 50) {
+       3150 |             BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
+
+  【第 4 处】调用行 3282:
+       3273 |             info.Stone >= BUILDING_ARMYCAMP_UPGRADE_BROADSWORD_GOLD) {
+       3274 |             BuildingAction(ac->SN, BUILDING_ARMYCAMP_UPGRADE_BROADSWORD);
+       3275 |             broadswordQueued = true;
+       3276 |             done = true;
+       3277 |         }
+       3278 |     }
+       3282 |     tryArrowTowerTech();
+
+  【第 5 处】调用行 3296:
+       3289 |     if (frame < WAVE3_TIME) {
+       3290 |         if (done) techCooldown = 25;
+       3291 |         return;
+       3292 |     }
+       3294 |     bool milUnlocked = (broadswordResearched || compositeBowResearched);
+       3295 |     if (!milUnlocked) {
+       3296 |         tryArrowTowerTech();
+
+  【第 6 处】调用行 3399:
+       3391 |                     .arg((int)info.Meat).arg((int)info.Gold)
+       3392 |                     .arg(infArmorLevel).arg(arcArmorLevel));
+       3393 |             }
+       3394 |             prevStockProject = curStockProj;
+       3395 |         }
+       3396 |     }
+       3399 |     tryArrowTowerTech();
+
+----------------------------------------------------------------------------------------------------
+--- UPGRADE   下发/调用 ---
+  【第 1 处】调用行 3137:
+       3131 |         }
+       3132 |     };
+       3133 |     auto tryBronzeTowerUpgrade = [&]() {
+       3134 |         if (!DISABLE_TOWER_UPGRADE && !done && !bronzeTowerUpgraded && towerTechResearched) {
+       3135 |             auto g = findBuilding(BUILDING_GRANARY);
+       3136 |             if (g && g->Project == ACT_NULL && info.Meat >= 120 && info.Stone >= 50) {
+       3137 |                 BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWE_UPGRADE);
+
+  【第 2 处】调用行 3283:
+       3274 |             BuildingAction(ac->SN, BUILDING_ARMYCAMP_UPGRADE_BROADSWORD);
+       3275 |             broadswordQueued = true;
+       3276 |             done = true;
+       3277 |         }
+       3278 |     }
+       3282 |     tryArrowTowerTech();
+       3283 |     tryBronzeTowerUpgrade();
+
+  【第 3 处】调用行 3400:
+       3392 |                     .arg(infArmorLevel).arg(arcArmorLevel));
+       3393 |             }
+       3394 |             prevStockProject = curStockProj;
+       3395 |         }
+       3396 |     }
+       3399 |     tryArrowTowerTech();
+       3400 |     tryBronzeTowerUpgrade();

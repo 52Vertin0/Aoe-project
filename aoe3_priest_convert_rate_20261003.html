@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>祭司反攻期感化率归因报告 (2026-10-03)</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --dim:#5c6570; --line:#e3e6ea;
+    --ok:#0a7d3c; --okbg:#e8f6ee; --bad:#b3261e; --badbg:#fdecea;
+    --warn:#8a5a00; --warnbg:#fff5e0; --acc:#1c5fb8; --accbg:#e8f0fb;
+    --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14171a; --card:#1c2024; --ink:#e8eaed; --dim:#9aa3ad; --line:#2c3238;
+      --ok:#5ed68f; --okbg:#12301f; --bad:#ff8a80; --badbg:#331614;
+      --warn:#f0c060; --warnbg:#2e2410; --acc:#79b0f5; --accbg:#132234;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+       font:15px/1.72 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 4px;letter-spacing:-.3px}
+  h2{font-size:18px;margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+  h3{font-size:15px;margin:20px 0 8px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+  .verdict{background:var(--badbg);border:1px solid var(--bad);border-left:5px solid var(--bad);border-radius:10px;padding:16px 20px;margin:18px 0}
+  .verdict b{color:var(--bad);font-size:17px}
+  .good{background:var(--okbg);border:1px solid var(--ok);border-left:5px solid var(--ok);border-radius:10px;padding:16px 20px;margin:18px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--accbg);font-weight:600;font-size:13px}
+  code{font-family:var(--mono);font-size:12.5px;background:var(--accbg);padding:1px 5px;border-radius:4px}
+  pre{font-family:var(--mono);font-size:12.5px;background:var(--bg);border:1px solid var(--line);
+      border-radius:8px;padding:11px 13px;overflow-x:auto;line-height:1.55;margin:9px 0}
+  .ok{color:var(--ok);font-weight:600}
+  .bad{color:var(--bad);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:20px;
+       background:var(--accbg);color:var(--acc);margin-right:6px}
+  .tag.ok{background:var(--okbg);color:var(--ok)}
+  .tag.bad{background:var(--badbg);color:var(--bad)}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:5px 0}
+  .note{font-size:13px;color:var(--dim);border-left:3px solid var(--line);padding-left:12px;margin:10px 0}
+  footer{margin-top:38px;padding-top:16px;border-top:1px solid var(--line);font-size:12.5px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>祭司反攻期感化率归因报告</h1>
+<div class="sub">2026-10-03 ｜ 分析对象：<code>UsrAI.cpp</code> = <code>5af68f2d</code> · 7140 行 ｜ 证据源：你 23:03 那局实机日志 <code>AIText.log</code>（12274 行 · f0→f45001）｜ <b>本次未改动任何源码</b></div>
+
+<div class="verdict">
+  <b>结论：不是"感化失败率高"，而是祭司<b>整局从未进入武器厂的感化射程</b>。</b>
+  <div style="margin-top:8px">
+    这局祭司感化动作 <b>5 次、成功 5 次（100%）</b>——机制本身健康；但感化的目标<b>全是顺手遇到的敌方军队</b>（方阵兵×3、投石车×2），
+    <b><code>攻城武器厂</code> 一条都没有</b>。而按本项目唯一的胜利条件（武器厂被祭司转换），<b>这局从第 1 帧起就不可能赢</b>。
+    根因是一处<b>可量化证伪的常量互斥</b>：<code>PRIEST_MIN_DIST_TARGET(18) &gt; PRIEST_CONVERT_SIEGE_RANGE(12)</code>。
+  </div>
+</div>
+
+<h2>1. 你这局的祭司全貌</h2>
+<table>
+  <tr><th>量</th><th>实测值</th><th>说明</th></tr>
+  <tr><td>结局</td><td class="bad">未决（打满 45001 帧 = 30:00）</td><td>无 <code>VICTORY</code>；日志里那条 <code>DEFEAT</code> 是反攻启动事件 <code>ALL WAVES DEFEATED! Counterattack!</code>，假阳性</td></tr>
+  <tr><td><code>攻城武器厂</code> 出现</td><td class="bad">0 条</td><td>整局没有任何以武器厂为目标的指令/事件</td></tr>
+  <tr><td>祭司 SN / 存亡</td><td><code>91482</code> / 活到局末</td><td>全程 <code>hp=0.80</code>（满血）—— 反攻期几乎没受伤</td></tr>
+  <tr><td>反攻期（f≥33001）祭司指令</td><td>Move <b>304</b> ｜ 感化 <b>5</b> ｜ 攻击起手 6</td><td>移动:感化 = 61:1</td></tr>
+  <tr><td>感化目标（全部）</td><td>方阵兵 <code>91467/91468/91469</code>（f35113/35759/36828）<br>投石车 <code>91466/91465</code>（f42048/42645）</td><td class="warn">全是敌方<b>军队</b>，无一是建筑</td></tr>
+  <tr><td>感化成功率</td><td class="ok">5 / 5 = 100%</td><td>每条 <code>设置转换目标</code> 后都跟着 <code>玩家 转换高级敌人，分数+8</code></td></tr>
+  <tr><td>推进到最近距离</td><td class="bad">距武器厂 <b>19.2 格</b>（f42300）</td><td>感化射程 12 格 ⇒ <b>差 7.2 格，从未进入</b></td></tr>
+</table>
+
+<div class="good">
+  <b>这组数字把问题定性得很干净</b>：感化是"想感化就能成功"的，卡住的是<b>祭司到不了该感化的地方</b>。
+  属于典型的「机制健康、瓶颈在目标可用性与到位」——所以调感化相关的参数（射程、冷却、成功率）<b>一格都不会动</b>。
+</div>
+
+<h2>2. ★ 核心矛盾：两个常量在数值上互斥</h2>
+<div class="card">
+<pre>#define PRIEST_CONVERT_SIEGE_RANGE  12.0   // :165  须 ≤ 此值才能感化武器厂（引擎 DIS_PRIEST=12）
+#define PRIEST_MIN_DIST_TARGET      18.0   // :365  祭司与反攻目标的"最小安全距离"</pre>
+  <p style="margin:10px 0 0">
+    <code>12 &lt; 18</code> ⇒ <b>祭司被允许站的最近距离（18 格），比它能感化的最远距离（12 格）还远 6 格。</b>
+    这不是"差一点"，是<b>几何上的不可能</b>：只要祭司走的是"跟随大队"那条路，它数学上永远够不到感化射程。
+  </p>
+</div>
+<p>代码里确实有一条"前出门"能绕开这个夹持 —— 走 <code>:4978-4986</code> 分支时落点直接取"武器厂 11 格处"：</p>
+<pre>4979   double stopD = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;   // 停在感化射程内 1 格处
+4980   tx = sMemDR - ux2 * stopD;
+4986   HumanMove(priestSN, tx, ty);          ← 这条路能到 11 格 ⇒ 能感化
+...
+5005   } else if (priestCounterCooldown &lt;= 0 || priestTooClose) {   ← 走不到前出门时，落到这里
+5014       double armyDR = (nArmy &gt; 0) ? sumDR / nArmy : <b>tcDR</b>;   // 大队重心（军队为 0 ⇒ 退化成 TC 坐标）
+5021       double px = armyDR + ux * PRIEST_SAFE_BEHIND * BL;      // 落点 = 大队重心 向 TC 退 8 格
+5025       if (dTgt &lt; PRIEST_MIN_DIST_TARGET * BL) { ... px += ux*need; }   // ★ 硬夹到距目标 ≥18 格
+5032       HumanMove(priestSN, px, py);    ← 实测走的就是这条</pre>
+
+<h3>哪条路被选中，由一个"塔闸"决定 —— 而它是死锁的</h3>
+<pre>4793   // 全局闸：敌箭塔数 &lt;= PRIEST_TOWERS_CLEAR_MAX，且已探明武器厂
+4798   ... &amp;&amp; (enemySiegeSN != -1) ...           →  clearOk
+4874   if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR &amp;&amp; clearOk &amp;&amp; enemySiegeSN != -1) priestSiegeApproach = 1;</pre>
+<p>实测（<code>[LC-DBG]</code> 45 条，gT = 已探明敌箭塔数）：</p>
+<pre>f33300  siegeSN=-1  gT=0   ← 还没探到任何东西
+f34500  siegeSN=-1  gT=1
+f37500  siegeSN=-1  gT=2       ← 闸的阈值正好是 2，但此刻武器厂还没探到 ⇒ 保险项不过
+f39600  siegeSN=11421 gT=<b>4</b>     ← 武器厂探明了，塔也变成 4 座
+f41400  siegeSN=11421 gT=3
+f42300  siegeSN=11421 gT=<b>4</b>     ← 到局末始终 3~4</pre>
+<p><b>武器厂被探明之后，敌塔数一直 3~4 &gt; 阈值 2 ⇒ <code>clearOk</code> 恒假 ⇒ <code>priestSiegeApproach</code> 永不为 1 ⇒ 祭司永远走"跟随段" ⇒ 永远停在 19~20 格 ⇒ 永远感化不到。</b></p>
+<p class="note">
+  这与本项目另一个已记录的形态同族（<code>towersAllDown 要求 enemyTowerN == 0</code>）：<b>判据要求某个量降到低位，而被观测系统会持续重建该量</b> ⇒ 该闸在实际对局里不可达。
+  上一次的修法是把 <code>==0</code> 放宽到 <code>&lt;=2</code>（2026-09-21）；本次实测的塔数分布已经跑到 <code>3~4</code> 之上 —— <b>阈值再次被现实越过</b>。
+</p>
+
+<h2>3. 时间线：这局是怎么一步步走到"不可能赢"的</h2>
+<table>
+  <tr><th>时刻</th><th>事件</th><th>证据</th></tr>
+  <tr><td>22.0 分 (f33000)</td><td>反攻开始（强制）。<b>但敌武器厂尚未探明</b> <code>siegeSN=-1</code></td><td>状态行 <code>Mil:27</code>；<code>[LC-DBG] siegeSN=-1</code></td></tr>
+  <tr><td>22~26.3 分</td><td class="warn"><b>4.3 分钟的"无目标期"</b>：祭司没有任何武器厂目标可去，只能顺手感化遇上的敌方军队</td><td>24 条 <code>[LC-DBG]</code> 全为 <code>siegeSN=-1</code></td></tr>
+  <tr><td>23.4 / 23.8 / 24.6 分</td><td>顺手感化 3 个方阵兵（<code>91467/91468/91469</code>），全部成功</td><td><code>设置转换目标为 方阵兵</code> + <code>玩家 转换高级敌人</code></td></tr>
+  <tr><td>26.0 分 (f39000)</td><td class="bad"><b>会战崩盘：军队 25 → 7（一次掉 ~18 个）</b></td><td>状态行 <code>Mil:25 → Mil:7</code></td></tr>
+  <tr><td>26.3 分 (f39437)</td><td>武器厂终于被探明 <code>enemySiegeSN=11421 mem=(6,73)</code></td><td><code>&gt;&gt; Enemy Siege Workshop found at (6,73)!</code></td></tr>
+  <tr><td>26.4~28.4 分</td><td>祭司朝武器厂推进：距 44.1 → <b>19.2</b> 格；<b>塔闸恒假 ⇒ 只能跟着残军停在大后方</b></td><td><code>[LC-DBG] dS=44.1→19.2；gT=3~4</code></td></tr>
+  <tr><td>28.0 / 28.4 分</td><td>顺手感化 2 个投石车（<code>91466/91465</code>）—— 后者成了我方最后一个军事单位</td><td><code>Mil:1</code></td></tr>
+  <tr><td>28.7 分 (f43115)</td><td class="bad">投石车 <code>91465</code> 被敌箭塔 <code>11415/11423</code> 打死 ⇒ <b>Mil:0（我军全灭）</b></td><td><code>箭塔 11423 设置攻击目标为 投石车 91465</code> → <code>投石车(编号91465)死亡</code></td></tr>
+  <tr><td>28.8 分 (f43139)</td><td class="bad"><b>祭司被派回自家基地 (90,17)</b>，此后每 <b>30 帧</b>重发同一坐标，<b>1860 帧零位移直到局末</b></td><td><code>HumanMove:祭司 91482 移动至 (3219.94,608.21)</code> ×63，间隔严格 30</td></tr>
+</table>
+
+<h3>为什么军队全灭后祭司会"回家罚站"</h3>
+<pre>5010   for (auto &amp;a : infoPtr-&gt;armies) { if (a.SN == priestSN) continue; sumDR += a.DR; ... nArmy++; }
+5014   double armyDR = (nArmy &gt; 0) ? sumDR / nArmy : <b>tcDR</b>;   // ★ 军队为 0 ⇒ 跟随锚退化成"集结 TC 坐标"
+5021   double px = armyDR + ux * PRIEST_SAFE_BEHIND * BL;         // 于是落点 = TC 旁
+5036   priestCounterCooldown = 30; priestMoveCooldown = 30;        // ★ 与实测"间隔严格 30 帧"完全吻合</pre>
+<p>
+  这段在语义上是"祭司跟在大队后方 8 格"——军队还在时完全合理。
+  但 <code>nArmy == 0</code> 时<b>没有任何分支处理</b>，兜底值 <code>tcDR/tcUR</code> 让"跟随锚"变成了"自家基地"，
+  于是祭司被自己人反复命令回基地、在 <code>(90,17)</code> 原地重发移动令直到局末。
+  <b>讽刺的是它此时的 <code>dS</code> 只有 19.2 格、距感化射程只差 7 格 —— 却主动退到了 101 格外。</b>
+</p>
+
+<h2>4. 根因分层（每层带行号与实测值）</h2>
+<table>
+  <tr><th>#</th><th>层</th><th>代码</th><th>实测</th><th>性质</th></tr>
+  <tr>
+    <td>1</td>
+    <td><b>常量互斥</b>：允许站的最近距离 &gt; 能感化的最远距离</td>
+    <td><code>:165</code> <code>PRIEST_CONVERT_SIEGE_RANGE 12.0</code><br><code>:365</code> <code>PRIEST_MIN_DIST_TARGET 18.0</code></td>
+    <td>祭司最近到 19.2 格</td>
+    <td class="bad">几何不可能</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><b>塔闸死锁</b>：要求敌塔 ≤2，实际恒 3~4（敌方持续重建）⇒ 前出门永不开启</td>
+    <td><code>:356</code> <code>PRIEST_TOWERS_CLEAR_MAX 2</code><br><code>:4793-4798</code> clearOk</td>
+    <td><code>gT</code>=3~4 全场；<code>[SIEGE-WAIT]</code> <b>0 条</b></td>
+    <td class="bad">结构性死锁</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><b>武器厂发现太晚</b>：反攻 22 分开始，26.3 分才探明 ⇒ 4.3 分钟无目标</td>
+    <td><code>:5059-5062</code>（依赖 <code>enemy_buildings</code>，受 <code>explored||visible</code> 约束）<br><code>:295</code> <code>ENABLE_SCOUT_RECON false</code></td>
+    <td><code>siegeSN=-1</code> 持续 24 条采样</td>
+    <td class="warn">暴露延迟</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><b>跟随锚退化</b>：我军全灭 ⇒ 落点退化成 TC ⇒ 祭司回基地空转</td>
+    <td><code>:5014</code> <code>nArmy&gt;0 ? … : tcDR</code></td>
+    <td>f43139→f45001 零位移 1860 帧</td>
+    <td class="bad">兜底方向反了</td>
+  </tr>
+</table>
+<p class="note">
+  第 2、3 层是"为什么进不去"，第 4 层是"最后为什么连试都不试了"。第 1 层是它们共同的天花板 ——
+  <b>即使第 2 层修好，第 1 层仍会挡住"跟随段"这条路上的感化</b>（只是前出门那条路不受它约束）。
+</p>
+
+<h2>5. 修法候选（<b>未改动任何源码，等你拍板</b>）</h2>
+<table>
+  <tr><th>#</th><th>改法</th><th>落点</th><th>效果</th><th>风险 / 需确认</th></tr>
+  <tr>
+    <td><span class="tag">A</span>推荐</td>
+    <td>塔闸解死锁：<code>PRIEST_TOWERS_CLEAR_MAX 2 → 5</code>（实测最大 4）；或改判据为"敌塔数连续 K 帧不再增加"</td>
+    <td><code>:356</code></td>
+    <td>祭司改走 <code>:4978</code> 前出门分支，落点直接取"武器厂 11 格" ⇒ 6.3 分（f39437~f45001）窗口内可望起手</td>
+    <td>更早进入敌火力区；<b>与你 2026-09-21 拍板的 <code>2</code> 冲突，需确认</b>。建议用"不再增长"型判据，避免下次又被现实越过</td>
+  </tr>
+  <tr>
+    <td><span class="tag">B</span></td>
+    <td>解除常量互斥：<code>PRIEST_MIN_DIST_TARGET 18 → 10</code>（&lt; 感化射程 12）</td>
+    <td><code>:365</code></td>
+    <td>让"跟随段"这条路也不再被夹在射程之外</td>
+    <td>推翻你 2026-09-12 的需求"祭司反攻不要太靠前"；会同时影响其它引用该常量的分支（<code>:5025</code> 等）</td>
+  </tr>
+  <tr>
+    <td><span class="tag">C</span></td>
+    <td><code>nArmy == 0</code> 时兜底改为"继续朝武器厂推进"（而不是回 TC）</td>
+    <td><code>:5014</code></td>
+    <td>军队全灭后祭司不再空转，保留最后的感化机会</td>
+    <td>祭司孤身深入风险高（祭司死 = 立刻失败）；需配合 <code>PRIEST_SIEGE_GUARD_HP 0.45</code> 之类的保命闸</td>
+  </tr>
+  <tr>
+    <td><span class="tag">D</span></td>
+    <td>补一条"主动侦察敌武器厂"的路径（<code>ENABLE_SCOUT_RECON=false</code> 之下）</td>
+    <td>反攻前/初期</td>
+    <td>缩短 4.3 分钟的无目标期</td>
+    <td>需新逻辑与跑批；<code>09-03</code> 你已明确不造侦察骑兵（改由感化单位探路），这条路要另找载体</td>
+  </tr>
+</table>
+<div class="good">
+  <b>性价比排序：A（1 行）＞ B（1 行）＞ C（~3 行）＞ D（新逻辑）。</b>
+  建议先做 <b>A</b>，单批跑局看 <code>[SIEGE-WAIT]</code> 是否从 0 变为非 0、以及 <code>Priest ADVANCE to Siege</code> / <code>Priest converting Siege Workshop</code> 是否出现 ——
+  这两个日志是"闸真的开了"的直接判据，且<b>不受跑局随机性影响</b>（机制量 2 局即可判，不必等 24 局）。
+</div>
+
+<h2>6. 诚实边界（哪些我判不了）</h2>
+<ul>
+  <li><b>这是单局证据。</b>四层根因都属于"结构性"（常量互斥、死锁判据、兜底方向），结构性问题单局即可定性；
+      但<b>"修改后能提高多少胜率"必须 ≥24 局/臂</b>（本项目跑局本身不确定：同 exe 复跑会 W↔L 翻转）。</li>
+  <li><b>祭司孤身推进的生存率未知。</b>本局祭司全程满血（<code>hp=0.80</code>）靠的是 27 人护卫；
+      <code>Mil=0</code> 之后再让它推进，会不会被箭塔直接打死，本日志给不出答案 —— 这决定修法 C 是否值得做。</li>
+  <li><b>"为什么武器厂 26.3 分才被发现"没有定量归因。</b>只知道它发生在 <code>Mil</code> 从 25 崩到 7 的同一次会战里（推进到那一带才看见），
+      但"是探路太慢还是敌军太厚"本日志区分不了（需要单位级坐标轨迹，<code>AIText</code> 不含）。</li>
+  <li><b>反攻期祭司只感化 5 次</b>（12 分钟），其中 3 次集中在开头 2.6 分钟 —— 目标选取本身是否也偏保守，需要与
+      <code>[KIT-R]/[KIT-S]</code> 那套"我方抢占感化素材"的日志联动分析，本轮未展开。</li>
+</ul>
+
+<footer>
+  证据源：<code>C:\new-aoe3.0.7g\AIText.log</code>（mtime 2026-10-03 23:03:45，12274 行，f0→f45001，30:00 未决局）。<br>
+  分析基于源码 <code>UsrAI.cpp</code> = <code>5af68f2d</code> · 7140 行 ／ <code>UsrAI.h</code> = <code>996fc2c6</code> · 508 行 —— <b>本次分析未修改任何源码</b>（行号均为改动前口径）。<br>
+  关键行号：<code>PRIEST_CONVERT_SIEGE_RANGE :165</code>｜<code>PRIEST_TOWERS_CLEAR_MAX :356</code>｜<code>PRIEST_MIN_DIST_TARGET :365</code>｜<code>clearOk :4793-4798</code>｜<code>前出门 :4874-4885</code>｜<code>推进落点 :4978-4986</code>｜<code>跟随段/跟随锚退化 :5005-5036</code>｜<code>武器厂探明 :5059-5062</code>。
+</footer>
+
+</div>
+</body>
+</html>

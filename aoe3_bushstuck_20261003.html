@@ -1,0 +1,242 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>浆果采集者卡死不动 · 归因报告</title>
+<style>
+body{font-family:-apple-system,'Microsoft Yahei',sans-serif;margin:22px;background:#f6f7f9;color:#1a1a1a;line-height:1.65}
+.wrap{max-width:1000px;margin:0 auto}
+h1{font-size:21px;margin:0 0 4px}h2{font-size:17px;margin:22px 0 8px;border-left:4px solid #3a6ea5;padding-left:9px}
+h3{font-size:14px;margin:12px 0 5px}
+.card{background:#fff;border:1px solid #e3e6ea;border-radius:8px;padding:12px 16px;margin:10px 0}
+.tldr{background:#fdf4f3;border-left:5px solid #c0392b}
+.ok{background:#f0f9f3;border-left:5px solid #1e7e46}
+.warn{background:#fffbf0;border-left:5px solid #d9a400}
+.note{color:#666;font-size:12.5px}
+table{border-collapse:collapse;font-size:13px;width:100%;margin:8px 0}
+td,th{border:1px solid #e3e6ea;padding:5px 9px;text-align:left;vertical-align:top}
+th{background:#eef1f5;font-weight:600}
+tbody tr:nth-child(even){background:#fafbfc}
+pre{background:#1e242c;color:#e6edf3;padding:11px 14px;border-radius:7px;font-size:12.5px;
+    overflow-x:auto;line-height:1.5;font-family:Consolas,'Courier New',monospace}
+pre .c{color:#8b949e}pre .hl{color:#ff8b81;font-weight:700}pre .g{color:#7ee2a8;font-weight:700}
+code{font-family:Consolas,monospace;font-size:12.5px;background:#eef1f5;padding:1px 4px;border-radius:3px}
+.mono{font-family:Consolas,monospace;font-size:12.5px}
+.tag{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 6px;border-radius:4px}
+.t-red{background:#fdf1f0;color:#c0392b;border:1px solid #f0c6c1}
+.t-grn{background:#eef8f1;color:#1e7e46;border:1px solid #c2e5d0}
+.t-amb{background:#fff8e6;color:#9a6700;border:1px solid #f0dcae}
+.k{color:#3a6ea5;font-weight:600}
+</style></head><body><div class="wrap">
+
+<h1>「浆果采集者一直不动」—— 归因报告</h1>
+<p class="note">2026-10-03 · 证据来源：实机日志 <code>C:\new-aoe3.0.7g\AIText.log</code>（mtime 10:21:21，一局 854 行 / frame 0→8866）·
+源码 <code>UsrAI.cpp</code> 7317 行 md5 <code>8432737 1</code>（前 8 位）</p>
+
+<div class="card tldr">
+<h3 style="margin-top:0">TL;DR</h3>
+<b>不是村民"站住了"，是 AI 把它派出去之后就再也不管它了。</b><br>
+派工函数只服务 <code>NowState == IDLE</code> 的村民；村民一旦被派出去（状态变非 IDLE）又<b>没能真正采到东西</b>，
+就掉进"既非 IDLE、也没有有效目标"的夹缝 —— <span class="tag t-red">永久沉默</span>。<br>
+唯一的兜底（每 1500 帧的卡死检测）三重失效：<b>① 拉黑打错对象 ② 黑名单在主派工路径上根本没被查 ③ 打断动作不复位</b>。<br>
+<span class="note">你说的"4 分钟"= 第一次 <code>[STUCK]</code> 触发在 <b>frame 5817 = 3.88 分</b>，此后每 60 秒复发一次。</span>
+</div>
+
+<h2>1. 现场：4 个村民在"派工 3~4 帧"之后彻底沉默</h2>
+<p>把一局里 16 个村民的<b>全部指令帧</b>列出来，正常人与卡死者的差别一眼可见：</p>
+<table>
+<thead><tr><th>村民 SN</th><th>出生帧</th><th>指令总数</th><th>末条指令帧</th><th>之后沉默</th><th>末次目标</th><th>判定</th></tr></thead>
+<tbody>
+<tr style="background:#fdf1f0"><td class="mono">41157</td><td>0</td><td>7</td><td>4238</td><td><b>4628 帧</b></td><td>浆果丛 21218</td><td><span class="tag t-red">卡死</span></td></tr>
+<tr style="background:#fdf1f0"><td class="mono">41326</td><td>3635</td><td>4</td><td>3640</td><td><b>5226 帧</b></td><td>(连发 4 帧后断)</td><td><span class="tag t-red">卡死</span></td></tr>
+<tr style="background:#fdf1f0"><td class="mono">41328</td><td>4479</td><td>4</td><td>4484</td><td><b>4382 帧</b></td><td>浆果丛 21226</td><td><span class="tag t-red">卡死</span></td></tr>
+<tr style="background:#fdf1f0"><td class="mono">41331</td><td>5530</td><td>4</td><td>5536</td><td><b>3330 帧</b></td><td>浆果丛 21192</td><td><span class="tag t-red">卡死</span></td></tr>
+<tr><td class="mono">41158</td><td>0</td><td>17</td><td>8826</td><td>40 帧</td><td>浆果丛 21226</td><td><span class="tag t-grn">正常</span></td></tr>
+<tr><td class="mono">41316</td><td>1019</td><td>17</td><td>8676</td><td>190 帧</td><td>浆果丛 21226</td><td><span class="tag t-grn">正常</span></td></tr>
+<tr><td class="mono">41323</td><td>2873</td><td>17</td><td>8458</td><td>408 帧</td><td>—</td><td><span class="tag t-grn">正常</span></td></tr>
+<tr><td class="mono">41135</td><td>0</td><td>12</td><td>7823</td><td>1043 帧</td><td>浆果丛 21193</td><td><span class="tag t-amb">存疑</span></td></tr>
+</tbody></table>
+<p class="note">正常村民整局 11~17 条指令、持续被调度；卡死者的共同指纹 = <b>被派工后连发 3~4 帧（引擎接受的握手），之后再无一条指令</b>。
+日志末尾状态行 <code>Frm:16 Idle:0 Walk:2 Work:14</code> —— <b>Idle 恒为 0</b>，所以它们<b>不会</b>被 IDLE 派工逻辑捞回来。</p>
+
+<h2>2. 根因链（四层，每层带行号）</h2>
+
+<div class="card">
+<h3>第 1 层 · 派工只认 IDLE，派出去就不回头</h3>
+<pre><span class="c">// assignIdleSimple()  :3157 —— 村民分配的【唯一】入口</span>
+<span class="c">// 它只遍历、并且只处理空闲村民；已被派工的村民不在候选里</span>
+<span class="c">// ⇒ 村民状态从 IDLE 变为"在途/工作中"的瞬间，它就脱离了 AI 的管理</span></pre>
+<p class="note">这是设计使然、并非 bug。问题在于<b>它假设"被派出去 = 最终会采到"</b> —— 而实测有 4 个村民没采到、也没人管。</p>
+</div>
+
+<div class="card">
+<h3>第 2 层 · 唯一的兜底：1500 帧卡死检测</h3>
+<pre><span class="c">// 调用次序（cpp:929-937）：第 7 步 detectStuckGatherers() → 第 8 步 manageEconomy()（内含 assignIdleSimple）</span>
+<span class="c">// 设计意图正确：先拉黑不可达资源，再做分配</span>
+
+<span class="c">// detectStuckGatherers()  :7144-7179</span>
+if (f.Resource &gt; 0 || f.NowState == HUMAN_STATE_IDLE) { gatherStuckFrame.erase(f.SN); continue; }  <span class="c">// :7162</span>
+<span class="c">// 空手 + 非空闲 ⇒ 累计时长</span>
+else if (frame - gatherStuckFrame[f.SN] &gt; <b>STUCK_GATHER_TIMEOUT</b>) {   <span class="c">// :7169，常量=1500 帧 @ :499</span>
+    int targetSN = f.WorkObjectSN;                                        <span class="c">// :7170 ← 常已被引擎清零为 -1</span>
+    if (targetSN &lt;= 0 &amp;&amp; villLastTreeSN.count(f.SN))
+        <span class="hl">targetSN = villLastTreeSN[f.SN];</span>                                 <span class="c">// :7172 ← ★ 兜底只覆盖【树】</span>
+    if (targetSN &gt; 0) stuckResourceUntil[targetSN] = frame + STUCK_BLACKLIST_FRAMES;   <span class="c">// :7173</span>
+    <b>HumanAction(f.SN, center-&gt;SN);</b>                                      <span class="c">// :7174 ← 打断 = 派回 TC</span>
+    gatherStuckFrame.erase(f.SN);
+    DebugText(<span class="c">"[STUCK f=…] … 目标资源SN=%3 已拉黑"</span>);                      <span class="c">// :7176</span>
+}
+</pre>
+</div>
+
+<div class="card tldr">
+<h3 style="margin-top:0">第 3 层 · 缺陷 A：拉黑打错对象（日志直接可见）</h3>
+<table>
+<thead><tr><th>触发帧</th><th>村民</th><th>日志报的"目标资源SN"</th><th>该村民<b>真正</b>最后一次被派的目标</th></tr></thead>
+<tbody>
+<tr><td class="mono">5817 / 7319 / 8822</td><td class="mono">41157</td><td class="mono" style="color:#c0392b">50908（树）</td><td>浆果丛 <b>21218</b>（f4238）</td></tr>
+<tr><td class="mono">3557 / 5058</td><td class="mono">41159</td><td class="mono" style="color:#c0392b">-1（无）</td><td>浆果丛 <b>21218</b>（f13）／石头 21183</td></tr>
+<tr><td class="mono">8183</td><td class="mono">41331</td><td class="mono" style="color:#c0392b">-1（无）</td><td>浆果丛 <b>21192</b>（f5536）</td></tr>
+</tbody></table>
+<pre>villLastTreeSN 的<b>全部</b>使用点（grep 实证，共 4 处）：
+  定义  UsrAI.h:238   villLastTreeSN   <span class="c">// 注释自己写着「最近一次被派去的【树】SN」</span>
+  写入  cpp:3193      HumanAction(f.SN, tree-&gt;SN); villLastTreeSN[f.SN] = tree-&gt;SN;   <span class="c">// ← 只在【派树】时写</span>
+  擦除  cpp:3188      （仅树被拉黑时）
+  读取  cpp:7172      <span class="hl">卡死兜底 —— 但这里对【所有类型】的采集村民都会走到</span>
+
+⇒ 浆果采集卡死时：WorkObjectSN 已是 -1（引擎清零），兜底变量里存的却是<b>很久以前伐过的那棵树</b>
+   ⇒ 拉黑 50908、或干脆没得拉黑（报 -1）⇒ <b>真正卡人的浆果丛 21218/21226/21192 从未进入黑名单</b></pre>
+</div>
+
+<div class="card tldr">
+<h3 style="margin-top:0">第 4 层 · 缺陷 B：主派工路径压根不查黑名单（灰名单 = 废纸）</h3>
+<pre><span class="c">// —— 主路径：assignIdleSimple() 的浆果段  :3397-3414 ——</span>
+for (auto &amp;r : infoPtr-&gt;resources) {
+    if (r.Type != RESOURCE_BUSH || r.Cnt &lt;= 0) continue;
+    <span class="hl">// ← 这里【没有】 stuckResourceUntil 检查</span>
+    if (calDistance(...) &gt; 20 * BL) { ...nearGranary... }      <span class="c">// 距 TC 20 格 / 谷仓 20 格</span>
+    int totalOnBush = onBush + assignedBush[r.SN];
+    if (<b>totalOnBush &gt;= 3</b>) continue;                             <span class="c">// 每丛 ≤3 人</span>
+    ...
+}
+if (bestBush) { HumanAction(f.SN, bestBush-&gt;SN); ... }          <span class="c">// :3416</span>
+
+<span class="c">// —— 冷路径：tryAssignFood()  :7234-7251（注释自承「只有一个调用点：资源过剩转岗」）——</span>
+if (<b>stuckResourceUntil.count(r.SN)</b>) continue;                 <span class="c">// :7238 ← 只有这里查了</span>
+if (calDistance(...) &gt; <b>30</b> * BL) { ... }                       <span class="c">// :7239 ← 距 TC 30 格（与主路径 20 不一致）</span>
+if (realCount + frameBushCount[r.SN] &gt;= <b>2</b>) continue;           <span class="c">// :7248 ← 每丛 ≤2 人（与主路径 3 不一致）</span>
+
+<span class="c">// 对照：树是完整闭环 ——</span>
+写入 cpp:3187 stuckResourceUntil[tree-&gt;SN] = frame + TREE_REASSIGN_BLACKLIST_FRAMES;
+检查 cpp:6207 <b>if (stuckResourceUntil.count(r.SN)) continue;</b>   <span class="c">// 不可达的树，跳过</span>
+</pre>
+<p><b>结论：同一件事（派村民采浆果）存在两套实现、两套常量</b>（20 格 vs 30 格、3 人 vs 2 人，铁律 21/26 的又一次违反）；
+黑名单只在冷路径生效，而日常派工走的是主路径 ⇒ <b>即使拉黑正确也不会被遵守</b>。</p>
+</div>
+
+<div class="card tldr">
+<h3 style="margin-top:0">缺陷 C：打断动作不复位 ⇒ 严格 60 秒周期复发</h3>
+<pre>41157 的三次 [STUCK]： f=5817 → f=7319 → f=8822     间隔 = <b>1502 / 1503 帧</b>（≈ 严格 1500 + 处理延迟）
+
+<span class="c">// 打断只有这一句：</span>
+HumanAction(f.SN, center-&gt;SN);     <span class="c">// :7174 派回 TC</span>
+gatherStuckFrame.erase(f.SN);      <span class="c">// :7175 计时清零 → 重新累积 1500 帧</span>
+
+⇒ 如果这次"打断"真的让村民回到可被重新调度的状态，第二次触发应该【不再发生】。
+  实测三次严格等间隔、症状毫无改善 ⇒ <b>村民状态根本没有被复位</b>，
+  只是把计时器清零、让它再卡 60 秒。这就是"一直不动"的直接来源。</pre>
+</div>
+
+<h2>3. 为什么恰好在"4 分钟左右"浮现</h2>
+<table>
+<thead><tr><th>帧</th><th>游戏内时间</th><th>事件</th></tr></thead>
+<tbody>
+<tr><td class="mono">3637-3640</td><td>2.42 分</td><td>41326 连发 4 帧后沉默（起点）</td></tr>
+<tr><td class="mono">4236-4238</td><td>2.82 分</td><td>41157 派往浆果丛 21218 后沉默</td></tr>
+<tr><td class="mono">4481-4484</td><td>2.99 分</td><td>41328 派往浆果丛 21226 后沉默</td></tr>
+<tr><td class="mono">5533-5536</td><td>3.69 分</td><td>41331 派往浆果丛 21192 后沉默</td></tr>
+<tr><td class="mono" style="background:#fdf1f0"><b>5817</b></td><td><b>3.88 分</b></td><td><b>第一次 [STUCK]（41157）← 你说的"4 分钟"</b></td></tr>
+<tr><td class="mono">7007 / 8670 / 8788</td><td>2.80~3.51 分</td><td>近处好丛 21208 / 21194 / 21192 陆续"采集完成"</td></tr>
+<tr><td class="mono">7319 / 8822</td><td>4.88 / 5.88 分</td><td>41157 第 2、3 次 [STUCK]（周期复发）</td></tr>
+</tbody></table>
+<p>三条时间线叠加：<b>① 村民从 2.4~3.7 分陆续进入沉默 ② 50 秒后卡死检测到期 ③ 近处浆果同时被采完</b>。
+到 4 分钟，TC 周围能看见的"采集者"基本只剩这些沉默的，于是表现为"浆果采集者一直不动"。</p>
+
+<h2>4. 尚未证实的一环（不猜）</h2>
+<div class="card warn">
+<b>这些村民"被派去了却采不到"的最初原因，本日志无法区分。</b>
+<code>AIText.log</code> 不含单位坐标，三种可能都可解释观测：
+<table style="margin-top:8px">
+<thead><tr><th>候选</th><th>支持它的证据</th><th>反驳它的证据</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>丛被地形隔断、不可达</td><td>21218/21226 反复被派给 4 个不同村民却整局未采完</td><td>21193 被派 6 人、同样"未采完"（但日志截断，不能作数）</td><td><span class="tag t-amb">未定</span></td></tr>
+<tr><td>该丛已满员（AI 计数与引擎不一致）</td><td>主路径与冷路径人数上限 3 vs 2 不一致，可能超派</td><td>41331 被派去 21192（好丛）同样卡死</td><td><span class="tag t-amb">未定</span></td></tr>
+<tr><td>村民出发后被挤掉/被打断，停在原地</td><td>41159 在同局既采石又建造，指令交叉</td><td>—</td><td><span class="tag t-amb">未定</span></td></tr>
+</tbody></table>
+<b>要定性，需加一行诊断</b>（见 §5 的 D 项）：打印卡死村民的 <code>DR/UR + NowState + WorkObjectSN + 目标坐标与距离</code>，跑一局即可分辨。
+<span class="note">—— 但 §2 的 A/B/C 三个缺陷与"最初原因是什么"无关，是确定性缺陷，可以直接修。</span>
+</div>
+
+<h2>5. 修法候选</h2>
+<table>
+<thead><tr><th>#</th><th>改法</th><th>落点</th><th>代价</th><th>治什么</th><th>优先级</th></tr></thead>
+<tbody>
+<tr>
+<td><b>A</b></td>
+<td><code>villLastTreeSN</code> → <code>villLastResourceSN</code>（泛化：任何资源的派工都记，不只树）</td>
+<td>UsrAI.h:238 定义<br>写入点：树 3193 ＋ 浆果/瞪羚派工处<br>读取：7172</td>
+<td>~6 行</td>
+<td>拉黑/报警打对目标</td>
+<td><span class="tag t-grn">高</span></td>
+</tr>
+<tr>
+<td><b>B</b></td>
+<td>主派工路径补黑名单检查：<code>assignIdleSimple</code> 的浆果段加 <code>if (stuckResourceUntil.count(r.SN)) continue;</code></td>
+<td>cpp:3398 之后</td>
+<td>1 行</td>
+<td>让拉黑真正生效</td>
+<td><span class="tag t-grn">高</span></td>
+</tr>
+<tr>
+<td><b>C</b></td>
+<td>打断动作改为真复位：把卡死村民加入"待重派"集合，由派工逻辑<b>无视 IDLE 状态</b>优先重派一次</td>
+<td>7174 附近 ＋ assignIdleSimple 入口</td>
+<td>~15 行</td>
+<td>止住 60 秒周期复发（"一直不动"的直接来源）</td>
+<td><span class="tag t-grn">高</span></td>
+</tr>
+<tr>
+<td><b>D</b></td>
+<td>加诊断行定位最初病因（打印坐标/状态/目标距离）</td>
+<td>7176 的 DebugText 扩字段</td>
+<td>1 行</td>
+<td>把 §4 的"未定"变成"已定"</td>
+<td><span class="tag t-grn">高</span></td>
+</tr>
+<tr>
+<td><b>E</b></td>
+<td>缩短 <code>STUCK_GATHER_TIMEOUT</code>（1500→600）并提高检测频率</td>
+<td>cpp:499</td>
+<td>1 行</td>
+<td>治标：缩短单次卡顿时长</td>
+<td><span class="tag t-amb">中</span></td>
+</tr>
+<tr>
+<td><b>F</b></td>
+<td>统一两套浆果派工（20/30 格、3/2 人）到单一实现</td>
+<td>3385-3420 与 7234-7251</td>
+<td>~40 行</td>
+<td>消除铁律 21/26 的重复实现</td>
+<td><span class="tag t-amb">中</span></td>
+</tr>
+</tbody></table>
+<p class="note">建议路径：<b>A + B + D 先做</b>（合计约 8 行、风险低、把"拉黑无效"整条闭合），跑一局拿 D 的输出定位最初病因；<br>
+再按结果决定 C（复位机制）与 F（去重）。<b>本次未改动任何源码</b>，等你拍板。</p>
+
+<h2>6. 溯源</h2>
+<table>
+<tbody>
+<tr><td style="width:180px">源码</td><td class="mono">C:\new-aoe3.0.7g\UsrAI.cpp · 7317 行 · 515447 B · md5 <code>84327371a5ae0af4…</code>（mtime 2026-09-30 00:47:28）</td></tr>
+<tr><td>头文件</td><td class="mono">C:\new-aoe3.0.7g\UsrAI.h · 507 行 · 39903 B · md5 <code>370b53c7e3dc1dae…</code></td></tr>
+<tr><td>日志</td><td class="mono">C:\new-aoe3.0.7g\AIText.log · 854 行 · 98243 B · mtime 2026-10-03 10:21:21 · 一局 frame 0→8866</td></tr>
+<tr><td>关键常量</td><td class="mono">STUCK_GATHER_TIMEOUT 1500 (cpp:499) · STUCK_BLACKLIST_FRAMES 15000 (cpp:506) · TREE_REASSIGN_BLACKLIST_FRAMES 900 (cpp:505)</td></tr>
+</tbody></table>
+
+</div></body></html>

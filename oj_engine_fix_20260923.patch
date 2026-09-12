@@ -1,0 +1,41 @@
+# ============================================================================
+# oj_engine_fix_20260923.patch  —— 评测机运行期 SIGSEGV 修复
+#
+# 症状：AI 线程在 UsrAI::processData 的 `info = getInfo();` 深拷贝 tagInfo
+#       时 SIGSEGV（memcpy 读已释放的 vector 缓冲，源 len=6/cap=6）。
+#
+# 根因：tagGame 用裸指针 + 双缓冲发布快照。读侧 getInfo() 自带锁，但写侧
+#       update() 的锁被注释掉（注释原文：之前是严格的帧同步，现在改成严格的
+#       非帧同步），互斥责任被推给调用方 MainWidget::gameDataUpdate。
+#       若调用方没有那段 tryLock，读写完全并发 ⇒ use-after-free。
+#
+# 修法：2 处。必须同时改 —— 只改 ② 而锁仍是非递归 QMutex 会在调用方同线程
+#       持锁时自锁死（实测 rc=TIMEOUT、AITextLog 冻在 frame 1）。
+#       QMutex(QMutex::Recursive) 在 Qt 5.9.2 即支持。
+#
+# 适用：对"调用方已持锁"与"调用方未持锁"两种情形都正确。
+# 注意：请按【内容】匹配，不要按行号 —— 各版本行号不同。
+# ============================================================================
+
+--- a/GlobalVariate.h
++++ b/GlobalVariate.h
+@@ -251,7 +251,7 @@
+ {
+ private:
+     tagInfo* Info;
+-    QMutex Locker;
++    QMutex Locker{QMutex::Recursive};   // ★ 2026-09-23 递归锁：update() 加锁后，调用方(同线程)已持锁也不会自锁死
+ public:
+     template<class T>
+     void WLHHunYao(vector<T>& v) {
+--- a/GlobalVariate.cpp
++++ b/GlobalVariate.cpp
+@@ -1114,7 +1114,7 @@
+ 
+ void tagGame::update(tagInfo *newinfo) {
+     //控制ins_ret的大小小于100，若大于100，则优先删除旧值
+-   // QMutexLocker locker(&Locker);//之前是严格的帧同步，现在改成严格的非帧同步
++    QMutexLocker locker(&Locker);   // ★ 2026-09-23 恢复：写侧必须与 getInfo() 的读侧互斥（配递归锁，同线程重入安全）
+     if (this->Info != NULL) {
+         while (Info->ins_ret.size() > 100) {
+             Info->ins_ret.erase(Info->ins_ret.begin());

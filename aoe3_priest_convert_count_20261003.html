@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>祭司感化统计 · 10-03 实机局</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--line:#e3e6ea;--tx:#1f2328;--tx2:#5b6572;--tx3:#8a94a1;
+--ok:#1d9e75;--okbg:#e6f7f1;--warn:#b1740f;--warnbg:#fdf3e0;--bad:#c0392b;--badbg:#fdeceb;--acc:#2f6fd0;--accbg:#eaf2fd}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);
+font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 48px}
+h1{font-size:21px;font-weight:600;margin:0 0 6px}
+.sub{color:var(--tx2);font-size:13px;margin-bottom:22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px}
+h2{font-size:15px;font-weight:600;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.kpi .n{font-size:26px;font-weight:600;line-height:1.2}
+.kpi .l{font-size:12px;color:var(--tx2);margin-top:4px}
+.kpi.a .n{color:var(--acc)} .kpi.b .n{color:var(--ok)} .kpi.c .n{color:var(--warn)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--tx2);font-weight:500;font-size:12px;background:#fafbfc}
+td.f{font-family:ui-monospace,Consolas,monospace;color:var(--tx2);white-space:nowrap}
+.tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11.5px;white-space:nowrap}
+.t-ok{background:var(--okbg);color:var(--ok)} .t-no{background:var(--badbg);color:var(--bad)}
+.t-un{background:#eef0f3;color:var(--tx3)} .t-def{background:#eef0f3;color:var(--tx3)}
+.t-atk{background:var(--accbg);color:var(--acc)} .t-win{background:var(--warnbg);color:var(--warn)}
+.note{background:var(--warnbg);border-left:3px solid var(--warn);padding:12px 14px;border-radius:0 8px 8px 0;font-size:13px;margin:12px 0 0}
+.note b{color:var(--warn)}
+code{font-family:ui-monospace,Consolas,monospace;background:#f0f2f5;padding:1px 5px;border-radius:4px;font-size:12.5px}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:#fafbfc;border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto;white-space:pre;line-height:1.7}
+.hl{color:var(--ok);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>祭司感化统计 — 用户实机局（10-03 23:03）</h1>
+<div class="sub">证据源：<code>AIText.log.bak_20261003_priest_rate</code>（12 274 行 / f0 → f45001 / 30:00 未决·胜利点已触发）　·　祭司 SN 91482（全场唯一）　·　源码 <code>5af68f2d</code>·7140</div>
+
+<div class="kpis">
+  <div class="kpi a"><div class="n">5</div><div class="l">反攻期感化的敌军单位<br><span style="color:var(--tx3)">方阵兵×3 + 投石车×2</span></div></div>
+  <div class="kpi b"><div class="n">12</div><div class="l">全场感化次数<br><span style="color:var(--tx3)">防守期 7 + 反攻期 5</span></div></div>
+  <div class="kpi c"><div class="n">1</div><div class="l">攻城武器厂转化<br><span style="color:var(--tx3)">f35514 触发 VICTORY</span></div></div>
+</div>
+
+<div class="card">
+<h2>反攻期（f ≥ 35000）逐条</h2>
+<table>
+<thead><tr><th>帧 / 时刻</th><th>目标</th><th>后续可观测证据</th><th>判定</th></tr></thead>
+<tbody>
+<tr><td class="f">35113<br><span style="color:var(--tx3)">03:17</span></td><td>方阵兵 91467</td><td>f35244 仍以 flag=1 反打祭司 91482（引导 131 帧后未完成）</td><td><span class="tag t-no">被打断</span></td></tr>
+<tr><td class="f">35759<br><span style="color:var(--tx3)">03:22</span></td><td>方阵兵 91468</td><td>f36381 被方阵兵 91463 攻击（阵营归属无法从日志唯一确定）</td><td><span class="tag t-un">无定论</span></td></tr>
+<tr><td class="f">36828<br><span style="color:var(--tx3)">03:30</span></td><td>方阵兵 91469</td><td>f37462 <b>被敌箭塔 11422 转攻</b> ⇒ 已离敌营</td><td><span class="tag t-ok">已易主</span></td></tr>
+<tr><td class="f">42048<br><span style="color:var(--tx3)">04:01</span></td><td>投石车 91466</td><td>f42316 被投石车 91465 攻击</td><td><span class="tag t-un">无定论</span></td></tr>
+<tr><td class="f">42645<br><span style="color:var(--tx3)">04:05</span></td><td>投石车 91465</td><td>f42966 <b>被敌箭塔 11423 转攻</b>；其指令 flag 感化前后由 1 → 0</td><td><span class="tag t-ok">已易主</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="card">
+<h2>防守期（f &lt; 33000）7 次</h2>
+<table>
+<thead><tr><th>帧</th><th>目标</th><th>帧</th><th>目标</th></tr></thead>
+<tbody>
+<tr><td class="f">6765</td><td>刀斧兵 91447</td><td class="f">15301</td><td>方阵兵 91443</td></tr>
+<tr><td class="f">7395</td><td>刀斧兵 91446</td><td class="f">21723</td><td>战车 91438</td></tr>
+<tr><td class="f">14108</td><td>战车弓兵 91453</td><td class="f">22382</td><td>方阵兵 91449</td></tr>
+<tr><td class="f">14713</td><td>方阵兵 91444</td><td colspan="2" style="color:var(--tx3)">+ 武器厂 3 段引导：f35260 <code>path=early</code> / f35411 <code>path=front</code> / f35476 <code>path=legacy</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="card">
+<h2>计数口径（本轮确立，引擎措辞直接可数）</h2>
+<div class="mono">HumanAction:祭司 &lt;SN&gt; <b>设置转换目标为</b> &lt;兵种&gt; &lt;TSN&gt;   ← 感化（本局 12 条）
+HumanAction:祭司 &lt;SN&gt; <b>设置工作目标为</b> &lt;兵种&gt; &lt;TSN&gt;   ← 治疗友军（本局 3 条）
+<i>两条都是 flag=0（我方）；每条感化 +1 帧必跟：</i>
+祭司(编号:91482)开始向&lt;目标&gt;(编号：&lt;TSN&gt;)攻击   ← 自证"已进入引导"，排除空发</div>
+<div class="note">
+<b>⚠ 修正上一轮结论：</b>此前记为"反攻期感化成功率 5/5 = 100%"<b>不成立</b>。<code>设置转换目标为</code> 只在<b>换目标</b>时打印，
+目标被打死或引导被打断同样会换 ⇒ <b>5 次"换目标" ≠ 5 次成功</b>。本轮能证明易主的只有 2 个（91469 / 91465），
+且 91467 有明确的反例（感化后仍反打祭司）。正确表述：<b>5 次引导，2 次可证易主、3 次日志无定论</b>。
+</div>
+</div>
+
+<div class="card">
+<h2>两条旁证（未查证，留给下一轮）</h2>
+<table>
+<tbody>
+<tr><td style="width:170px"><b>VICTORY 后仍在跑</b></td><td>f35514 打印 <code>VICTORY! Siege Workshop converted</code>，但游戏继续运行到 f45001（约 9500 帧），且 f44871 状态行仍显示 <code>ATK</code> ⇒ <code>state = VICTORY</code>（UsrAI.cpp:5086）疑被后续状态机覆盖。</td></tr>
+<tr><td><b>AIText 混有敌方日志</b></td><td><code>HumanAction:投石车 91465 设置攻击目标为 祭司 91482</code> 的 flag = <b>1</b>（敌方）⇒ 不能默认 AIText 的行都是我方，<b>必须按第 4 列 flag 分离阵营</b>。</td></tr>
+</tbody>
+</table>
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,127 @@
+# 函数注释 → 常量真值 对照表
+
+================================================================================
+### countAgeUpgradeBuildings  (L544~550)
+  BUILDING_CENTER_UPGRADE            ?? 未在 #define / UsrAI.h 成员中找到
+  MARKET                             ?? 未在 #define / UsrAI.h 成员中找到
+  RANGE                              ?? 未在 #define / UsrAI.h 成员中找到
+  STABLE                             ?? 未在 #define / UsrAI.h 成员中找到
+  BRONZE_MIN_AGE_BUILDINGS           = 2                 [#define L386]
+  CIVILIZATION_TOOLAGE               ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### tryStartBronzeUpgrade  (L555~571)
+  UPGRADING                          ?? 未在 #define / UsrAI.h 成员中找到
+  EARLY_ECONOMY                      ?? 未在 #define / UsrAI.h 成员中找到
+  DEFENSE_PREP                       ?? 未在 #define / UsrAI.h 成员中找到
+  WAVE1                              ?? 未在 #define / UsrAI.h 成员中找到
+  WAVE2                              ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### updateState  (L576~739)
+  UPGRADING                          ?? 未在 #define / UsrAI.h 成员中找到
+  WAVE1_TIME                         = 5000              [#define L9]
+
+================================================================================
+### assignIdleSimple  (L2644~3185)
+  HUMAN_GRANARYFOOD                  ?? 未在 #define / UsrAI.h 成员中找到
+  BUSH_NEAR_GRANARY_DIST             = 20                [#define L164]
+  MEMORY                             ?? 未在 #define / UsrAI.h 成员中找到
+  HUMAN_GOLD                         ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### manageHunting  (L3187~3248)
+  GAZELLE_HUNT_RANGE                 = 50                [#define L101]
+
+================================================================================
+### manageLionDefense  (L3256~3357)
+  IDLE                               ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### manageMilitary  (L3744~4339)
+  FOOD_PAUSE_TECH_TRAIN              = 60                [#define L438]
+  COMPOSITE_BOW_MIN_FRAME            = 22500             [#define L209]
+  DISABLE_CLUBMAN_TRAIN              = true              [#define L168]
+
+================================================================================
+### manageCarriedResources  (L4344~4401)
+  HUMAN_STOCKFOOD                    ?? 未在 #define / UsrAI.h 成员中找到
+  STOCK                              ?? 未在 #define / UsrAI.h 成员中找到
+  WOOD                               ?? 未在 #define / UsrAI.h 成员中找到
+  STOCKFOOD                          ?? 未在 #define / UsrAI.h 成员中找到
+  STONE                              ?? 未在 #define / UsrAI.h 成员中找到
+  GOLD                               ?? 未在 #define / UsrAI.h 成员中找到
+  GRANARY                            ?? 未在 #define / UsrAI.h 成员中找到
+  GRANARYFOOD                        ?? 未在 #define / UsrAI.h 成员中找到
+  DOCK                               ?? 未在 #define / UsrAI.h 成员中找到
+  DOCKFOOD                           ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### manageCounterAttack  (L4412~5465)
+  OCEAN                              ?? 未在 #define / UsrAI.h 成员中找到
+  UNKNOWN                            ?? 未在 #define / UsrAI.h 成员中找到
+  GRASS                              ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### nearestEnemyBuildingFrom  (L5620~5630)
+  BLOCKSIDELENGTH                    ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### findNearestEnemyTower  (L5644~5647)
+  BUILDING_ARROWTOWER                ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### findBestWoodTree  (L5668~5737)
+  WOOD_MAX_ANCHOR_DIST               = 15                [#define L395]
+  BLOCK                              ?? 未在 #define / UsrAI.h 成员中找到
+  BUILDING_STOCK                     ?? 未在 #define / UsrAI.h 成员中找到
+  BUILDING_CENTER                    ?? 未在 #define / UsrAI.h 成员中找到
+  STOCK                              ?? 未在 #define / UsrAI.h 成员中找到
+  CENTER                             ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### findNearestEnemyNoStone  (L5756~5772)
+  AT_STONE_THROWER                   ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### countBuildingsExisting  (L5811~5831)
+  DEAD_BUILDING_GRACE                = 1800              [#define L178]
+
+================================================================================
+### isPositionFree  (L5840~5915)
+  BUILD_GAP                          = 1                 [#define L188]
+
+================================================================================
+### findDefenseBuildSite  (L6054~6113)
+  BUILD_GAP                          = 1                 [#define L188]
+
+================================================================================
+### findGranarySite  (L6115~6203)
+  GAZELLE_HUNT_RANGE                 = 50                [#define L101]
+
+================================================================================
+### findRemoteBushCluster  (L6213~6245)
+  BUSH_CLUSTER_RADIUS                = 5                 [#define L163]
+  SECOND_GRANARY_TC_MIN_DIST         = 25                [#define L162]
+  HUMAN_GRANARYFOOD                  ?? 未在 #define / UsrAI.h 成员中找到
+  MIN_BUSH_FOR_SECOND_GRANARY        = 6                 [#define L161]
+
+================================================================================
+### findFarmSiteBest  (L6279~6366)
+  GRANARY                            ?? 未在 #define / UsrAI.h 成员中找到
+  STOCK                              ?? 未在 #define / UsrAI.h 成员中找到
+  R_MIN                              ?? 未在 #define / UsrAI.h 成员中找到
+  R_MAX                              ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### tryBuild  (L6368~6450)
+  MAX_FARMS                          = 12                [#define L21]
+
+================================================================================
+### detectStuckGatherers  (L6521~6561)
+  IDLE                               ?? 未在 #define / UsrAI.h 成员中找到
+
+================================================================================
+### gazelleDropoffReady  (L6576~6590)
+  GAZELLE_HUNT_RANGE                 = 50                [#define L101]
+  MAX_STOCK                          = 4                 [#define L148]

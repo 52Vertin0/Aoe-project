@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>OJ debug_19104 分析（胜利局 · map1 · nodebug 版）</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f23;--dim:#5b636e;--line:#e3e6ea;--ok:#1a7f45;--warn:#a86a00;--bad:#b3261e;--acc:#1f5fa8;--mono:"Cascadia Code",Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);font:14px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:22px;margin:0 0 6px}
+h2{font-size:17px;margin:30px 0 10px;padding-left:10px;border-left:4px solid var(--acc)}
+h3{font-size:15px;margin:20px 0 8px;color:#2a2f36}
+.sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:12px 0}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:#f0f2f5;font-weight:600}
+code{font-family:var(--mono);font-size:12.5px;background:#f1f3f6;padding:1px 5px;border-radius:4px}
+pre{font-family:var(--mono);font-size:12.5px;background:#f8f9fb;border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto;line-height:1.6}
+.ok{color:var(--ok);font-weight:700}.bad{color:var(--bad);font-weight:700}.warn{color:var(--warn);font-weight:700}
+.big{font-size:19px;font-weight:700;color:var(--ok)}
+.tag{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:20px;background:#e8f0fb;color:var(--acc);margin-right:6px}
+.tag.g{background:#e6f4ea;color:var(--ok)}
+.tag.r{background:#fdecea;color:var(--bad)}
+.tag.y{background:#fdf3e0;color:var(--warn)}
+ul{margin:6px 0 6px 20px;padding:0}li{margin:3px 0}
+.note{border-left:3px solid var(--acc);background:#f3f7fc;padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0;font-size:13.5px}
+.hl{background:linear-gradient(transparent 62%,#fff3a8 62%)}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>OJ <code>debug_19104</code> 日志分析</h1>
+<div class="sub">引擎 v3.0.7h ｜ 5 612 行 ｜ 结束于 27:22:84 ｜ 分析对象：<code>debug_19104_0a4c2d71-…-9fed91df5f90.log</code></div>
+
+<div class="card">
+<div class="big">✅ 结论：这是一局「胜利」，不是失败</div>
+<p style="margin:10px 0 0">末行 <code>27:22:84 游戏胜利。最终得分为:540</code>；全文 <span class="ok">0</span> 条 <code>error/abort/exception/backtrace</code>。<br>
+胜利方式 = 胜利条件本身：<b>祭司转换敌方攻城武器厂</b>。</p>
+<pre>27:11:92  HumanAction:祭司 91101 设置转换目标为 攻城武器厂 11098
+27:20:48  祭司(编号:91101)开始向攻城武器厂(编号：11098)攻击     ← 进入感化射程
+27:22:84  游戏胜利。最终得分为:540</pre>
+<p style="margin:6px 0 0;color:var(--dim);font-size:13px">设置目标 → 进射程耗时 <b>8.6 秒</b>；进射程 → 胜利 <b>2.4 秒</b>。心跳 <code>[OJ-HB]</code> 连续 134 条（<code>f=312</code> → <code>f=40796</code>）无中断 ⇒ 全程未崩溃。</p>
+</div>
+
+<h2>一、版本判定：跑的是「去掉 DebugText」的版本 <span class="tag g">决定性证据</span></h2>
+<table>
+<tr><th>判据</th><th>debug_16577（对照）</th><th>debug_19104（本局）</th><th>说明</th></tr>
+<tr><td><code>UsrAI打印</code> 行数</td><td>2 512</td><td class="ok">0</td><td>DebugText 通道</td></tr>
+<tr><td><code>UsrAI打印：[ENV] engine=…</code></td><td>有（<code>00:00:44</code>）</td><td class="ok">无</td><td>AI 侧环境自证</td></tr>
+<tr><td><code>[OJ-ENV]</code>（fprintf 通道）</td><td>2</td><td>2</td><td>保留 ✓</td></tr>
+<tr><td><code>[OJ-HB]</code>（fprintf 心跳）</td><td>125</td><td>134</td><td>保留 ✓</td></tr>
+<tr><td>含 <code>|</code> 五段列的行</td><td>1 093</td><td class="ok">0</td><td>AI 输出通道</td></tr>
+<tr><td>总行数</td><td>10 811</td><td>5 612</td><td>−48%</td></tr>
+</table>
+<p>AI 的 <b>DebugText 通道被完全切断</b>，而两条 <b>fprintf 自证/心跳完好</b> —— 与 <code>_submit\nodebug\</code> 版本的特征逐项吻合。</p>
+<div class="note"><b>判据说明</b>：对照局里 DebugText 的输出形态是 <code>MM:SS:CC UsrAI打印：内容</code>（例：<code>00:00:44 UsrAI打印：[ENV] engine=v3.0.7h …</code>），与引擎自身日志 <code>MM:SS:CC HumanMove:…</code> 同格式但带 <code>UsrAI打印：</code> 前缀。本局该前缀出现 <b>0 次</b>。</div>
+
+<h2>二、地图定位 = <code>map1</code> <span class="tag g">铁证</span></h2>
+<pre>本地 arb1_map1_r0_1.ait:  00:00:056 | 14 | green | 0 |  HumanMove:祭司 <b>91101</b> 移动至 (<b>900.913,2788.25</b>)
+本局 debug_19104.log:    00:00:52 HumanMove:祭司 <b>91101</b> 移动至 (<b>900.913,2788.25</b>)</pre>
+<p>坐标与<b>祭司编号</b>（<code>91101</code>）逐字符相同 ⇒ 同源。辅证：开局我方单位中心 <code>(28.4,77.4)</code>，距 map1 基地 <code>(22.35,74.95)</code> 仅 6.5 格；推进终点 <code>(87~90,20)</code> 与 map1 敌基地 <code>(94,25)</code> 相邻。（对照局 <code>debug_16577</code> 是 <code>map2</code>，祭司编号 <code>91483</code>。）</p>
+
+<h2>三、祭司轨迹与胜利链路</h2>
+<table>
+<tr><th>时间</th><th>事件</th></tr>
+<tr><td>22:00</td><td>强制反攻启动（<code>COUNTER_ATTACK_FORCE_TIME=33000</code>；本版<b>无</b>人口闸，故 <code>POP-FULL</code>=0）</td></tr>
+<tr><td>22:56 ~ 23:55</td><td>敌方连续击杀我方 <b>6 次</b>（22:56 / 22:58 / 23:29 / 23:42 / 23:49 / 23:55）</td></tr>
+<tr><td>23:57 ~ 25:43</td><td>我方反杀，双方交换比转为接近（我方击杀高级敌人 ≥ 10 次）</td></tr>
+<tr><td>24:32 / 25:11 / 25:49</td><td>祭司反攻期 <b>3 次</b>感化成功（方阵兵 91139 / Prof.Lu 91155 / 战车弓兵 91145）</td></tr>
+<tr><td><b>27:00:08</b></td><td><code>COUNTER_FARMER_ATTACK</code> 触发：<b>22 个村民全体出击</b>打敌箭塔 11099（见第五节）</td></tr>
+<tr><td>27:11:92</td><td>祭司锁定 攻城武器厂 11098</td></tr>
+<tr><td>27:20:48 → 27:22:84</td><td>进入射程 → <b>胜利</b></td></tr>
+</table>
+<h3>祭司逐分钟位置（块坐标，取自 <code>HumanMove</code> 令的落点）</h3>
+<pre>22分 (26.2, 71.8)  ← 反攻起点（基地附近）
+23分 (60.6, 47.4)        ┐ 22→24 分推进 73 格
+24分 (89.6, 36.7)        ┘ ⇒ 约 36.6 格/分
+25分 (79.2, 31.6)  ┐
+26分 (87.0, 20.5)  ├ 24→27 分在敌基地外圈磨 3 分钟
+27分 (86.6, 20.2)  ┘</pre>
+<p>反攻期祭司移动令 175 条 / 我军全部移动令 1 205 条 ⇒ 祭司在推进中持续被调度，未掉队。</p>
+
+<h2>四、与 <code>debug_16577</code>（map2 失败局）的对照 <span class="tag y">本轮最有价值的发现</span></h2>
+<div class="card">
+<div class="big" style="font-size:16px;color:var(--ink)">祭司的产出在两局<b>完全相同</b>：都是 11 次感化成功（2 次一般 + 9 次高级）</div>
+<table>
+<tr><th>#</th><th>16577（map2，失败）</th><th>19104（map1，胜利）</th><th>Δt</th></tr>
+<tr><td>1</td><td>04:31:76（一般）</td><td>04:38:28（一般）</td><td>+6.5s</td></tr>
+<tr><td>2</td><td>04:54:72（一般）</td><td>05:02:20（一般）</td><td>+7.5s</td></tr>
+<tr><td>3</td><td>09:17:76</td><td>09:24:76</td><td>+7.0s</td></tr>
+<tr><td>4</td><td>09:45:12</td><td>09:47:80</td><td>+2.7s</td></tr>
+<tr><td>5</td><td>10:07:88</td><td>10:13:36</td><td>+5.5s</td></tr>
+<tr><td>6</td><td>14:18:64</td><td>14:30:80</td><td>+12.2s</td></tr>
+<tr><td>7</td><td>14:52:12</td><td>14:54:92</td><td>+2.8s</td></tr>
+<tr><td>8</td><td>15:15:56</td><td>15:28:00</td><td>+12.4s</td></tr>
+<tr><td>9</td><td>24:28:60</td><td>24:32:84</td><td>+4.2s</td></tr>
+<tr><td>10</td><td>24:51:52</td><td>25:11:16</td><td>+19.6s</td></tr>
+<tr><td>11</td><td class="bad">—（祭司 25:18 已死）</td><td class="ok">25:49:32</td><td>—</td></tr>
+</table>
+<p style="margin:8px 0 0"><b>时间轴对齐到 ≤ ±20 秒</b>，但这<b>不是</b> AI 的巧合 —— 是波次时间固定（W1=3:20 / W2=9:00 / W3=14:00）驱动的必然结果。真正的含义是：<span class="hl">祭司单点逻辑在两张不同地图上产出完全一致，它不是胜负的瓶颈</span>。</p>
+</div>
+<table>
+<tr><th></th><th>16577（map2）</th><th>19104（map1）</th></tr>
+<tr><td>22 分后新增感化成功</td><td>2 次（24:28、24:51）</td><td><b>3 次</b>（24:32、25:11、25:49）</td></tr>
+<tr><td>祭司结局</td><td class="bad">25:18:88 被杀（Prof.Lu 91451）</td><td class="ok">存活至胜利</td></tr>
+<tr><td>结束</td><td class="bad">25:19:00 失败，391 分</td><td class="ok">27:22:84 胜利，540 分</td></tr>
+</table>
+<p>两局唯一的差别是<b>祭司能否活过 25 分钟</b>。这与本项目既有结论（§3.8：祭死局真正差别是<b>军队数</b>，而非祭司行为）方向一致 —— <b>分岔发生在「军队能否撑住」，不在祭司。</b></p>
+
+<h2>五、27:00 的 22 条村民攻击令 = 按设计触发，<span class="ok">不是 bug</span></h2>
+<pre>UsrAI.cpp:299  // 农民进攻：反攻后 27 分钟（COUNTER_FARMER_ATTACK_FRAME = 40500 帧）派所有农民进攻敌方基地
+UsrAI.cpp:303  #define COUNTER_FARMER_ATTACK true
+UsrAI.cpp:304  #define COUNTER_FARMER_ATTACK_FRAME 40500   // 27 分钟 × 1500 帧/分钟
+UsrAI.cpp:4886 void UsrAI::counterFarmerAttack(...)   // 目标四级：敌 TC > 软目标 > 最近箭塔 > 记忆方位行军；<b>永不含武器厂</b></pre>
+<ul>
+<li>本局首条村民攻击令 <code>27:00:08</code> ≈ <b>40502 帧</b> ✓ 精确吻合 40500。</li>
+<li>攻击目标是<b>箭塔 11099 / 11097</b> ⇒ 命中第 3 档，与源码注释「本图敌方没有 TC，基地结构只有箭塔 + 武器厂」完全一致。</li>
+<li>对照局 16577 该计数为 <b>0</b>，只因它 <b>25:18 就结束了</b>、没走到 27 分。本地 map1 局同样为 0（未到 27 分）。</li>
+</ul>
+<p>⇒ 该特性在本局是<b>首次被观测到实际触发</b>并工作正常。</p>
+
+<h2>六、日志瘦身量化（去掉 DebugText 的实际效果）</h2>
+<table>
+<tr><th></th><th>16577（源版，25.3 分）</th><th>19104（nodebug，27.4 分）</th></tr>
+<tr><td>总行数</td><td>10 811</td><td>5 612（−48%）</td></tr>
+<tr><td>归一化行率</td><td>427 行/分</td><td><b>205 行/分（−52%）</b></td></tr>
+<tr><td>AI 输出行</td><td>2 512 + 1 093</td><td><b>0</b></td></tr>
+</table>
+<div class="note">⚠ 若 OJ 侧对日志长度或写盘量有任何上限，<b>nodebug 版反而更安全</b> —— 这是采用它的一个额外理由。</div>
+
+<h2>七、判读与建议</h2>
+<ul>
+<li><b>单局不可下胜负结论</b>（本项目铁律：局级完全混沌，n=24 带 ±14pp）。本局只能证明三件事：① nodebug 版在 OJ 上<b>能跑完并取胜</b>；② 无崩溃、无行为异常；③ 去掉 DebugText 不影响引擎侧胜负判定链路（<code>游戏胜利/游戏失败</code> 是引擎行，两版都有）。</li>
+<li><b>胜负判定口径（新确认）</b>：OJ debug 日志里 <code>被祭司转换,归属阵营1->0</code> <b>不存在</b>（两局均 0 条），须用引擎行 <code>游戏胜利</code> / <code>游戏失败，未达成目标。最终得分为:N</code> 判定。本地 .ait 才用 <code>被祭司转换</code>。</li>
+<li><b>本局再次印证</b>：祭司的产出（11 次感化）与「离太远」的诊断无关 —— 上一轮测得的 <code>nearE</code> 12.0 格尖峰是<b>落点常量</b>问题，本局祭司恰好走完了全程，但那是被军队护送到位的结果，不是祭司自身的改进。</li>
+<li><b>下一步建议</b>：<br>
+  ① 若想正式采用 nodebug 版，做 24 局/臂 A/B（源版 vs nodebug）证伪「输出层改动影响行为」—— 理论上不可能，但本项目有过先例（编译器/时序会放大混沌）；<br>
+  ② 继续攻 <code>:1803 stopDist 12.0</code>（上一轮方案 A）；<br>
+  ③ 观察 <code>COUNTER_FARMER_ATTACK</code>：22 个村民全体出击会<b>停摆经济</b>，若 27 分后仍久攻不下，可能加速崩盘 —— 值得单独跑一批看「27 分后是否更容易被反推」。</li>
+</ul>
+
+</div></body></html>

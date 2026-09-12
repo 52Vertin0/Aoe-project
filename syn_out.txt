@@ -1,0 +1,15 @@
+rc = 1
+errors = 1 ; warnings = 18
+E| UsrAI.cpp:5539:41: error: 'BL' was not declared in this scope
+W| library/fixed_point/macro.h:11:0: warning: "__forceinline" redefined
+W| UsrAI.cpp:443:87: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:563:69: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:574:47: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:631:44: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:649:44: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:655:44: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:661:57: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:685:57: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:706:57: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:1074:92: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+W| UsrAI.cpp:1081:79: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]

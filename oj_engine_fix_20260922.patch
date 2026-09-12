@@ -1,0 +1,129 @@
+# ============================================================================
+#  newAOE（AoE3 v3.0.7g）评测机 SIGSEGV 最小修复补丁
+#  生成：2026-09-22   适用树：C:\new-aoe3.0.7g（GAME_VERSION = v3.0.7g）
+#  应用：cd <引擎源码根> && patch -p1 < oj_engine_fix_20260922.patch
+#  验证：只改 2 个文件、3 处语义（见下），编译 0 error。
+# ----------------------------------------------------------------------------
+#  症状（用户提供的 gdb backtrace，Linux/gcc13/Qt5.9.2）
+#     Thread 5 "AI" received signal SIGSEGV
+#       AI::run(AI.cpp:62) → UsrAI::processData（info = getInfo()）
+#       → tagGame::getInfo() `return *Info;` → tagInfo 深拷贝
+#       → vector<tagBuilding>::operator= → __memcpy_avx_unaligned_erms
+#     源 vector<tagBuilding> 的 len/cap 均为 6，但底层存储已被释放 ⇒ 读到野指针。
+#
+#  根因①（必崩，主因）—— Core.cpp 双缓冲容量写死
+#     `tagInfo Buffer0[2]; tagInfo Buffer1[2];` 把"每层容量"硬编码为 2，
+#     但 NOWPLAYER 是【运行期值】：GlobalVariate/RuntimeConfig.h:54 从 config.json 读入
+#     （本机 config.json 里 NOWPLAYER=2，MAXPLAYER=8）。
+#     Core::infoShare() 里三处 `for (int i = 0; i < NOWPLAYER; i++)` 会访问
+#     currentBuff[i]（i 可达 NOWPLAYER-1）：
+#         currentBuff[i].clear()            ← Core.cpp:681
+#         updateByPlayer(i)                 ← Core.cpp:684（内部又写 currentBuff[id]）
+#         updateCommon(&currentBuff[i], i)  ← Core.cpp:687
+#     当 NOWPLAYER >= 3 时下标 2 越出 [2]，而 Buffer0/Buffer1 在 .bss 中相邻
+#     ⇒ &Buffer0[2] == &Buffer1[0]，越界【不会报错】，写进去的是隔壁数组。
+#     `buff ^= 1` 每帧轮换 currentBuff，于是同一块内存会同时是
+#     "本帧正在写的缓冲"和"上一帧已发布给 AI 的 tagInfo*"⇒ clear() 释放掉
+#     AI 线程正在深拷贝的 vector<tagBuilding> ⇒ 正好命中上面那条 memcpy 崩链。
+#     本地复现：把 config.json 的 NOWPLAYER 由 2 改成 3、GAME_LOSE_SEC=300，
+#               未修引擎在【第 1 帧】即 rc=0xC0000005。
+#
+#  根因②（放大器）—— GlobalVariate.cpp tagGame::update() 的数据竞争
+#     原写法先 `Info = newinfo;` 发布指针，再对 `Info->xxx` 逐元素原地 WLHHunYao 打乱；
+#     指针一发布，该对象就是 AI 线程立刻要深拷贝的东西 ⇒ 逐元素原地写 = 数据竞争
+#     （AI 侧表现为读到容量/长度不一致的 vector）。改为【先打乱 newinfo、再发布】。
+#
+#  ⚠️ 特别注意（本补丁【不】包含的一项，且不要随手加上）
+#     GlobalVariate.cpp:1117 那行被注释掉的 `// QMutexLocker locker(&Locker);`
+#     【不要恢复】。调用方 MainWidget::gameDataUpdate() 的调用序列是：
+#         const bool usrGameLocked = tagUsrGame.tryLock();   // ← 已持有同一把 Locker
+#         ...
+#         core->infoShare();                                 // → tagUsrGame.update(...)
+#         tagUsrGame.release();
+#     而 QMutex 非递归 ⇒ 在 update() 内再锁一次 = 同一线程自锁死。
+#     实测（本地已复现）：补上这把锁后，NOWPLAYER=2/3 都是 rc=TIMEOUT（420s）、
+#     AITextLog 冻在 frame 1。互斥本就成立——update() 对 Info 的发布由调用方的
+#     tryLock()/release() 保护，getInfo() 自带 Locker。原注释
+#     "之前是严格的帧同步，现在改成严格的非帧同步" 正是作者有意为之。
+#
+#  本地验证（修复后，config.json 只动 NOWPLAYER / GAME_LOSE_SEC）
+#     NOWPLAYER=3, GAME_LOSE_SEC=1800 → 跑满 45000 帧（=30 分钟上限）才结束，ait 796 KB
+#     NOWPLAYER=3, GAME_LOSE_SEC=300  → 跑满  7500 帧
+#     NOWPLAYER=2, GAME_LOSE_SEC=1800 → 跑满 45000 帧，与既有无修改批次行为一致
+#     （修复前：NOWPLAYER=3 一律第 1 帧崩）
+#
+#  ⚠️ 遗留（本补丁不解决，需引擎方一并看）：在上面"跑满"的三种配置里，
+#     NOWPLAYER=3 会在【游戏结束帧的下一帧】仍报一次 0xC0000005
+#     （GAME_LOSE_SEC=300 时是 7501 帧、=1800 时是 45001 帧；NOWPLAYER=2 不崩）。
+#     即：比赛过程完整、结果已判出，崩的是结束后的收尾路径 ——
+#     MainWidget::judgeVictory() → isLoss() 命中 `sel->getSecend() >= GAME_LOSE_SEC`
+#     → HandleGameOver() → this->close() → closeEvent() → GameOverBroadCast.broadcast()，
+#     此期间 AI 线程并未停止/join，仍在 processData 里深拷贝 *Info，与析构竞争。
+#     建议：在 teardown 前先停 AI 线程（或让它退出 processData 再广播）。
+#     危害：不影响判定结果，但会让评测 harness 把整局当"进程异常退出"。
+#
+#  两个 hunk 的独立性（实测）
+#     hunk①（Core.cpp [2]→[8] 单独)就足以消除"第 1 帧必崩"：NOWPLAYER=3 下
+#       从"冻在 frame 1"变成"跑到游戏结束帧（7500/45000）"。
+#     而且 hunk① 对 NOWPLAYER=2 是【纯 no-op】（索引只到 0/1，与数组容量无关）。
+#     ⇒ 若只想最小化改动、不影响既有 2 人局行为，可以【只打 hunk①】。
+#     hunk②（GlobalVariate.cpp 打乱前移）是进一步消除数据竞争；它会改变
+#       NOWPLAYER=2 下 AI 看到的信息顺序（原来是"先发布、后打乱"的竞态结果），
+#       ⇒ 打上它之后，与本机既有批次的逐帧日志不再逐条可比。
+# ============================================================================
+--- a/Core.cpp
++++ b/Core.cpp
+@@ -4,8 +4,8 @@
+ #include <QDateTime>
+ #include <iostream>
+ #include"farchivein.h"
+-tagInfo Buffer0[2];
+-tagInfo Buffer1[2];
++tagInfo Buffer0[8];   // ★ 2026-09-22 原为 [2]：NOWPLAYER 是运行期值(config.json)，下标 >=2 会落到相邻数组上 ⇒ 跨帧别名 ⇒ 访问违例
++tagInfo Buffer1[8];   // ★ 同上（本地 NOWPLAYER=2 时无差异；NOWPLAYER>=3 时原写法第 1 帧即崩）
+ int buff = 0;
+ tagInfo* currentBuff;
+ Core::Core(Map* theMap, Player* player[],
+--- a/GlobalVariate.cpp
++++ b/GlobalVariate.cpp
+@@ -1113,6 +1113,10 @@
+ }
+ 
+ void tagGame::update(tagInfo *newinfo) {
++    // ★ 2026-09-22 注意：下面那行被注释掉的锁【不要恢复】。调用方 MainWidget::gameDataUpdate
++    //   是先 tagUsrGame.tryLock() 持有同一把 Locker 再调本函数的，而 QMutex 非递归 ⇒ 在函数内
++    //   再锁一次就是同一线程自锁死（实测：rc=TIMEOUT/420s、AITextLog 冻在 frame 1）。
++    //   互斥本就成立：本函数对 Info 的发布由调用方的 tryLock()/release() 保护，getInfo() 自带 Locker。
+     //控制ins_ret的大小小于100，若大于100，则优先删除旧值
+    // QMutexLocker locker(&Locker);//之前是严格的帧同步，现在改成严格的非帧同步
+     if (this->Info != NULL) {
+@@ -1122,19 +1126,20 @@
+     }
+     if (this->Info != NULL)
+         newinfo->ins_ret = this->Info->ins_ret;
+-    Info = newinfo;
+     //对内部打乱
+     static const bool openHunYao = 1;
+-    //
++    // ★ 2026-09-22 必须在【发布指针之前】打乱 newinfo：发布之后该对象就是 AI 线程立刻要
++    //   深拷贝的东西，再逐元素原地写它就是数据竞争（OJ 上表现为 memcpy 读已释放 vector）。
+     if (openHunYao) {
+-        WLHHunYao(Info->buildings);
+-        WLHHunYao(Info->farmers);
+-        WLHHunYao(Info->armies);
+-        WLHHunYao(Info->enemy_buildings);
+-        WLHHunYao(Info->enemy_farmers);
+-        WLHHunYao(Info->enemy_armies);
+-        WLHHunYao(Info->resources);
++        WLHHunYao(newinfo->buildings);
++        WLHHunYao(newinfo->farmers);
++        WLHHunYao(newinfo->armies);
++        WLHHunYao(newinfo->enemy_buildings);
++        WLHHunYao(newinfo->enemy_farmers);
++        WLHHunYao(newinfo->enemy_armies);
++        WLHHunYao(newinfo->resources);
+     }
++    Info = newinfo;
+ }
+ 
+ bool tagGame::tryLock()

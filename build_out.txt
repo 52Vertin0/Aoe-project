@@ -1,0 +1,14 @@
+rc = 0 ; errors = 0 ; lines = 138
+--- tail ---
+                                                                         ^
+UsrAI.cpp: In member function 'void UsrAI::checkDefeat()':
+UsrAI.cpp:5242:50: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+         DebugText("!!! DEFEAT: Priest killed !!!");
+                                                  ^
+UsrAI.cpp:5253:58: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+         DebugText("!!! DEFEAT: Town Center destroyed !!!");
+                                                          ^
+UsrAI.cpp: In member function 'bool UsrAI::findBuildSite(int&, int&, int, bool)':
+UsrAI.cpp:5813:57: warning: ISO C++ forbids converting a string constant to 'char*' [-Wwrite-strings]
+         DebugText("Cleared build blacklist, retrying...");
+                                                         ^

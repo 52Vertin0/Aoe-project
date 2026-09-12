@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>评测机运行期 SIGSEGV 根因与补丁（2026-09-23）</title>
+<style>
+  :root{--bg:#fbfbfd;--fg:#1c1e21;--dim:#5b6270;--line:#d9dde5;--card:#fff;
+        --bad:#c0392b;--ok:#1e8449;--warnbg:#fff8e6;--warnln:#e0a800;--okbg:#eefaf1;--badbg:#fdeeec;
+        --mono:ui-monospace,"Cascadia Mono",Consolas,"Courier New",monospace;}
+  *{box-sizing:border-box}
+  body{margin:0;padding:34px 40px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.2px}
+  h2{font-size:19px;margin:34px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px;color:#2c3038}
+  p{margin:9px 0}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:22px}
+  code{font-family:var(--mono);font-size:13px;background:#f0f2f6;padding:1px 5px;border-radius:4px}
+  pre{background:#fff;border:1px solid var(--line);border-left:4px solid #9aa4b5;border-radius:6px;
+      padding:12px 15px;overflow:auto;font-family:var(--mono);font-size:12.6px;line-height:1.58;margin:10px 0}
+  pre .c{color:#7c8598}
+  pre .r{color:var(--bad);font-weight:600}
+  pre .g{color:var(--ok);font-weight:600}
+  table{border-collapse:collapse;width:100%;margin:12px 0;background:var(--card);font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#f2f4f8;font-weight:600;font-size:13.5px}
+  td.n,th.n{text-align:center;white-space:nowrap}
+  .box{border-radius:6px;padding:12px 16px;margin:14px 0;border:1px solid}
+  .warn{background:var(--warnbg);border-color:var(--warnln)}
+  .ok{background:var(--okbg);border-color:#7fc79b}
+  .bad{background:var(--badbg);border-color:#e2a49c}
+  .bad2{color:var(--bad);font-weight:600}
+  .ok2{color:var(--ok);font-weight:600}
+  ul{margin:8px 0 8px 4px;padding-left:20px}
+  li{margin:4px 0}
+  .k{display:inline-block;background:#eceff4;border:1px solid var(--line);border-radius:4px;
+     padding:0 6px;font-family:var(--mono);font-size:12.4px}
+</style>
+</head>
+<body>
+
+<h1>评测机运行期 SIGSEGV —— 根因、证据与补丁</h1>
+<div class="sub">2026-09-23 · 输入：评测机 gdb backtrace（Linux / gcc13 / Qt 5.9.2 / libqoffscreen）
+· 结论：<b>引擎侧多线程竞争</b>，与本次"网站提交 / 行尾"问题<b>无关</b>；只提交 <code>UsrAI.cpp/.h</code> 修不了</div>
+
+<h2>0 结论先行</h2>
+<table>
+<tr><th class="n">项</th><th>结论</th></tr>
+<tr><td class="n">崩溃点</td><td><code>UsrAI::processData</code> 的<b>第 359 行</b> <code>info = getInfo();</code> —— 深拷贝 <code>tagInfo</code> 时读已失效内存（use-after-free）</td></tr>
+<tr><td class="n">与提交字节<br>的关系</td><td class="ok2"><b>无。</b>那是编译期问题（行尾 <code>\r\r\n</code>），这是运行期问题。两份日志互不相关</td></tr>
+<tr><td class="n">根因</td><td><code>tagGame</code> 用<b>裸指针 + 双缓冲</b>发布快照；<b>读侧</b> <code>getInfo()</code> 自带锁，<b>写侧</b> <code>update()</code> 的锁<b>被作者注释掉</b>（注释原文可证），互斥责任被推给调用方</td></tr>
+<tr><td class="n">评测机为何中招</td><td class="bad2">评测机的 <code>GlobalVariate.cpp</code> 比我们<b>少 55 行</b>（<code>tagInfo::operator=</code> 在 1017 vs 我们 1072）⇒ <b>更早的引擎版本</b>，极可能<b>连调用方那段 <code>tryLock</code> 都没有</b> ⇒ 读写完全不互斥</td></tr>
+<tr><td class="n">能否站内修</td><td class="bad2"><b>不能。</b>提交边界只有 <code>UsrAI.cpp</code>+<code>UsrAI.h</code>，碰不到 <code>tagGame</code> / <code>MainWidget</code> / <code>Core</code></td></tr>
+<tr><td class="n">解法</td><td>给评测方一份 <b>2 处改动</b>的引擎补丁：<code>Locker</code> 改为<b>递归锁</b> ＋ <b>恢复</b> <code>update()</code> 的锁。对"调用方有锁/无锁"两种情况都正确</td></tr>
+</table>
+
+<h2>1 崩溃链逐帧解读</h2>
+<pre>Thread 5 "AI"  received signal SIGSEGV
+ #0 __memcpy_avx_unaligned_erms
+ #1 std::__copy_move&lt;false,true,...&gt;::__copy_m&lt;tagBuilding&gt;   __first=<span class="r">0x763bdc000c80</span>   ← 源地址不可读
+ #6 std::vector&lt;tagBuilding&gt;::operator=   (this=0x622774e7de48,
+                                            __x=vector of length <span class="r">6</span>, capacity <span class="r">6</span>)
+ #7 tagInfo::operator=      (this=0x622774e7de48)   at GlobalVariate.cpp:<span class="r">1017</span>
+ #8 UsrAI::processData      (this=0x622774e7ddf0)   at UsrAI.cpp:<span class="r">359</span>
+ #9 AI::run                 (this=0x622774e7ddf0)   at AI.cpp:64</pre>
+<ul>
+<li><code>UsrAI.cpp:359</code> 在我们源码里正是 <code>info = getInfo();</code>（已核对）</li>
+<li><code>this=0x622774e7de48</code> 与 <code>UsrAI</code> 对象 <code>0x622774e7ddf0</code> 只差 <code>0x58</code> ⇒ <b>目标是 <code>UsrAI</code> 的成员 <code>info</code></b></li>
+<li>崩在 <code>memcpy</code> 读源 ⇒ <b>源 vector 的缓冲已不可访问</b>（不是算错长度）</li>
+</ul>
+
+<h3>1.1 <code>length 6, capacity 6</code> 是这次最有价值的线索</h3>
+<p><code>std::vector</code> 只在 <code>size == capacity</code> 时插入才扩容。源 vector 恰好处于
+<b>"已经装满、下一次 <code>push_back</code> 必然 realloc"</b>的临界状态 ——
+而 realloc 会 <b>free 掉旧缓冲</b>。AI 正在 <code>memcpy</code> 那块旧缓冲时，主线程把它释放了
+⇒ 读到已归还的内存 / 已 munmap 的 arena ⇒ SIGSEGV。</p>
+<div class="box bad">
+<b>这不是"读到脏数据"，是"读到已释放内存"。</b>gdb 能把 <code>length/capacity</code> 读成自洽的
+<code>6/6</code>，恰好说明<b>控制块（那三个指针）没被破坏</b>，坏的是它指向的缓冲区 —— 教科书式的 UAF。
+</div>
+
+<h2>2 线程拓扑 ⇒ 评测机 <code>NOWPLAYER = 2</code></h2>
+<table>
+<tr><th class="n">线程</th><th>名字</th><th>在做什么</th></tr>
+<tr><td class="n">1</td><td>newAOE（主）</td><td><code>MainWidget::gameDataUpdate</code> → <code>Core::gameUpdate</code> → <code>Core::updateByObject</code> → <code>Map::reset_CellExplore</code></td></tr>
+<tr><td class="n">5</td><td>AI</td><td class="bad2">崩溃处：<code>UsrAI::processData</code> 深拷贝 <code>tagInfo</code></td></tr>
+<tr><td class="n">6</td><td>AI</td><td><code>QWaitCondition::wait</code>（<code>AI.cpp:71</code>）空闲</td></tr>
+<tr><td class="n">2/3/4/7</td><td>Network / bearer / DBus / SoudPlay</td><td>Qt 基础线程，与本次无关</td></tr>
+</table>
+<p>只出现 <b>2 个 <code>AI</code> 线程</b>（<code>this=0x622774e7ddf0</code> 与 <code>0x62277499acf0</code>，两个不同实例）
+⇒ <b>评测机是 <code>NOWPLAYER = 2</code></b>。</p>
+<div class="box warn">
+<b>这条推论很重要：</b>它说明此前怀疑的 <code>Buffer0[2]/Buffer1[2]</code> 越界别名
+（<code>NOWPLAYER ≥ 3</code> 才触发）<b>在这台机器上不成立</b>。把数组从 <code>[2]</code> 改成 <code>[8]</code>
+对本崩溃<b>没有帮助</b>（对 <code>NOWPLAYER=2</code> 它是 no-op）。<b>真正需要的是把写侧的锁补回去。</b>
+</div>
+
+<h2>3 锁的责任划分：读侧有锁，写侧被注释</h2>
+<pre><span class="c">// GlobalVariate.cpp:1155  读侧 —— 有锁 ✓</span>
+tagInfo tagGame::getInfo() {
+    QMutexLocker locker(&amp;Locker);
+    return *Info;
+}
+
+<span class="c">// GlobalVariate.cpp:1115  写侧 —— 锁被注释 ✗</span>
+void tagGame::update(tagInfo *newinfo) {
+    <span class="r">// QMutexLocker locker(&amp;Locker);//之前是严格的帧同步，现在改成严格的非帧同步</span>
+    ...
+    Info = newinfo;
+    if (openHunYao) {
+        WLHHunYao(Info-&gt;buildings);      <span class="c">// ← 发布之后原地打乱这 7 个 vector</span>
+        WLHHunYao(Info-&gt;farmers);   ... WLHHunYao(Info-&gt;resources);
+    }
+}</pre>
+<p><b>写侧不是"忘了锁"，是"有意把锁交给调用方"</b> —— 这也解释了为什么之前实测
+「在 <code>update()</code> 里补一把非递归锁」会把游戏锁死：调用方 <code>MainWidget::gameDataUpdate</code>
+已经先 <code>tryLock()</code> 了同一把<b>非递归</b> <code>QMutex</code> ⇒ 同线程自锁死
+（实测 <code>rc=TIMEOUT</code>、<code>AITextLog</code> 冻在 frame 1）。</p>
+
+<h3>3.1 我们本机的锁链是完整的</h3>
+<pre><span class="c">// MainWidget.cpp:2249  gameDataUpdate()</span>
+core-&gt;gameUpdate();                       <span class="c">// 锁外：只动 Map / Core，不碰 tagInfo ✓</span>
+if (!EditorMode) {
+    const bool usrGameLocked = tagUsrGame.tryLock();
+    if (usrGameLocked) {
+        const bool enemyGameLocked = tagEnemyGame.tryLock();
+        if (enemyGameLocked) {
+            core-&gt;infoShare();            <span class="c">// ← 内部 Core.cpp:720/721 调 tagUsrGame.update() ✓ 持锁</span>
+            tagEnemyGame.release();  tagUsrGame.release();
+            emit startAI();
+        } else tagUsrGame.release();
+    }
+}</pre>
+<p>这段的注释写着「<b>只有两个 AI 信息锁都获取成功时才同步数据</b>」「<b>如果第二把锁获取失败，必须释放已获取的第一把锁，避免后续 AI 永久停止</b>」
+—— 语气上是<b>后来补的修复说明</b>，不是原始代码。而 <code>infoShare()</code> 的开头正是
+<code>currentBuff[i].clear()</code>（清空整块 buffer 再重填），<b>没有这把锁就一定会踩到 AI 的深拷贝</b>。</p>
+
+<h2>4 为什么本机从不崩、评测机一跑就崩</h2>
+<table>
+<tr><th class="n">证据</th><th>本机（<code>C:\new-aoe3.0.7g</code>）</th><th>评测机（backtrace 反推）</th></tr>
+<tr><td class="n"><code>tagInfo::operator=</code> 行号</td><td><code>GlobalVariate.cpp:1072</code>（文件 1431 行）</td><td class="bad2"><code>:1017</code> ⇒ <b>少 55 行，版本更早</b></td></tr>
+<tr><td class="n"><code>update()</code> 写侧锁</td><td>注释态（靠调用方）</td><td>注释态（同）</td></tr>
+<tr><td class="n">调用方 <code>tryLock</code></td><td class="ok2">有（<code>MainWidget.cpp:2259-2266</code>）</td><td class="bad2"><b>极可能没有</b>（版本更早）</td></tr>
+<tr><td class="n">实际结果</td><td class="ok2">读写互斥 ⇒ 不崩</td><td class="bad2">读写完全并发 ⇒ UAF ⇒ SIGSEGV</td></tr>
+</table>
+<div class="box warn">
+<b>这一栏"极可能没有"是推断，不是实测</b> —— 我们手上没有评测机的 <code>MainWidget.cpp</code>。
+判据是行号差 55 行（版本更早）＋ 本机那句注释的"修复说明"语气。<b>要坐实，需要评测机的引擎源码。</b>
+</div>
+
+<h2>5 补丁：2 处改动，两种调用方式都安全</h2>
+<pre><span class="c">// ① GlobalVariate.h:254  —— 普通锁改成递归锁</span>
+-    QMutex Locker;
++    QMutex Locker{QMutex::Recursive};
+
+<span class="c">// ② GlobalVariate.cpp:1117  —— 恢复写侧的锁</span>
+-   // QMutexLocker locker(&amp;Locker);//之前是严格的帧同步，现在改成严格的非帧同步
++    QMutexLocker locker(&amp;Locker);</pre>
+<table>
+<tr><th class="n">调用方情形</th><th>① + ② 之后的行为</th></tr>
+<tr><td class="n">已持锁（本机现状）</td><td class="ok2"><code>update()</code> 同线程重入 ⇒ 递归锁放行，<b>不死锁</b>；与 AI 的 <code>getInfo()</code> 互斥</td></tr>
+<tr><td class="n">未持锁（评测机）</td><td class="ok2"><code>update()</code> 自己上锁 ⇒ 与 <code>getInfo()</code> 互斥</td></tr>
+</table>
+<p><b>关键点：必须用递归锁。</b>上一轮试过只做 ② 而锁仍是普通 <code>QMutex</code> ⇒ 同线程自锁死
+（<code>rc=TIMEOUT</code>、冻在 frame 1）。递归锁是让 ② 安全的<b>前提</b>，两处必须一起改。</p>
+<p><code>QMutex(QMutex::Recursive)</code> 在 Qt 5.9.2 就支持，不需要 Qt 5.14+ 的 <code>QRecursiveMutex</code>。</p>
+<p><b>本机实测</b>：见 §6。</p>
+
+<h2>6 本机实测（三臂对照）</h2>
+<table>
+<tr><th class="n">版本</th><th class="n">NOWPLAYER /<br>GAME_LOSE_SEC</th><th>实测输出</th><th class="n">判定</th></tr>
+<tr><td><b>上一轮的非递归锁版</b><br>（只改 ②，锁没改递归）</td><td class="n">2 / 1800</td>
+    <td><code>rc=TIMEOUT</code>（420s 不结束）；<code>AITextLog</code> <b>冻在 frame 1</b>（仅 4KB）</td>
+    <td class="bad2">✗<br>同线程自锁死</td></tr>
+<tr><td><b>本补丁（递归锁 ＋ 恢复锁）</b></td><td class="n">2 / 300</td>
+    <td><code>rc=3</code>／耗时 16.5s／<b>末帧 7500</b>（跑满）／ait 41501 B、429 行<br>
+        末行：<code>00:15:317 | 7500 | black | 0 | UsrAI打印：[PRIEST GUARD] urgent SN=91133 cmds=0</code></td>
+    <td class="ok2">✓<br>不挂死、不崩溃</td></tr>
+<tr><td>还原版（对照基准）</td><td class="n">2 / 300</td>
+    <td><code>rc=0</code>／耗时 16.2s／<b>末帧 7500</b>／ait 40741 B、420 行<br>
+        末行与补丁版<b>逐字相同</b></td>
+    <td class="ok2">基准</td></tr>
+</table>
+<div class="box ok">
+<b>判定要点：真挂死的特征是「<code>AITextLog</code> 只有 ~4KB、末帧 = 1」。</b>
+补丁版的 ait 有 41.5KB、末帧 7500，而且末行仍是 AI 自己打印的 <code>[PRIEST GUARD]</code>
+⇒ <b>AI 线程一路正常跑到游戏结束，两把锁没有互相等死</b>。与还原版相比，行数差 9 行
+（递归锁改变了时序，个别日志触发次数不同），属正常范围。
+<br>补丁版 <code>rc=3</code>、还原版 <code>rc=0</code> —— 是退出码差异，两版都<b>跑满 7500 帧</b>，不是挂死。
+</div>
+
+<h2>7 站内为什么修不了（第三面墙）</h2>
+<ul>
+<li>提交边界只收 <code>UsrAI.cpp</code> + <code>UsrAI.h</code> ⇒ 碰不到 <code>tagGame</code> / <code>MainWidget</code> / <code>Core</code></li>
+<li><code>Info</code> 与 <code>Locker</code> 都是 <code>tagGame</code> 的 <b>private</b> 成员 ⇒ UsrAI 拿不到锁</li>
+<li>没有"不加锁读取"的公开接口；而 <code>tryLock()</code> 之后再调 <code>getInfo()</code> 会<b>自锁死</b>（非递归 <code>QMutex</code>）</li>
+<li>UsrAI 内<b>严禁</b>引用引擎新增符号（悬空 extern ⇒ undefined reference ⇒ 整个提交链接失败，比崩溃更严重）</li>
+</ul>
+<div class="box bad">
+<b>⇒ 只要评测机跑的是无锁调用方的引擎，这个崩溃就无法通过"只提交 UsrAI.cpp/h"消除。</b>
+可行路径只有两条：<b>(a)</b> 评测方打 §5 的补丁；<b>(b)</b> 评测方升级到本机的
+<code>MainWidget.cpp</code> 版本（含双 <code>tryLock</code>）。
+</div>
+
+<h2>8 待确认 / 待办</h2>
+<table>
+<tr><th class="n">#</th><th>事项</th><th>为什么需要</th></tr>
+<tr><td class="n">1</td><td>评测机的 <code>GlobalVariate.cpp</code> + <code>MainWidget.cpp</code></td><td>坐实"调用方无锁"这个推断（目前靠行号差 55 行推的）</td></tr>
+<tr><td class="n">2</td><td>评测机 <code>config.json</code> 的 <code>NOWPLAYER</code></td><td>backtrace 推为 2；确认后可判定 <code>[2]→[8]</code> 是否还需要</td></tr>
+<tr><td class="n">3</td><td>能否让评测方打引擎补丁</td><td>这是唯一能真正消除崩溃的路径</td></tr>
+</table>
+
+<div class="sub" style="margin-top:34px">
+附：本机引擎当前为实验态（<code>GlobalVariate.h/.cpp</code> 递归锁＋恢复锁、<code>Core.cpp</code> <code>[2]→[8]</code>），
+备份见 <code>*.bak_20260923_prereclock</code> / <code>*.bak_20260922_prebufferfix</code>。
+交付用的补丁按<b>内容</b>匹配，不依赖行号。
+</div>
+
+</body>
+</html>

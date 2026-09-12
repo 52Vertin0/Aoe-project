@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>UsrAI 注释同步报告 · 2026-09-23</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1b1f24;--dim:#5c6672;--line:#e3e7ec;
+      --ok:#0a7d43;--warn:#b4690e;--bad:#b3261e;--accent:#1a56c4;--code:#f2f4f7}
+*{box-sizing:border-box}
+body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--ink);
+     font:15px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:1000px;margin:0 auto}
+h1{font-size:26px;margin:0 0 6px}
+.sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+h2{font-size:18px;margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+h3{font-size:15px;margin:22px 0 8px;color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:#eef1f5;font-weight:600}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-family:Consolas,"Courier New",monospace;font-size:12.8px}
+pre{background:#1e2228;color:#e6e9ee;padding:13px 15px;border-radius:8px;overflow-x:auto;
+    font:12.6px/1.6 Consolas,"Courier New",monospace;margin:10px 0}
+.ok{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);
+     background:#eef1f5;color:var(--dim);margin-right:5px}
+ul{margin:6px 0 6px 20px;padding:0}li{margin:4px 0}
+.mono{font-family:Consolas,monospace;font-size:12.6px}
+.big{font-size:15px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>UsrAI 注释同步报告</h1>
+<div class="sub">
+  对象：<code>C:\new-aoe3.0.7g\UsrAI.cpp</code>（6554 → 6622 行）＋ <code>UsrAI.h</code>（402 → 403 行）<br>
+  起因：代码侧做了一次大规模可读性重构（λ 提升为函数、巨型函数拆分），注释未同步<br>
+  结论：<span class="ok">本次改动 100% 只动注释 —— 代码骨架 0 行差异、<code>.text</code> 逐字节相同</span>，免跑局
+</div>
+
+<h2>1 一句话结论</h2>
+<div class="card big">
+你的这轮重构把注释留在了原地：<b>5 段说明的代码被搬走、注释没跟</b>，外加 3 处引擎行号引用早已失效、
+1 处注释与代码正相反、8 个字段已成死字段。本批共修 <b>26 处</b>，全部按代码真值改写，未改动任何一行代码。
+</div>
+
+<h2>2 改了什么（六类）</h2>
+
+<h3>2.1 注释"归位"：代码搬走、注释留下（最严重）</h3>
+<div class="card">
+  <code>manageCounterAttack()</code> 里躺着 5 段说明，主语却是已被提升出去的函数 —— 原地没有任何对应代码，
+  读者会以为下面那些行就该这么写。
+  <table>
+    <tr><th>原位置</th><th>注释主题</th><th>代码现在在哪</th></tr>
+    <tr><td class="mono">L4668</td><td>近战兵种分类（更早撤、撤更远）</td><td class="mono">文件头 sortIsMelee()</td></tr>
+    <tr><td class="mono">L4670-4672</td><td>各远程兵种最大射程 + config.json 回代</td><td class="mono">文件头 sortMaxRangedRange()</td></tr>
+    <tr><td class="mono">L4674-4677</td><td>"我方射程严格大于对方"才拉扯</td><td class="mono">文件头 sortHasKiteRangeAdvantage()</td></tr>
+    <tr><td class="mono">L4679-4681</td><td>按 SN 在"军队→农民→建筑"三层查找</td><td class="mono">lookupEnemySN()</td></tr>
+    <tr><td class="mono">L4683-4685</td><td>拉扯专用选敌（只取"占优"的最近敌）</td><td class="mono">findKiteTarget()</td></tr>
+  </table>
+  已全部搬回各自定义处（并顺手改掉两个陈旧符号名：<code>isMelee</code> → <code>pMelee</code>、
+  <code>isRanged</code> → <code>sortIsRanged</code>），原地只留 4 行指路注释。
+</div>
+
+<h3>2.2 新增/重建函数头注释（14 个函数）</h3>
+<div class="card">
+  抽出来的函数大多<b>一个头注释都没有</b>（注释是跟着内联代码走的，函数名本身没被解释过）。补齐：
+  <div style="margin-top:8px">
+  <span class="tag">manageCounterAttack</span><span class="tag">lookupEnemySN</span><span class="tag">findKiteTarget</span>
+  <span class="tag">isPassableAt</span><span class="tag">snapWalkable</span><span class="tag">updateFarmTarget</span>
+  <span class="tag">managePriestScout</span><span class="tag">countFarmerWorkKinds</span><span class="tag">trainMilitaryUnits</span>
+  <span class="tag">manageMilitary</span><span class="tag">countFarmersOnTarget</span><span class="tag">findNearestEnemyUnit</span>
+  <span class="tag">assignIdleFarmers</span><span class="tag">tryAssignFood</span>
+  </div>
+  <div style="margin-top:10px">其中 <code>manageCounterAttack()</code> 现在是一张<b>调度顺序图</b>（谁先跑、谁的返回值要求调用方
+  <code>return</code>、<code>forestGrid</code> 从哪来传给谁）—— 它已经是个纯编排器，此前没有任何一处注释说明这一点。</div>
+</div>
+
+<h3>2.3 引擎行号引用纠错（回代本机引擎源码逐行坐实）</h3>
+<div class="card">
+  <table>
+    <tr><th>位置</th><th>注释原写</th><th>该行实际是</th><th>真值</th></tr>
+    <tr><td class="mono">L4024</td><td class="mono bad">Core.cpp:433</td><td>taginfo.Meat = self-&gt;getFood();</td><td class="mono ok">Core.cpp:459</td></tr>
+    <tr><td class="mono">L3888</td><td class="mono bad">Core.cpp:582</td><td>resource.ProductSort = -1;</td><td class="mono ok">Core.cpp:603</td></tr>
+    <tr><td class="mono">L1284</td><td class="mono bad">Core.cpp:1091-1096</td><td>}</td><td class="mono ok">Core.cpp:1117-1121</td></tr>
+    <tr><td class="mono">L4291</td><td class="mono bad">UsrAI.cpp 124/127-129</td><td>#define GAZELLE_STOCK_GATE_DEADLINE …</td><td class="mono ok">UsrAI.cpp 633 / 637</td></tr>
+    <tr><td class="mono">L423</td><td class="mono">UsrAI.cpp:359</td><td colspan="2">该行号属 <b>OJ 编译的那一版</b>（回栈标本），本文件重构后已不对应 —— 已就地标注，避免下次被当作现行行号</td></tr>
+  </table>
+  <div style="margin-top:8px;color:var(--dim);font-size:13px">
+    <code>Core.cpp:582</code> 至少从 09-15 起就是错的（同一条错值还残留在 5 个历史备份里），
+    <code>Core.cpp:433</code> 与 <code>1091-1096</code> 同属"写的时候对、引擎改版后没回代"。
+  </div>
+</div>
+
+<h3>2.4 一处注释与代码正相反</h3>
+<div class="card">
+  <code>counterFarmerAttack()</code> 头部原写：
+  <pre>① 目标选取：敌方 TC > 最近的【非箭塔、非武器厂】敌建筑 > 无目标则不动。
+⚠ 不含箭塔：农民血量/射程撑不住塔火力，且箭塔已由下方军队段单独处理。</pre>
+  而紧下面 4 行的另一段注释写的是 <b>"③ 最近的【箭塔】—— 必须保留…若把箭塔也排除则目标恒为 -1、整个功能静默失效"</b>，
+  代码 <code>tgtKind 1~4</code> 也确实<b>包含</b>箭塔。两段注释在同一函数里互相打脸，且前者与代码相反。
+  已统一为代码真值，并注明"旧口径在 fa 批被实测推翻、代码从未按它实现"。
+</div>
+
+<h3>2.5 失效的结构标签</h3>
+<div class="card">
+  <ul>
+    <li><code>====== 4. 后方支援：继续造兵补充伤亡 ======</code> 是<code>manageCounterAttack()</code> 末尾的段标题，
+        <b>下面一行代码都没有</b>（本就在 manageMilitary 里）→ 已删。</li>
+    <li><code>1.4 农民总攻</code>／<code>1.5 祭司护驾</code>／<code>2. 集结与推进</code>／<code>3. 祭司推进</code>
+        这套序号是"还是一个大函数"时代的产物，现已分属 4 个不同函数 —— 序号既无法排序也不再对应任何容器，
+        全部改为描述性标题。</li>
+  </ul>
+</div>
+
+<h3>2.6 UsrAI.h：注释 vs 字段状态</h3>
+<div class="card">
+  <b>① <code>scoutPhase</code> 注释已失实</b>：原写 <code>// 0-7: 4方向+回TC交替</code>，
+  代码里只有两种取值 —— <code>&lt;16</code>（探路中）与 <code>=20</code>（已结束，<code>managePriest</code> 靠 <code>&gt;=20</code> 才接管）。
+  已改为按真实语义描述。<br><br>
+  <b>② 8 个字段在 <code>.cpp</code> 代码区<b>零引用</b></b>（历史机制撤销后没人清理）：
+  <table>
+    <tr><th>字段</th><th>原属机制</th><th>状态</th></tr>
+    <tr><td class="mono">waveBlockers</td><td>波次期阻断村民派遣</td><td>随 manageFirstWaveDefense 一并撤销</td></tr>
+    <tr><td class="mono">scoutFarmerSN</td><td>探路村民</td><td>探路已改由祭司承担</td></tr>
+    <tr><td class="mono">farmerReturnTry / farmerIssueDR / farmerIssueUR / farmerIssueFrame</td><td>村民撤退到 TC 旁（4 个）</td><td>村民不再因见敌撤退</td></tr>
+    <tr><td class="mono">marchIssueDR / marchIssueUR</td><td>"绝对位移"卡死判据</td><td>已被 marchIssueDist 取代</td></tr>
+  </table>
+  这批字段<b>本轮没有删</b>（删成员是代码改动，超出"更新注释"范围）—— 只把注释改成"已成死字段，待删"。
+  建议下一批整块删除。
+</div>
+
+<h2>3 怎么证明"只动注释"</h2>
+<div class="card">
+  <table>
+    <tr><th>证据</th><th>方法</th><th>结果</th></tr>
+    <tr><td>代码骨架零差异</td><td>剥掉行注释/块注释/字符串字面量后逐行比对</td>
+        <td class="ok">cpp 4847→4847 行、h 274→274 行，差异 <b>0 行</b></td></tr>
+    <tr><td>机器码零差异</td><td><code>objcopy --only-section=.text</code> + <code>cmp</code></td>
+        <td class="ok">185,968 B 逐字节相同</td></tr>
+    <tr><td>编译无回归</td><td><code>syn.py</code> / <code>warn_cmp2.py</code> 改前 vs 改后</td>
+        <td class="ok">0 err / 17 warn，warning 类别集合完全一致</td></tr>
+    <tr><td>源码未写坏</td><td><code>chk_src.py</code></td>
+        <td class="ok">UTF-8 / 统一 CRLF / 无 <code>\r\r\n</code> / 无三元字 / 行数符合</td></tr>
+  </table>
+  <div style="margin-top:10px">
+    <code>.text</code> 逐字节相同 ⇒ 行为等价，<b>本批免跑局</b>。exe 已重建（23:31:07 &gt; 源码 23:30:34）。
+  </div>
+</div>
+
+<div class="card" style="border-left:4px solid var(--warn)">
+  <b>⚠ 过程中抓到一处自伤（已修）</b><br>
+  批量替换时，<code>UsrAI.h</code> 里 <code>std::map&lt;int,int&gt; farmerReturnTry;</code> 的<b>声明行被注释覆盖掉了</b>
+  —— 成员被静默删除。是上面那张"代码骨架零差异"表把它抓出来的（h 差 1 行）。已恢复声明并复验归零。<br>
+  <span style="color:var(--dim);font-size:13px">教训：改注释也必须过一遍"剥注释后代码是否等价"的机器校验，肉眼 diff 会漏掉这种行。</span>
+</div>
+
+<h2>4 发现但没动（要你拍板）</h2>
+<div class="card">
+  <table>
+    <tr><th>#</th><th>发现</th><th>性质</th><th>建议</th></tr>
+    <tr><td>1</td><td>上面那 <b>8 个死字段</b></td><td>纯死代码，删了行为不变</td><td>下批整块删（需同改构造函数初始化表里的 scoutFarmerSN）</td></tr>
+    <tr><td>2</td><td><code>isRangedSort</code>（L870，managePriest 内 λ）与内联 <code>isRanged</code>（L4141）
+        和文件头 <code>sortIsRanged()</code> <b>同源重复</b>：二者 = <code>sortIsRanged</code> 再排除投石车</td>
+        <td>铁律 21/26 违反（同一语义写三遍）</td><td>收口到 <code>sortIsRanged()</code>（本轮只加了口径提示注释，未改代码）</td></tr>
+    <tr><td>3</td><td><code>if (state == COUNTERATTACK) { } else { … }</code> 空 then 分支 2 处（L~4067 / L~4096）</td>
+        <td>写法噪声，行为等价</td><td>改写成 <code>if (state != COUNTERATTACK) { … }</code></td></tr>
+    <tr><td>4</td><td><code>countBuildings(4 参)</code> 的 <code>includePending</code> 分支零消费点</td>
+        <td>前轮已报，仍在</td><td>删参或标注"预留"</td></tr>
+    <tr><td>5</td><td><code>tryAssignFood()</code> 开头新增的 <code>if (foodStop) return false;</code></td>
+        <td class="warn">⚠ <b>这是本轮改动里唯一的行为变更</b>（不属于可读性）：食物达停采水位时该函数直接返回 false</td>
+        <td>本轮已补注释说明其唯一调用点（assignIdleSimple 转岗）语义一致；请确认是你有意加的</td></tr>
+  </table>
+</div>
+
+<h2>5 交付物</h2>
+<div class="card">
+  <ul>
+    <li><code>UsrAI.cpp</code> / <code>UsrAI.h</code> —— 注释已同步（唯一编辑副本，已重建 exe）</li>
+    <li><code>UsrAI.cpp.bak_20260923_cmtaudit</code> / <code>UsrAI.h.bak_20260923_cmtaudit</code> —— 改前快照</li>
+    <li><code>_submit/UsrAI.cpp</code> / <code>_submit/UsrAI.h</code> —— 纯 LF 提交版（内容与仓库版一致，仅行尾不同）</li>
+    <li><code>_audit/cmt_audit.py</code> —— 注释 vs 代码 审计器（死成员 / 陈旧符号 / 孤立注释 / 段落编号）</li>
+    <li><code>_audit/claim_check.py</code> —— 注释里的"常量=值 / 行号"可验证声明回代核对</li>
+    <li><code>_audit/prove_comments_only.py</code> —— "只动注释"证明器（剥注释后代码骨架比对）</li>
+    <li><code>_audit/apply_cmt_sync.py</code> —— 本批改动的可复现脚本（每处断言命中唯一）</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>

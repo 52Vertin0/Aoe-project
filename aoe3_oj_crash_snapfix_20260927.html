@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AOE3 AI · OJ SIGSEGV 根因与修复 · 2026-09-27</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1b1f24; --ink2:#4b5563; --ink3:#6b7280;
+    --line:#e3e6ea; --line2:#eef0f3;
+    --ok:#0f7a3d; --okbg:#e8f5ec;
+    --bad:#b3261e; --badbg:#fdeceb;
+    --warn:#8a5a00; --warnbg:#fdf4e3;
+    --blue:#1a56b3; --bluebg:#eaf0fb;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.68 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--ink3);font-size:13.5px;margin-bottom:26px}
+  .sub code{font-family:var(--mono);font-size:12.5px;background:var(--line2);padding:2px 6px;border-radius:4px}
+  h2{font-size:19px;margin:38px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--ink);letter-spacing:-.2px}
+  h3{font-size:15.5px;margin:22px 0 8px}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}
+  .kpi>div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .kpi .lab{font-size:12px;color:var(--ink3);letter-spacing:.4px;text-transform:uppercase}
+  .kpi .val{font-size:22px;font-weight:650;margin-top:4px;letter-spacing:-.5px}
+  .kpi .note{font-size:12px;color:var(--ink3);margin-top:2px}
+  .up{color:var(--ok)} .down{color:var(--bad)} .flat{color:var(--ink3)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px;background:var(--card)}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line2);text-align:left;vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;font-size:12.5px;color:var(--ink2);
+     border-bottom:1px solid var(--line);white-space:nowrap}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr.hl td{background:var(--okbg)} tr.warnrow td{background:var(--warnbg)} tr.badrow td{background:var(--badbg)}
+  code{font-family:var(--mono);font-size:12.5px}
+  pre{background:#1e2228;color:#dfe4ea;padding:14px 16px;border-radius:8px;overflow-x:auto;
+      font-family:var(--mono);font-size:12.3px;line-height:1.58;margin:12px 0}
+  pre .k{color:#7fd1ff} pre .g{color:#8ee08b} pre .r{color:#ff9b92} pre .y{color:#ffd479} pre .c{color:#7c8794}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;vertical-align:middle;line-height:1.7}
+  .t-ok{background:var(--okbg);color:var(--ok)} .t-bad{background:var(--badbg);color:var(--bad)}
+  .t-warn{background:var(--warnbg);color:var(--warn)} .t-info{background:var(--bluebg);color:var(--blue)}
+  ul{margin:8px 0;padding-left:22px} li{margin:5px 0}
+  .muted{color:var(--ink3)} .sm{font-size:12.5px}
+  .quote{border-left:3px solid var(--blue);background:var(--bluebg);padding:10px 14px;margin:12px 0;border-radius:0 8px 8px 0;font-size:13.5px}
+  .warnbox{border-left:3px solid var(--warn);background:var(--warnbg);padding:10px 14px;margin:12px 0;border-radius:0 8px 8px 0;font-size:13.5px}
+  .badbox{border-left:3px solid var(--bad);background:var(--badbg);padding:10px 14px;margin:12px 0;border-radius:0 8px 8px 0;font-size:13.5px}
+  .okbox{border-left:3px solid var(--ok);background:var(--okbg);padding:10px 14px;margin:12px 0;border-radius:0 8px 8px 0;font-size:13.5px}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0;font-size:13px}
+  .flow span{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+  .flow i{color:var(--ink3);font-style:normal}
+  footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OJ SIGSEGV 崩溃：根因定位与修复</h1>
+<div class="sub">
+  2026-09-27 15:38–16:30 &nbsp;·&nbsp; 对象 <code>C:\new-aoe3.0.7h\UsrAI.cpp/.h</code>（提交崩溃）
+  &nbsp;·&nbsp; 采纳版 <code>17696b0c·6868</code> / <code>738fe1db·422</code>
+</div>
+
+<div class="okbox">
+<b>结论：崩溃可修，且不必牺牲胜率。</b>根因不是新引入的 bug —— 是 <b>09-23 就做好的「OJ 快照自救」在 09-26 23:48 的一次整文件回退中被一起覆盖丢失</b>，
+代码退回「AI 线程直读引擎缓冲区」，于是在 OJ 上重现了 09-23 那个崩溃。<br>
+恢复该机制时又发现：<b>原版「每帧等主线程」会把胜率从 79.2% 砍到 50.0%（p≈0.04）</b>；
+改成<b>非阻塞</b>版后 69.4%（n=36），与无加固 <b>p≈0.20 无显著差异</b> ⇒ 采用非阻塞版。
+</div>
+
+<div class="kpi">
+  <div><div class="lab">修复前</div><div class="val down">SIGSEGV</div><div class="note">提交即崩，0 分</div></div>
+  <div><div class="lab">每帧等待版</div><div class="val down">50.0%</div><div class="note">不崩但胜率腰斩</div></div>
+  <div><div class="lab">非阻塞版</div><div class="val up">69.4%</div><div class="note">n=36，无显著损失</div></div>
+  <div><div class="lab">机制健康度</div><div class="val up">wait=1</div><div class="note">skip=0，从不卡住</div></div>
+</div>
+
+<h2>1 &nbsp;崩溃现场</h2>
+
+<pre><span class="c">Thread 5 "AI" received signal SIGSEGV</span>
+__memcpy_avx_unaligned_erms
+ ← std::vector&lt;tagBuilding&gt;::operator=   <span class="y">(源 vector len=6 / cap=6)</span>
+ ← tagInfo::operator=                     <span class="y">GlobalVariate.cpp:1019</span>
+ ← <span class="r">UsrAI::processData</span>                     <span class="y">UsrAI.cpp:428</span>  <span class="c">← info = tagUsrGame.getInfo();</span>
+ ← AI::run                                AI.cpp:64</pre>
+
+<h2>2 &nbsp;判定：OJ 用的是哪份引擎</h2>
+
+<p class="sm">用 backtrace 行号对齐即可判定（这一步决定了"能不能改、改哪里"）：</p>
+
+<table>
+<tr><th>backtrace 行号</th><th>7h 版对应内容</th><th>7g 版对应内容</th><th>判定</th></tr>
+<tr class="hl"><td><code>GlobalVariate.cpp:1019</code></td><td>落在 <code>tagInfo::operator=</code> 内（该函数起于 <b>1011</b>）✅</td><td>该函数起于 <b>1072</b>，1019 是 <code>toEnemy()</code> 里的注释 ❌</td><td><b>OJ 引擎 = 7h 同源</b></td></tr>
+<tr><td><code>UsrAI.cpp:428</code></td><td><code>info = tagUsrGame.getInfo();</code> ✅</td><td>同（两文件当时逐字节相同）</td><td>吻合</td></tr>
+</table>
+
+<div class="quote">
+推论：<b>OJ 只收你的 <code>UsrAI.cpp/.h</code>，引擎（Core / GlobalVariate / MainWidget …）是评测方自带的</b>，
+且与 <code>7h</code> 同源。所以 —— 改本地 7g 的引擎文件对 OJ 毫无作用，必须在 <b>UsrAI 侧</b>解决问题。
+</div>
+
+<h2>3 &nbsp;根因：加固被一次「整文件回退」覆盖掉了</h2>
+
+<p class="sm">09-23 就已经为这个崩溃写过自救（记忆里记为"已闭环"），但代码里现在<b>找不到它了</b>。用特征符号计数三版对比，一眼看出是哪一步丢的：</p>
+
+<table>
+<tr><th>版本</th><th class="num">行数</th><th class="num">refreshSnapshot</th><th class="num">shared_ptr</th><th>说明</th></tr>
+<tr class="hl"><td><code>bak_20260926_145805_pre_priest_dynamic</code>（09-26 12:20）</td><td class="num">6607</td><td class="num">3</td><td class="num">4</td><td>加固在 ✅</td></tr>
+<tr class="badrow"><td><code>bak_20260926_revert_g1_nogate</code>（09-26 23:48）</td><td class="num">6425</td><td class="num">0</td><td class="num">0</td><td><b>整文件回退 ⇒ 加固被一起覆盖</b></td></tr>
+<tr class="badrow"><td>其后所有版本（含提交 OJ 的 6718）</td><td class="num">6718</td><td class="num">0</td><td class="num">0</td><td>退回 AI 线程直读</td></tr>
+</table>
+
+<h3>为什么"AI 线程直读"必然崩</h3>
+
+<pre><span class="c">// GlobalVariate.cpp —— 读侧有锁</span>
+tagInfo tagGame::getInfo() { QMutexLocker locker(&amp;Locker); return *Info; }
+
+<span class="c">// GlobalVariate.cpp —— 写侧【无锁】，locker 被注释掉</span>
+void tagGame::update(tagInfo *newinfo) {
+   <span class="r">// QMutexLocker locker(&amp;Locker);</span>   <span class="c">← 被注释</span>
+   ... Info = newinfo; WLHHunYao(Info-&gt;buildings); ...
+}
+
+<span class="c">// MainWidget.cpp —— 主线程只在 infoShare 期间持锁</span>
+tagUsrGame.tryLock(); core-&gt;infoShare(); tagUsrGame.release(); emit startAI();</pre>
+
+<p class="sm">
+① <code>getInfo()</code> 的锁只覆盖<b>引擎自己那层拷贝</b>；<code>return *Info</code> 把引用交出去后，
+<b>调用点（<code>processData</code> 的 <code>info = ...</code>）的深拷贝发生在锁外</b> ⇒ 与主线程
+<code>clear()/push_back()</code> 的释放-重分配竞争 —— 拷贝到一半源块被 <code>free</code> ⇒ <code>memcpy</code> 读已释放页 ⇒ SIGSEGV
+（<code>len=cap</code> 正是"拷贝产物"的特征）。<br>
+② AI 侧<b>无法靠加锁自救</b>：<code>tagGame::Locker</code> 是私有成员碰不到；改用
+<code>tryLock()+getInfo()</code> 会因 QMutex 非递归、同线程二次加锁而<b>自锁死</b>（实测整局冻在 frame 1）。
+</p>
+
+<h2>4 &nbsp;修法：只换「深拷贝发生在哪个线程」</h2>
+
+<div class="flow">
+  <span>AI 线程 <code>postEvent(this)</code></span><i>→</i>
+  <span><b>主线程</b>在 <code>UsrAI::event()</code> 里 <code>getInfo()</code></span><i>→</i>
+  <span><code>shared_ptr</code> 发布</span><i>→</i>
+  <span>AI 取走副本</span>
+</div>
+
+<p class="sm">
+<code>UsrAI</code> 由主线程创建（<code>class AI : public QThread</code>）⇒ <code>postEvent</code> 给它的自定义事件
+由<b>主线程事件循环</b>派发；此刻主线程不在 <code>infoShare()</code> 内 ⇒ <b>读写同线程、天然串行</b>，
+不依赖任何引擎锁 ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸全都无关。
+</p>
+
+<h3>★ 但原版是「每帧阻塞等待」—— 会腰斩胜率</h3>
+
+<p class="sm">原实现每帧都要 <code>cond.wait(&amp;st.mutex, 1000)</code> 等主线程把 <code>getInfo()</code> 做完 ⇒
+<b>AI 的决策吞吐被主线程帧率钳死</b>。同日干净对照（均为 map2×12 局、同批代码，仅"加固有无"不同）：</p>
+
+<table>
+<tr><th>批次</th><th>版本</th><th class="num">n</th><th class="num">胜</th><th class="num">负</th><th class="num">未决</th><th class="num">胜率</th><th>vs 无加固</th></tr>
+<tr class="hl"><td>t1+t2</td><td><b>无加固</b>（直读，会崩）</td><td class="num">24</td><td class="num">19</td><td class="num">2</td><td class="num">3</td><td class="num"><b>79.2%</b></td><td>—</td></tr>
+<tr class="badrow"><td>s1+s2</td><td>加固 · <b>每帧等待</b>版</td><td class="num">16</td><td class="num">8</td><td class="num">7</td><td class="num">1</td><td class="num"><b>50.0%</b></td><td><span class="tag t-bad">p≈0.04 显著更差</span></td></tr>
+<tr class="hl"><td>u1+u2</td><td>加固 · <b>非阻塞</b>版 ⇒ <b>采纳</b></td><td class="num">36</td><td class="num">25</td><td class="num">7</td><td class="num">4</td><td class="num"><b>69.4%</b></td><td><span class="tag t-ok">p≈0.20 无显著差异</span></td></tr>
+</table>
+
+<h3>非阻塞版的三段逻辑</h3>
+<table>
+<tr><th>阶段</th><th>行为</th><th>开销</th></tr>
+<tr><td>① 有新快照</td><td>O(1) 取走；<b>深拷贝在锁外</b>（源由主线程独占产生，不可变）</td><td>1 次深拷贝</td></tr>
+<tr><td>② 没有新快照</td><td><b>立刻沿用上一帧</b>，同时顺手为下一帧投递请求 —— <b>绝不等待</b></td><td>1 次深拷贝 + 1 次 postEvent</td></tr>
+<tr><td>③ 从未拿到过</td><td>仅开局第一帧真正 <code>cond.wait</code> 一次（1 秒上限，超时则跳过本帧）</td><td>一次性</td></tr>
+</table>
+
+<pre><span class="g">[SNAP f=39001] main=19527 reuse=19527 wait=1 skip=0 fb=0</span>
+<span class="c">              ↑主线程代取  ↑复用上一帧   ↑仅开局等过1次  ↑从不卡住  ↑兜底恒0</span>
+<span class="c">main:reuse ≈ 1:1 ⇒ 每 2 帧取到一份新数据，数据滞后 1 帧 = 40ms 游戏时间（不影响相对时序判断）</span></pre>
+
+<h2>5 &nbsp;改动清单（7g 与 7h 各一份，内容逐字节相同）</h2>
+
+<table>
+<tr><th>文件</th><th>改动</th></tr>
+<tr><td><code>UsrAI.h</code></td><td>加 <code>#include &lt;QEvent&gt;</code>；类内加 <code>enum { kSnapEventType = QEvent::User + 731 };</code> ＋ <code>bool refreshSnapshot(tagInfo&amp;);</code> ＋ <code>bool event(QEvent*) override;</code>（共 3 行）</td></tr>
+<tr><td><code>UsrAI.cpp</code></td><td>加 <code>&lt;QCoreApplication&gt;/&lt;QEvent&gt;/&lt;memory&gt;</code>；匿名 namespace 里 <code>SnapState</code> ＋ <code>g_snapStates</code> ＋ <code>snapState()</code>；<code>refreshSnapshot()</code> ＋ <code>event()</code> 定义；<code>processData</code> 里 <code>info = tagUsrGame.getInfo();</code> → <code>if (!refreshSnapshot(info)) return;</code>；<code>[SNAP]</code> 自证日志</td></tr>
+</table>
+
+<h2>6 &nbsp;验证证据</h2>
+<table>
+<tr><th>项</th><th>结果</th></tr>
+<tr><td>语法检查（7g / 7h）</td><td><b>rc=0 / 0 error / 16 warning</b>（与改动前一致）</td></tr>
+<tr><td>编译（7g / 7h）</td><td><b>rc=0 / 0 error</b>；exe 7g 16:26:45 / 7h 16:27:09</td></tr>
+<tr><td>机制存活</td><td><code>[SNAP] wait=1 skip=0 fb=0</code>，<code>main</code> 持续增长 ⇒ 主线程代取路径真在跑，从未超时/回退</td></tr>
+<tr><td>7h 冒烟</td><td>4 局 map2 全部 <code>exit=0</code>，无崩溃、jsonl 逐帧落盘</td></tr>
+<tr><td>代码指纹</td><td>7h exe 命中 <code>reuse=%3</code>（新加固的日志格式串）、<code>PRIEST-ESCAPE A</code>、<code>BUILDER-HARD</code> ⇒ 新码确已编入</td></tr>
+<tr><td>胜率对照</td><td>见 §4 表：非阻塞版与无加固 <b>p≈0.20 无显著差异</b></td></tr>
+</table>
+
+<h2>7 &nbsp;⚠ 还没验证的事（请你上 OJ 确认）</h2>
+
+<div class="warnbox">
+<ul>
+  <li><b>本机不会崩，所以"防崩"这一条只能上 OJ 验证。</b>本机 <code>NOWPLAYER=2</code> 且时序宽松，09-23 以来一直是"本机 795 局 fallback=0、OJ 却崩"的状态 —— 机制<a href="#">原理上</a>已把深拷贝搬离竞争路径，但最终判据只有 OJ 实跑一次。</li>
+  <li><b>7h 的 <code>Core.cpp</code> 仍是 <code>tagInfo Buffer0[2]; Buffer1[2];</code></b>（7g 早在 09-22 改成 <code>[8]</code>）。<code>infoShare()</code> 里是 <code>for (i=0; i&lt;NOWPLAYER; i++) currentBuff[i].clear();</code> —— 若评测机运行期 <code>NOWPLAYER ≥ 3</code>，<code>currentBuff[2]</code> 会越界写到相邻数组、把快照踩坏，这是<b>引擎侧</b>的第二个隐患，选手侧改不到。已随代码提交的 <code>[ENV]</code> 日志会打印评测机真实的 <code>NOWPLAYER=</code>，跑完看一眼即可判定。</li>
+</ul>
+</div>
+
+<h2>8 &nbsp;文件</h2>
+<table>
+<tr><th>路径</th><th>说明</th></tr>
+<tr class="hl"><td><code>…\bak_20260927_snapnonblock_UsrAI.cpp</code> / <code>.h</code></td><td><b>采纳版</b>（<code>17696b0c</code>·6868 / <code>738fe1db</code>·422）</td></tr>
+<tr><td><code>…\bak_20260927_snaprestore_UsrAI.cpp</code> / <code>.h</code></td><td>中间产物：每帧等待版（<code>f2fb6642</code>·6830），已证伪</td></tr>
+<tr><td><code>…\bak_20260927_1545_pre_snaprestore_UsrAI.cpp</code> / <code>.h</code></td><td>无加固对照版（<code>bb6cd60e</code>·6718 = 你 15:11 的版本）</td></tr>
+<tr><td><code>C:\new-aoe3.0.7g\UsrAI.cpp</code> / <code>.h</code>、<code>C:\new-aoe3.0.7h\UsrAI.cpp</code> / <code>.h</code></td><td>两边已同步为采纳版并各自重编</td></tr>
+<tr><td><code>…\s1/s2/u1/u2/t1/t2*.ait|.jsonl</code></td><td>本轮 100 局对照数据</td></tr>
+</table>
+
+<footer>
+AOE3 AI · OJ SIGSEGV 根因与修复报告 · 2026-09-27 16:30 · 7g ↔ 7h 双向同步
+</footer>
+
+</div>
+</body>
+</html>

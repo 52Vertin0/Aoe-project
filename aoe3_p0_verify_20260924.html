@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>P0 保留 · P2b 撤回 —— 24 局验证 — 2026-09-24</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --line:#e3e6ec; --line2:#eef1f5;
+    --tx:#1c1f26; --tx2:#4a5262; --tx3:#7b8494;
+    --red:#c62828; --redbg:#fdecec; --redln:#f5c6c6;
+    --grn:#1b7f4b; --grnbg:#eaf7ef; --grnln:#c2e6d1;
+    --amb:#a86a00; --ambbg:#fff6e5; --ambln:#f0d9a8;
+    --blu:#1f5fa8; --blubg:#eef4fc; --bluln:#c9dcf3;
+    --vio:#6b3fa0; --viobg:#f4eefc; --violn:#ddcdf3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 26px 80px;}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--tx3);font-size:13px;margin-bottom:26px}
+  h2{font-size:19px;margin:38px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  h4{font-size:14px;margin:16px 0 6px;color:var(--tx2)}
+  p{margin:9px 0}
+  code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:13px;
+       font-family:"Cascadia Mono",Consolas,monospace;color:#2a3040}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:14px 0}
+  .box{border-left:4px solid;border-radius:8px;padding:12px 16px;margin:14px 0}
+  .box.red{background:var(--redbg);border-color:var(--red)}
+  .box.grn{background:var(--grnbg);border-color:var(--grn)}
+  .box.amb{background:var(--ambbg);border-color:var(--amb)}
+  .box.blu{background:var(--blubg);border-color:var(--blu)}
+  .box.vio{background:var(--viobg);border-color:var(--vio)}
+  .box .t{font-weight:700;margin-bottom:4px}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px;
+        background:var(--panel);border-radius:8px;overflow:hidden;
+        box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  th,td{border-bottom:1px solid var(--line2);padding:7px 10px;text-align:left;
+        vertical-align:top}
+  th{background:#f1f3f7;font-weight:600;color:var(--tx2);font-size:12.5px;
+     letter-spacing:.3px}
+  tr:last-child td{border-bottom:none}
+  td.num{font-family:"Cascadia Mono",Consolas,monospace;white-space:nowrap}
+  .w{color:var(--grn);font-weight:700}
+  .l{color:var(--red);font-weight:700}
+  .u{color:var(--amb);font-weight:700}
+  .tag{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:20px;
+       font-weight:700;letter-spacing:.2px;vertical-align:2px}
+  .tag.p0{background:var(--redbg);color:var(--red);border:1px solid var(--redln)}
+  .tag.p1{background:var(--ambbg);color:var(--amb);border:1px solid var(--ambln)}
+  .tag.p2{background:var(--blubg);color:var(--blu);border:1px solid var(--bluln)}
+  .tag.p3{background:#f0f1f5;color:var(--tx2);border:1px solid var(--line)}
+  .tag.no{background:#f0f1f5;color:var(--tx3);border:1px solid var(--line)}
+  pre{background:#1e2229;color:#d7dce5;border-radius:8px;padding:12px 14px;
+      overflow-x:auto;font-size:12.5px;line-height:1.6;
+      font-family:"Cascadia Mono",Consolas,monospace;margin:10px 0}
+  pre .c{color:#7f8b9e}
+  pre .hl{color:#ff9a8b;font-weight:700}
+  pre .g{color:#8bd99c;font-weight:700}
+  ul,ol{margin:8px 0 8px 4px;padding-left:22px}
+  li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:118px 1fr;gap:4px 12px;font-size:13.5px;
+      margin:8px 0}
+  .kv b{color:var(--tx2);font-weight:600}
+  hr{border:none;border-top:1px solid var(--line);margin:30px 0}
+  .small{font-size:12.5px;color:var(--tx3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>P0 保留 · P2b 撤回 —— 24 局验证</h1>
+<div class="sub">
+  批次 <code>p</code>（24 局，标签 <code>p1..p24</code>）· 对照 <code>pp</code>（24 局，P0+P2b）/<code>cur</code>（12 局，旧码）<br>
+  源码 <code>UsrAI.cpp</code> <b>7153039b / 6628 行</b>（改前 <code>2710f75b / 6622</code>）· <code>newAOE.exe</code> 18:58:18 重建 · 跑局 20:58 → 21:12
+</div>
+
+<div class="box blu">
+  <div class="t">一句话结论</div>
+  <b>P2b 撤干净了（零残留）；P0 仍在生效（反攻期远程档 0/97）；本批 12.5% 与 pp 的 25.0% 无统计差异（p=0.461）。</b><br>
+  但顺带跑出一个<b>比本轮改动重要得多</b>的对照：把 09-22 之后的所有改动当成一个整体看，
+  <b>新码 12/60 = 20.0% vs 旧码 16/36 = 44.4%，Fisher p=0.0193</b> —— 这是本项目第一次出现「代际差异达显著」的信号。
+  嫌疑集中在 <code>WAVE1_TIME 5000→6000</code> 与 OJ 快照自救两项，建议做一次 1 行的分辨实验。
+</div>
+
+<h2>1 · 撤回做法（为什么不是逐行删）</h2>
+
+<p>P2b 是一整段 24 行的替换（旧 16 行 → 新 40 行）。如果直接在现行版上删，很容易在「删到哪一行结束」上出错，且无法证明 P0 段没被顺手碰过。所以采用<b>回基线重施</b>：</p>
+
+<pre><span class="c"># 1) 留档含 P2b 的版本（可随时复原）</span>
+cp UsrAI.cpp _audit/UsrAI.cpp.pp_p0p2b        <span class="c"># 6d2f59cf / 6652</span>
+<span class="c"># 2) 回到 P0/P2b 之前的基线</span>
+cp UsrAI.cpp.bak_20260924_p0p2b UsrAI.cpp     <span class="c"># 2710f75b / 6622</span>
+<span class="c"># 3) 只施 P0（脚本 = apply_p0p2b.py 去掉 P2b 段）</span>
+python _audit/apply_p0only.py                 <span class="g"># → 7153039b / 6628</span></pre>
+
+<div class="box grn">
+  <div class="t">等价性：P0 段与 pp 批逐字相同</div>
+  因为 P0 的代码是<b>重新施加</b>的、不是被"保留"的，所以不存在"删 P2b 时蹭到 P0"的可能。
+  <b>双向 diff</b> 佐证：新版 vs 基线 = 4 个 hunk 全落 <code>L966~L1284</code>（P0 区）；
+  新版 vs pp 版 = 1 个 hunk 落 <code>L3897~3932</code>（P2b 区）。两侧都对上，没有夹带。
+</div>
+
+<table>
+  <tr><th>检查项</th><th>结果</th></tr>
+  <tr><td>P2b 残留符号 <code>curIsHolder / freeSN / holdSN / bestFree / bestHold / towerRangeBL</code></td><td class="num">全为 <b>0</b> ✓</td></tr>
+  <tr><td>P0 符号 <code>convPick</code> / <code>inCounter</code></td><td class="num">7 / 7 ✓ 在位</td></tr>
+  <tr><td>箭塔索敌段</td><td class="num">回到 <code>L3905 findNearestEnemySN(tDR, tUR, 8*BL)</code> ✓</td></tr>
+  <tr><td>字节体检 <code>chk_src.py --expect-lines 6628 403</code></td><td>✓ 干净（UTF-8 / CRLF 6628 / 无三元字）</td></tr>
+  <tr><td>语法 <code>syn.py</code></td><td><b>0 err / 17 warn</b>（与基线同数）</td></tr>
+  <tr><td>warning 类别对拍 <code>warn_cmp2.py</code></td><td>类别集合逐类一致</td></tr>
+  <tr><td>Release 编译 <code>build.py</code></td><td>rc=0，exe 18:58:18 &gt; 源码 18:57:38</td></tr>
+  <tr><td>提交版 <code>_submit/</code></td><td>cpp 6628 行纯 LF（CRLF=0）· h 403 行 · 与仓库版内容一致</td></tr>
+</table>
+
+<h2>2 · 战绩</h2>
+
+<table>
+  <tr><th>批次</th><th>n</th><th>胜</th><th>负</th><th>未决</th><th>胜率</th><th>95% CI</th><th>vs p0 的 Fisher p</th></tr>
+  <tr><td><b>p（仅 P0，本轮）</b></td><td class="num">24</td><td class="num w">3</td><td class="num l">19</td><td class="num u">2</td><td class="num">12.5%</td><td class="num">4.3 – 31.0</td><td class="num">—</td></tr>
+  <tr><td>pp（P0+P2b）</td><td class="num">24</td><td class="num w">6</td><td class="num l">14</td><td class="num u">4</td><td class="num">25.0%</td><td class="num">12.0 – 44.9</td><td class="num">0.461</td></tr>
+  <tr><td>cur（旧码，无 P0）</td><td class="num">12</td><td class="num w">3</td><td class="num l">8</td><td class="num u">1</td><td class="num">25.0%</td><td class="num">8.9 – 53.2</td><td class="num">0.378</td></tr>
+  <tr><td>vf_kb2（09-22 末批）</td><td class="num">12</td><td class="num w">5</td><td class="num l">4</td><td class="num u">3</td><td class="num">41.7%</td><td class="num">19.3 – 68.0</td><td class="num">0.031</td></tr>
+  <tr><td>kb · gsk（09-22）</td><td class="num">12 · 12</td><td class="num w">6 · 5</td><td class="num l">5 · 4</td><td class="num u">1 · 3</td><td class="num">50.0% · 41.7%</td><td class="num">—</td><td class="num">0.009 · 0.031</td></tr>
+</table>
+
+<p class="small">
+  恒等式自检：p <b>3+19+2=24 ✓</b>（<code>_win_recount.py</code> 内置）。<br>
+  <b>p0 vs pp 是同一分布（p=0.461）</b> —— 两批的唯一差别是 P2b（已证零触发），所以它们的差异只能来自抽样波动。
+  合成同一估计：<b>pp+p0 = 9/48 = 18.75%</b>。<br>
+  ⚠ 但 <b>p0 与 kb2/kb/gsk 的差距已过 0.05（0.031 / 0.009 / 0.031）</b> —— 单独看 p0 批就已经低于 kb 系。见下节。
+</p>
+
+<h2>3 · ★ 本轮最大发现：新码 vs 旧码，首次达显著</h2>
+
+<div class="box red">
+  <div class="t">把它当成一个整体看，代际差异是真的</div>
+  <table style="margin:8px 0 4px">
+    <tr><th>代际</th><th>含哪些批次</th><th>n</th><th>胜</th><th>胜率</th><th>95% CI</th></tr>
+    <tr><td><b>新码</b>（09-23 起）</td><td>cur + pp + p0</td><td class="num">60</td><td class="num w">12</td><td class="num">20.0%</td><td class="num">11.8 – 31.8</td></tr>
+    <tr><td><b>旧码</b>（09-22）</td><td>gsk + kb + kb2</td><td class="num">36</td><td class="num w">16</td><td class="num">44.4%</td><td class="num">29.5 – 60.4</td></tr>
+  </table>
+  <b>Fisher 双侧 p = 0.0193</b>；差 <b>pp+p0(9/48) vs kb系(16/36) 单独比也是 p=0.016</b>。两个切法都过 0.05。
+</div>
+
+<p>新旧码之间的行为差异只有四处（可读性重构与注释同步<b>已用 <code>.text</code> 逐字节相同证明零行为</b>）：</p>
+
+<table>
+  <tr><th>嫌疑项</th><th>规模</th><th>可疑度</th><th>说明</th></tr>
+  <tr><td><code>WAVE1_TIME 5000→6000</code></td><td class="num">1 行</td><td><span class="tag p0">高</span></td><td>整体推后 12 处阶段闸 40 秒。是"<b>待拍板</b>"项，从没被单独验证过。<b>唯一 1 行且有明确机制可疑的候选</b>。</td></tr>
+  <tr><td>OJ 快照自救（主线程代取快照）</td><td class="num">~60 行</td><td><span class="tag p1">中</span></td><td>唯一"没跑过批"的行为改动。但 24/24 局 <code>fallback=0 / skip=0 / 脏快照=0</code>，主线程代取计数 ≈ 帧数×0.494 ⇒ 机制空转，可疑度低（不可排除）。</td></tr>
+  <tr><td>P0（反攻期禁远程感化档）</td><td class="num">6 行</td><td><span class="tag p3">低</span></td><td>只在新码的后 48 局里存在；<code>cur</code> 的 12 局（25.0%）无 P0 也低。且 pp+p0 两批差异 p=0.461。</td></tr>
+  <tr><td>可读性重构 + 注释同步</td><td class="num">~700 行</td><td><span class="tag no">已排除</span></td><td><code>.text</code> 段逐字节相同（<code>objcopy --only-section=.text</code> + <code>cmp</code>）。</td></tr>
+</table>
+
+<div class="box amb">
+  <div class="t">⚠ 归因限制（不能把 p=0.019 当成定论）</div>
+  <ul>
+    <li><b>时间混淆</b>：新码三批在 09-23/24 跑，旧码三批全在 09-22 跑。机器状态、气温、后台负载都不同。</li>
+    <li><b>历史方差极大</b>：同样是旧码，<b>09-21 那批 16 局是 0.0%</b>，隔一夜到 41.7%。这说明单日环境效应可以盖过这里 24pp 的差距。</li>
+    <li>所以这一节给的是<b>一个值得花 35 分钟去分辨的信号</b>，不是结论。</li>
+  </ul>
+</div>
+
+<h2>4 · P0 仍然生效（本批核心验证）</h2>
+
+<p>判据 = 反攻期（帧 &gt; 33000）祭司感化令的<b>目标兵种分布</b>（按 <code>flag==0</code> 过滤我方命令）：</p>
+
+<table>
+  <tr><th>批次</th><th>方阵兵</th><th>投石车</th><th>武器厂</th><th>Prof.Lu</th><th>战车</th><th>阔剑兵</th><th><b>远程兵</b></th><th>合计</th><th>远程占比</th></tr>
+  <tr><td>cur（无 P0）</td><td class="num">40</td><td class="num">3</td><td class="num">3</td><td class="num">5</td><td class="num">1</td><td class="num">4</td><td class="num l"><b>10</b>（战车弓兵 9 + 复合弓兵 1）</td><td class="num">66</td><td class="num l">15.2%</td></tr>
+  <tr><td>pp（P0+P2b）</td><td class="num">53</td><td class="num">11</td><td class="num">6</td><td class="num">4</td><td class="num">3</td><td class="num">3</td><td class="num w"><b>0</b></td><td class="num">80</td><td class="num w">0.0%</td></tr>
+  <tr><td><b>p（仅 P0，本轮）</b></td><td class="num">70</td><td class="num">12</td><td class="num">3</td><td class="num">5</td><td class="num">4</td><td class="num">3</td><td class="num w"><b>0</b></td><td class="num">97</td><td class="num w">0.0%</td></tr>
+</table>
+
+<p>⇒ <b>撤回 P2b 没有影响 P0</b>：反攻期远程档依然 <b>0/97</b>。防御期仍保留远程档（<code>战车弓兵 46 / 复合弓兵 13 / 弓箭手 4</code>），与设计一致。</p>
+
+<h3>胜/负分离度仍是 100%</h3>
+<p>3 个胜局的祭司<b>最后一条感化令全是「攻城武器厂」</b>；19 个负局全不是。与 cur/pp 完全同形。</p>
+
+<h2>5 · 漏斗与死因</h2>
+
+<table>
+  <tr><th>环节</th><th>cur（旧码，n=12）</th><th>pp（n=24）</th><th>p（仅 P0，n=24）</th></tr>
+  <tr><td>② 进入反攻期</td><td class="num">12（100%）</td><td class="num">20（83%）</td><td class="num">22（92%）</td></tr>
+  <tr><td>③ 反攻期发过感化令</td><td class="num">12</td><td class="num">20</td><td class="num">22</td></tr>
+  <tr><td>④ 胜</td><td class="num w">3</td><td class="num w">6</td><td class="num w">3</td></tr>
+  <tr><td><b>③ → ④</b></td><td class="num">25%</td><td class="num">30%</td><td class="num">14%</td></tr>
+  <tr><td>祭司亡 · 防御期</td><td class="num">0 局</td><td class="num">4 局（16.7%）</td><td class="num">2 局（8.3%）</td></tr>
+  <tr><td>祭司亡 · 反攻期</td><td class="num">8 局</td><td class="num">10 局</td><td class="num">17 局</td></tr>
+</table>
+
+<h3>p0 批 19 个负局的最后感化目标</h3>
+<table>
+  <tr><th>目标兵种</th><th>局数</th><th>起手→死亡间隔</th><th>读法</th></tr>
+  <tr><td><b>投石车</b></td><td class="num">7</td><td class="num">37 / 38 / 111 / 121 / 137 / 186 / 278 帧</td><td>P0 之后投石车档成了新的"最后一击"目标。<b>射程约 10 格 &lt; 祭司 12 格，理论安全，照样 37 帧就死</b> ⇒ 再次印证「死因不是目标选择」。</td></tr>
+  <tr><td>方阵兵</td><td class="num">7</td><td class="num">65 / 146 / 223 / 272 / 286 / 394 / 1023 帧</td><td>档 0，最高优先。近战威胁半径 2.5 格 < 12 格，但祭司走过去的过程本身就是暴露。</td></tr>
+  <tr><td>战车 / 阔剑兵</td><td class="num">1 + 1</td><td class="num">225 / 4501 帧</td><td>—</td></tr>
+  <tr><td>战车弓兵（防御期）</td><td class="num">1</td><td class="num">18 帧</td><td>防御期早死（p5，帧 15959）。<b>P0 门禁没覆盖防御期</b>。</td></tr>
+  <tr><td>方阵兵（防御期）</td><td class="num">1</td><td class="num">65 帧</td><td>p14，帧 22846。</td></tr>
+</table>
+
+<div class="box vio">
+  <div class="t">这一节对下一步的指向</div>
+  P0 关掉远程档后，祭司把"最后一击"换成了投石车与方阵兵 —— <b>死亡一局没少</b>。
+  目标选择<b>不是自变量</b>；<b>「祭司单独站到哪儿」才是</b>。
+  这与 09-24 上一轮的结论完全一致，现在有了第二批独立样本。
+</div>
+
+<h2>6 · 建议下一步（按性价比）</h2>
+
+<table>
+  <tr><th></th><th>动作</th><th>成本</th><th>为什么是它</th></tr>
+  <tr>
+    <td><span class="tag p0">首选</span></td>
+    <td><b><code>WAVE1_TIME</code> 回退对照臂</b>（6000 → 5000）</td>
+    <td class="num">1 行<br>+ 24 局 ≈ 35 分钟</td>
+    <td>§3 的信号需要一个解释。这是唯一「1 行 + 有明确机制嫌疑」的候选：它整体推后 12 处阶段闸 40 秒。若回退后胜率回到 40%+ ⇒ 钉死；若仍是 20% ⇒ 排除它，转查 OJ 快照自救。</td>
+  </tr>
+  <tr>
+    <td><span class="tag p1">次选</span></td>
+    <td><b>P0b「祭司前出加护卫门槛」</b></td>
+    <td class="num">~15 行</td>
+    <td>判据用现成的 <code>ally</code>/<code>nearAlly</code>（负局临死 <code>ally</code> 0~5，胜局 5~20）。两批独立样本都指向"祭司无护卫"。</td>
+  </tr>
+  <tr>
+    <td><span class="tag p2">可选</span></td>
+    <td>P0 门禁扩到防御期</td>
+    <td class="num">1 行</td>
+    <td>能堵 2~4 局的防御期早死；但攻略主张"第一波先转弓箭手探路"，若要加，建议只覆盖帧 13500~33000。</td>
+  </tr>
+</table>
+
+<h2>7 · 本轮的坑（供后人省事）</h2>
+
+<ul>
+  <li><b>后台跑批会在回合结束后被回收</b>：第一轮 16 局跑到 p16 中途（19:20）就断了，后台任务随后"不存在"。<b>教训：跑局期间不要结束回合</b>，用 <code>TaskOutput block</code> 或 <code>sleep</code> 守在同一个回合里；断点续跑要逐局核对末帧、剔除半局。</li>
+  <li><b>脚本命名要预先想好两位数</b>：<code>p0${i}</code> 在 i=10 时产出 <code>p010.ait</code>，与 i=1 的 <code>p01.ait</code> 混在一起，连统计脚本（<code>%s%d</code> 拼名）都会找不到。已统一重命名为 <code>p1..p24</code>。</li>
+  <li><b>判胜口径第二次踩坑</b>（上一轮是"胜帧后引擎又写一帧 <code>win:false</code>"）：本轮起统一走 <code>_win_recount.py</code>，并强制 <code>胜+负+未决==n</code> 自检。</li>
+</ul>
+
+<hr>
+<div class="card">
+  <div class="kv">
+    <b>源码</b><span><code>UsrAI.cpp</code> 7153039b / 6628 行（CRLF）· <code>UsrAI.h</code> c24fd401 / 403 行（未动）</span>
+    <b>回退基线</b><span><code>UsrAI.cpp.bak_20260924_p0p2b</code>（2710f75b / 6622）</span>
+    <b>P2b 留档</b><span><code>_audit/UsrAI.cpp.pp_p0p2b</code>（6d2f59cf / 6652）＋ 片段脚本 <code>_audit/apply_p0p2b.py</code></span>
+    <b>提交版</b><span><code>_submit/UsrAI.cpp</code> · <code>_submit/UsrAI.h</code>（纯 LF，内容与仓库版一致，可直接提交）</span>
+    <b>原始数据</b><span><code>p1..p24.{ait,jsonl}</code> · <code>p0_verify.sh</code> · <code>p0b_verify.sh</code> · 对照 <code>pp1..pp24.*</code> / <code>cur1..cur12.*</code></span>
+    <b>脚本</b><span><code>_win_recount.py</code>（判胜）· <code>_priest_death.py</code>（祭司死因）· <code>_pp_analyze.py</code>（机制指标）</span>
+  </div>
+</div>
+
+<p class="small">
+  跑局备注：p1~p15 于 19:00–19:20 产出（p16 中途被回收，已剔除重跑）；补跑 p16~p24 于 20:58–21:12 完成。全程无机器休眠，24 局均完整（无半局）。
+</p>
+
+</div>
+</body>
+</html>

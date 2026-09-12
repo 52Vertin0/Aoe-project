@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>OJ debug_19485 归因（失败 · 得分 411 · map）</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#fff; --line:#e3e6ea; --ink:#1f2329; --dim:#6b7280;
+    --ok:#0f7b3f; --okbg:#e8f6ee; --warn:#b45309; --warnbg:#fef4e6;
+    --bad:#b91c1c; --badbg:#fdeaea; --accent:#1d4ed8; --accentbg:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1060px;margin:0 auto;padding:36px 24px 72px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:26px}
+  h2{font-size:18px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15px;margin:22px 0 8px;color:#374151}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f3f5f8;font-weight:600;color:#374151}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  code{background:#f1f3f6;padding:1px 5px;border-radius:4px;
+       font-family:"Cascadia Mono",Consolas,monospace;font-size:13px}
+  pre{background:#1e2228;color:#e6e9ee;padding:14px 16px;border-radius:9px;
+      overflow-x:auto;font-size:12.5px;line-height:1.55;
+      font-family:"Cascadia Mono",Consolas,monospace}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12.5px;font-weight:600}
+  .t-ok{background:var(--okbg);color:var(--ok)}
+  .t-warn{background:var(--warnbg);color:var(--warn)}
+  .t-bad{background:var(--badbg);color:var(--bad)}
+  .t-info{background:var(--accentbg);color:var(--accent)}
+  .note{background:var(--accentbg);border-left:4px solid var(--accent);
+        padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+  .warnbox{background:var(--warnbg);border-left:4px solid var(--warn);
+        padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+  .badbox{background:var(--badbg);border-left:4px solid var(--bad);
+        padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .hero{background:linear-gradient(180deg,#fff,#f5f7fb);border:1px solid var(--line);
+        border-radius:12px;padding:20px 22px;margin:18px 0;
+        box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .hero .line{display:flex;gap:26px;flex-wrap:wrap;margin-top:10px}
+  .hero .item{min-width:130px}
+  .hero .item .k{font-size:12.5px;color:var(--dim)}
+  .hero .item .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums}
+  .mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:13px}
+  .big{font-size:21px;font-weight:700}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  hr{border:0;border-top:1px dashed var(--line);margin:26px 0}
+  .tl{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;
+      line-height:1.85;white-space:pre;overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OJ <span class="mono">debug_19485</span> 归因 —— 失败（得分 411）· map</h1>
+<div class="sub">仅日志分析 · 日志 7814 行 / 535 KB · 生成于 2026-10-08 22:39</div>
+
+<div class="hero">
+  <div class="big">输在<b class="bad">祭司 25:36:16 被杀</b>（存活差 1.8 分钟），不是输在祭司没产出。</div>
+  <div style="margin-top:8px;font-size:14px;color:#4b5563">
+    本局祭司感化目标令 <b>14 次</b> —— 比胜利局 <span class="mono">19104</span> 的 11 次<b>还多</b>；
+    但<b>从未把「攻城武器厂」设为目标（0 条）</b>，与失败局 <span class="mono">16577</span> 同形态。
+    真正的崩盘发生在 23.4~25.6 分：<b>我军 24 个单位成批阵亡</b>，祭司随后在同一战场被 7 个单位集火 13 秒打死。
+  </div>
+  <div class="line">
+    <div class="item"><div class="k">结局</div><div class="v bad">失败 411</div></div>
+    <div class="item"><div class="k">死因</div><div class="v">祭司 25:36:16</div></div>
+    <div class="item"><div class="k">地图</div><div class="v">map</div></div>
+    <div class="item"><div class="k">版本</div><div class="v">nodebug</div></div>
+    <div class="item"><div class="k">祭司感化</div><div class="v">14 次</div></div>
+    <div class="item"><div class="k">武器厂目标令</div><div class="v bad">0</div></div>
+  </div>
+</div>
+
+<h2>1. 基本判定（三项硬指纹）</h2>
+<div class="card">
+<table>
+<tr><th>项</th><th>判定</th><th>依据</th></tr>
+<tr><td>结局</td><td><span class="tag t-bad">失败</span> 得分 411</td><td>末行 <code>25:37:40 游戏失败，未达成目标。最终得分为:411</code>；全程 0 条 <code>error/abort/Exception/backtrace</code> ⇒ 正常失败，非崩溃</td></tr>
+<tr><td>死因</td><td><span class="tag t-bad">祭司死亡</span></td><td><code>25:36:16 祭司(编号91168)死亡</code> → 1.24 秒后判负（引擎「祭司死亡延迟 15 帧」判负）</td></tr>
+<tr><td>地图</td><td><span class="tag t-info">map</span></td><td><b>祭司编号指纹</b>：本局 <code>91168</code> ＝ 本地 <code>arb1_map_r0_1</code> / <code>sc1_map_r0_1</code> / <code>wbase_map_r0_1</code> 完全相同。对照：map1=91101、map2=91482。（此法已在 19104 局验证成立）</td></tr>
+<tr><td>版本</td><td><span class="tag t-info">nodebug</span></td><td><code>UsrAI打印</code>=<b>0</b> · 含 <code>|</code> 的五段列=<b>0</b> · <code>[BEAT]</code>=0 ／ <code>[OJ-ENV]</code>=2 · <code>[OJ-HB]</code>=126 完好 ⇒ DebugText 通道关、两条 fprintf 通道开</td></tr>
+<tr><td>引擎</td><td><span class="tag t-warn">v3.0.7h</span></td><td><code>[OJ-ENV] engine=v3.0.7h</code> —— 前两局（16577 / 19104）都是 <b>v3.0.7g</b>，<b>OJ 环境已升版</b></td></tr>
+</table>
+<div class="warnbox">
+<b>注：</b>nodebug 版把 <code>!!! DEFEAT: Priest killed !!!</code> 这类 DebugText 也一起关掉了，
+所以<b>判死因必须回到引擎行</b> <code>祭司(编号N)死亡</code> + 判负行，不能靠 AI 自己的 DEFEAT 串。
+</div>
+</div>
+
+<h2>2. 祭司完整时间线</h2>
+<div class="card">
+<p>祭司 <code>91168</code>：全场上报 <b>725 条移动令</b>、<b>14 条感化目标令</b>。按落点聚合后阶段分明：</p>
+<table>
+<tr><th>时段</th><th>落点（块坐标）</th><th class="num">令数</th><th>解读</th></tr>
+<tr><td>4.99 ~ 9.23 分</td><td>(21.1, 33.9)</td><td class="num">210</td><td>自家半场游走 / 早期感化</td></tr>
+<tr><td>17.06 ~ 22.00 分</td><td>(22.4, 19.9)</td><td class="num">245</td><td>中盘主活动区</td></tr>
+<tr><td><b>23.88 ~ 24.94 分</b></td><td>(41.4,39.8) → (46.6,44.1) → (80.7,78.0) → (83.2,76.7)</td><td class="num">~35</td><td><span class="tag t-ok">一次成功的长距离推进</span>：1.06 分钟走完 <b>56 格</b>（≈53 格/分），逐格小步推进到敌基地外圈</td></tr>
+<tr><td>24.98 ~ 25.03 分</td><td><b>(9.8, 6.6)</b></td><td class="num">5</td><td><span class="tag t-warn">突然回撤</span>：连发 5 条指向角落 <code>(348.923,236.15)</code> 的令（该点全场共出现 19 次，是固定的"回撤地标"）</td></tr>
+<tr><td>25.07 分</td><td>(81.0, 74.6)</td><td class="num">1</td><td>中止回撤、<b>折返敌区</b></td></tr>
+<tr><td>25.17 分</td><td>—</td><td class="num">1</td><td>感化 <code>战车 91219</code>（最后一次感化）</td></tr>
+<tr><td>25.23 ~ 25.59 分</td><td>—</td><td class="num">0</td><td><span class="tag t-bad">被 7 个单位连续攻击，期间 0 条移动令、0 次回撤</span></td></tr>
+<tr><td>25.36:16</td><td>—</td><td class="num">—</td><td><b>死亡</b> → 25:37:40 判负</td></tr>
+</table>
+
+<h3>2.1 死前 2 分钟的逐事件回放</h3>
+<div class="tl">24.74 分  感化 → 方阵兵 91195        ← 唯一一次「在敌区」的感化
+24.85~24.94 分  移动（82.x,7x 附近游走）
+24.98 分  移动 → 块(9.8, 6.6)  ★ 回撤开启
+25.00 分  移动 → 块(9.8, 6.6)
+25.03 分  移动 → 块(9.8, 6.6)  ★ 最后一次指向基地
+25.07 分  移动 → 块(81.0, 74.6) ★ 折返敌区
+25.17 分  感化 → 战车 91219
+25.23 分  被攻击 ← 复合弓兵 91175      ┐
+25.49 分  被攻击 ← 方阵兵 91193        │
+25.54 分  被攻击 ← 复合弓兵 91218      │ 13 秒内
+25.58 分  被攻击 ← 复合弓兵 91181      │ 7 个单位
+25.58 分  被攻击 ← 战车弓兵 91200      │ 轮流集火
+25.58 分  被攻击 ← 战车弓兵 91207      │
+25.59 分  被攻击 ← 方阵兵 91196        ┘
+25.36:16  祭司(编号91168)死亡</div>
+
+<div class="badbox">
+<b>两个值得记账的点：</b>
+<ol style="margin-bottom:0">
+<li><b>25.17 的感化把休整窗口一直占到 25.37</b>（休整 20 秒 = 500 帧）。祭司死亡时刻 25:36:16 正好落在这个窗口内 ——
+「最后一次感化机会」花在了一辆<b>战车</b>（非胜利条件目标）上，这 20 秒里它不可能对武器厂做任何事。
+不过本局武器厂<b>从未被发现</b>（0 条目标令），所以即使不感化战车也改不了结局。</li>
+<li><b>24.98 的突然回撤是本局最反常的一段</b>：祭司在推进到敌基地外圈后、24.74 刚完成一次感化，5 秒后
+连发 5 条令要跑回 100 格外的角落，12 秒后又自己折返。<b>期间它一次都没被攻击</b>（受击记录最早是 25.23），
+所以这不是"被打跑"，更像是<b>决策层在「推进 / 回撤」之间来回翻转</b>。这一翻转恰好消耗了它最后的机动时间。</li>
+</ol>
+</div>
+</div>
+
+<h2>3. 真正的崩盘：24 个单位成批阵亡</h2>
+<div class="card">
+<p>43 条死亡行里，30 个属于我方（曾在 <code>HumanMove</code>/<code>HumanAction</code> 中下过令的编号）。时间分布极度集中：</p>
+<table>
+<tr><th>时段</th><th class="num">我方阵亡</th><th>说明</th></tr>
+<tr><td>9.63 ~ 10.35 分</td><td class="num">6</td><td>早期小规模损失（刀斧兵 91173/91174、战车弓兵 91211、棍棒兵 91383/91385、方阵兵 91170）</td></tr>
+<tr><td><b>23.43 ~ 24.36 分</b></td><td class="num">11</td><td><span class="tag t-bad">总攻受挫</span> 含精英 <code>Prof.Lu 91171</code>(23.43)、战车弓兵 91437/91476/91441、棍棒兵 5 个、方阵兵 2 个</td></tr>
+<tr><td><b>24.55 ~ 25.06 分</b></td><td class="num">8</td><td>战车弓兵 91447/91438/91464/91479/91480/91478、方阵兵 91214（= 祭司 15.13 感化来的那只）、91195</td></tr>
+<tr><td><b>25.15 ~ 25.60 分</b></td><td class="num">6</td><td>战车弓兵 91462/91446/91452/91468、<b>战车 91219</b>（= 祭司 25.17 刚感化的那辆，25.31 就死了）、投石车 91188、<b>祭司 91168</b></td></tr>
+</table>
+
+<div class="badbox">
+<b>注意 25.17 / 25.31 这一对：</b>祭司 25.17 感化敌战车 <code>91219</code>，
+该车 <b>25.31 就被击杀</b>（14 秒后）—— <b>感化产出当场归零</b>。
+同期同类证据：15.13 感化的方阵兵 <code>91214</code> 在 24.55 死。
+⇒ 在本局这种"我军正在被反推"的时段里，<b>祭司的感化产出会被立刻吃掉</b>，转换率接近 0。
+</div>
+
+<p>而祭司死时，我军并非不在场：<code>25:36:16</code> 与我方单位 <b>14 个</b>同时下发攻击令
+（打 <code>91207</code> / <code>91181</code>）—— <b>攻击祭司的 91181 / 91200 / 91207 正是我军同期在打的目标</b>
+⇒ 祭司与我军主力<b>同处一个战场</b>，它是被这片战场上的远程单位集火点掉的，不是"落单掉队"。</p>
+</div>
+
+<h2>4. 三方日志交叉对照（本轮最有价值的部分）</h2>
+<div class="card">
+<table>
+<tr><th>项</th><th>16577（失败）</th><th>19104（<span class="ok">胜利</span>）</th><th>19485（本局，失败）</th></tr>
+<tr><td>引擎</td><td>v3.0.7g</td><td>v3.0.7g</td><td><b>v3.0.7h</b></td></tr>
+<tr><td>版本</td><td>源版（DebugText 在）</td><td>nodebug</td><td>nodebug</td></tr>
+<tr><td>日志行数</td><td>10811</td><td>5612</td><td>7814</td></tr>
+<tr><td>地图</td><td>map2</td><td>map1</td><td><b>map</b></td></tr>
+<tr><td>祭司编号</td><td>91483</td><td>91101</td><td>91168</td></tr>
+<tr><td>结局</td><td>失败 391</td><td><b>胜利 540</b></td><td>失败 411</td></tr>
+<tr><td>结束方式</td><td>祭司 25:18:88 被杀</td><td>27:22:84 达成胜利条件</td><td>祭司 25:36:16 被杀</td></tr>
+<tr><td>祭司感化目标令</td><td>11 次</td><td>11 次</td><td><b>14 次</b></td></tr>
+<tr><td>「攻城武器厂」目标令</td><td>0</td><td><b>1</b>（27:11:92）</td><td><b>0</b></td></tr>
+</table>
+<div class="note">
+<b>结论（第三次独立复现）：</b>三局里祭司的<b>感化产出几乎一致</b>（11 / 11 / 14 次，本局还最多），
+唯一的分界是<b>「祭司能否活过 25~27 分钟」</b>：
+活过的那局（19104）在 27:11 找到并感化了武器厂 ⇒ 胜；另两局都在 25 分出头被杀 ⇒ 负。
+⇒ <b>祭司的单点逻辑不是胜负瓶颈</b>，胜负手是「反攻期我军的存活/换血能力」。
+</div>
+<div class="warnbox">
+本局还额外印证了 map 的既有画像：<b>map 是四图里最难的一张</b>（历史崩盘率 29%），
+本局形态正是「<b>抵达后被耗光</b>」—— 祭司单程推进 56 格抵达敌基地外圈（进度接近 100%），
+但同期军队被反推清空，抵达即耗尽。
+</div>
+</div>
+
+<h2>5. 归因小结（按因果强度排序）</h2>
+<div class="card">
+<ol>
+<li><b>直接死因</b>：祭司 25:36:16 在敌基地外圈被 7 个远程/近战单位集火 13 秒击杀。
+祭司无自我治疗途径（既有结论：治疗目标排除祭司自己、反攻期不治友军）⇒ 一旦进入被集火位置必死。</li>
+<li><b>结构性原因</b>：23.43~25.60 分我军 <b>24 个单位成批阵亡</b>（占全场损员 80%），
+兵力在祭司死前已被打空 ⇒ 战场控制权丢失，祭司暴露。</li>
+<li><b>决策层异常</b>：24.98~25.03 的<b>「推进→回撤→折返」三次翻转</b>（无受击触发），
+消耗了最后 40 秒的机动窗口。这是本轮唯一新发现的、疑似可修的行为形态。</li>
+<li><b>非瓶颈项</b>：祭司感化产出（14 次，全场最多）、版本（nodebug 工作正常）、
+日志结构（<code>[OJ-ENV]</code>/<code>[OJ-HB]</code> 通道完好）—— 均不是失败原因。</li>
+</ol>
+</div>
+
+<h2>6. 可跟进的线索（未改任何源码）</h2>
+<div class="card">
+<ul>
+<li><b>A（新，最高信息量）</b>：查 <code>24.98 分</code>那次「突然回撤到固定点 (9.8,6.6)」的触发条件。
+该点在全场被反复指向 19 次，是固定地标 —— 定位它是哪个分支（撤退 / 回城 / 落点兜底），
+即可判断这是"被打了才跑"还是"决策抖动"。本局证据指向<b>后者</b>（受击最早在 25.23）。</li>
+<li><b>B</b>：核对 <code>PRIEST_COUNTER_FLEE_HP 0.6</code> 的逃跑落点限幅 —— 5 条令指向同一角落点，
+若那是"全局最远/默认点"，则逃跑候选集合存在退化，容易在敌区与基地间反复横跳。</li>
+<li><b>C（与历史待办合流）</b>：反攻期祭司 <code>:1803 stopDist 12.0 → 9.0</code>（上轮方案 A）——
+本局祭司死于敌区 12 格级间距下被集火，与该修法针对的同一区域。</li>
+<li><b>D（环境）</b>：OJ 已从 v3.0.7g 升到 <b>v3.0.7h</b>，而本地既有对照数据均为 7g。
+若后续继续做 OJ↔本地对照，需先确认 7h 与本地 <code>config.json</code> 是否逐字段一致
+（本地 <code>[OJ-ENV]</code> 口径为 <code>NOWPLAYER=2 MAXPLAYER=8 represent=0</code>，本局相同）。</li>
+</ul>
+</div>
+
+<hr>
+<p style="color:#6b7280;font-size:13px">
+分析脚本：<span class="mono">_diag_oj19485.py</span>（阵营按 HumanMove/HumanAction 识别 —— ⚠ 编号段是混编的，
+不能按 <code>911xx</code> 段判阵营，本局 91168/91176 是我方、91181 是敌方）。<br>
+关键口径：时间 <code>MM:SS:CC</code>（CC=百分秒）；帧 = 秒×25；祭司死亡 → 延迟约 15 帧判负。
+</p>
+
+</div>
+</body>
+</html>

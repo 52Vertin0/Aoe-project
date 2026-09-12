@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "C:\new-aoe3.0.7g\priest_death_report.py", line 50, in <module>
+    html = '''<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ...<74 lines>...
+    
+    
+    </div></body></html>''' % (
+    ~~~~~~~~~~~~~~~~~~~~~~~~^~~
+        datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ...<10 lines>...
+    )
+    ~
+ValueError: unsupported format character ';' (0x3b) at index 696

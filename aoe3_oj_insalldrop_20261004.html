@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>OJ「所有资源不动」根因报告 — 指令 100% 被自检丢弃</title>
+<style>
+  body{margin:0;padding:32px 20px;background:#f6f7f9;color:#1c1e21;
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  main{max-width:940px;margin:0 auto;background:#fff;border:1px solid #e3e5e8;
+       border-radius:12px;padding:34px 38px}
+  h1{font-size:22px;margin:0 0 6px;font-weight:600}
+  .sub{color:#6b7280;font-size:13px;margin-bottom:26px}
+  h2{font-size:17px;margin:34px 0 12px;padding-left:10px;border-left:3px solid #185fa5;font-weight:600}
+  h3{font-size:15px;margin:22px 0 8px;font-weight:600}
+  p{margin:8px 0}
+  code{background:#f1f3f5;border-radius:4px;padding:1px 5px;
+       font-family:ui-monospace,Consolas,monospace;font-size:13px}
+  pre{background:#1f2430;color:#e6e8ee;border-radius:8px;padding:14px 16px;
+      overflow-x:auto;font:13px/1.6 ui-monospace,Consolas,monospace;margin:10px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid #e3e5e8;padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#f8f9fb;font-weight:600;white-space:nowrap}
+  .ok{color:#15803d;font-weight:600}
+  .bad{color:#b91c1c;font-weight:600}
+  .key{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:14px 16px;margin:14px 0}
+  .warn{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px 16px;margin:14px 0}
+  .info{background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px 16px;margin:14px 0}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:5px 0}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;
+       background:#e5e7eb;color:#374151;margin-right:6px}
+  .tag.g{background:#dcfce7;color:#166534}
+  .tag.r{background:#fee2e2;color:#991b1b}
+  .mono{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+</style>
+</head>
+<body>
+<main>
+
+<h1>OJ「所有资源均不动」根因报告</h1>
+<div class="sub">提交 6121 · <span class="mono">engine=v3.0.7h</span> · 2026-10-04 · 证据文件 <span class="mono">debug_6121_1b7fad72….log</span></div>
+
+<h2>一、一句话结论</h2>
+<div class="key">
+<b>不是引擎没收到“正确的指令”，而是 AI 自己把每帧刚下发的指令<u>全部</u>丢掉了。</b><br>
+AI 在帧末提交指令前要做一次 <code>instructionSelfOk()</code> 指针体检，判据是
+「提交时的 <code>g_Object[SN]</code> 必须与构造指令那一刻捕获的指针副本<u>逐字节相同</u>」。
+这个判据在评测机上<u>恒假</u> ⇒ 每帧 9~10 条指令（8 村民 + 1 祭司）全线出局 ⇒ 引擎整局只执行了
+<u>1 条</u>指令（来自种子录像的开局建造）⇒ 资源 33 分钟一动不动、祭司站在原地被打死。
+</div>
+
+<h2>二、决定性证据（同口径对照）</h2>
+
+<p>评测机日志里 AI 侧打了 6 条自检心跳，把失败量化到了帧级：</p>
+<pre>[INS-BAD f=12]   本帧丢弃=11  累计丢弃=11        ← 第一次提交就 11/12 条被判死
+[INS-BAD f=1501] 本帧丢弃=9   累计丢弃=12157
+[INS-BAD f=3000] 本帧丢弃=9   累计丢弃=25739
+[INS-BAD f=4501] 本帧丢弃=9   累计丢弃=39339
+[INS-BAD f=6000] 本帧丢弃=10  累计丢弃=52931
+[INS-BAD f=7501] 本帧丢弃=10  累计丢弃=67291     ← 7512 帧累计丢 67291 条</pre>
+
+<p><b>67291 / 7512 ≈ 8.96 条/帧</b>，与「8 村民 + 1 祭司」逐一吻合，且<u>从第 12 帧起一直 100% 全丢</u>。
+同一份源码在本机四种组合下的对照：</p>
+
+<table>
+<tr><th>环境</th><th><code>累计丢弃</code></th><th>引擎接受的动作日志</th><th>ECO 观测量</th><th>结局</th></tr>
+<tr><td>本机 7g · <code>-exam</code></td><td class="ok">0</td><td><code>HumanAction:村民</code> 782 条<br><code>移动至</code> 1756 条</td><td><code>Idle:0 Work:8</code></td><td>正常</td></tr>
+<tr><td>本机 7h · <code>-exam</code></td><td class="ok">0</td><td>大量</td><td><code>Idle:0 Work:8→22</code></td><td class="ok">祭司转换攻城武器厂 ⇒ 胜</td></tr>
+<tr><td>本机 7h · 非 <code>-exam</code></td><td class="ok">0</td><td>大量</td><td><code>Idle:0 Work:8</code></td><td>正常</td></tr>
+<tr><td><b>评测机 7h</b></td><td class="bad">67291</td><td class="bad">仅 1 条 <code>HumanBuild</code></td><td class="bad"><code>Idle:7 Work:1</code></td><td class="bad">祭司阵亡 · Win:0</td></tr>
+</table>
+
+<div class="info">
+评测机日志里 <code>设置工作目标</code> 出现 <b>0</b> 次、<code>移动至</code>出现 <b>0</b> 次。
+唯一的引擎动作行是 <code>HumanBuild:村民 41135 建造 Building_7</code> —— 而且它来自随附的
+<code>.video</code>（288 字节＝<code>map1.njust</code> + 4 条开局建造 + 6 条敌方脚本令），
+不是 AI 的输出。<b>AI 一条都没送进引擎。</b>
+</div>
+
+<h2>三、链路与断点</h2>
+<pre>processFrame()  派工决策
+   └─ UsrAI::HumanMove(SN)          ← 先 lookupObjectRO(SN) 预检，过了才继续
+        └─ instruction 构造          ← self = g_Object[SN] 的“指针副本”
+             └─ InsPerFrame
+                  └─ commitInstruction()   ★★★ 断点：要求副本 == 当前值，恒假 ⇒ 全丢
+                       └─ UsrIns.instructions   ← 空
+                            └─ Core::manageOrder(id)   ← 没有东西可执行</pre>
+
+<p>关键点在于 <b>引擎自己的判据比 AI 宽松</b>（<span class="mono">Core.cpp:1398</span>）：</p>
+<pre>Coordinate* self = cur.self;                                   // 执行主体
+if (g_Object[cur.SN] == NULL || self->getPlayerRepresent() != id) { ... }
+//  ↑ 只看“当前值是不是空”，从不比对副本</pre>
+
+<p>而 AI 额外加了一层「副本必须逐字节相同」。这层自检一旦与评测机的 <code>g_Object</code>
+更新节奏不符，就会把<u>本帧全部指令</u>判死 —— 比放开更危险。</p>
+
+<div class="warn">
+<b>形态证据：</b>偶发的悬垂/竞态会表现为“零星丢几条”。实测是<u>从第 12 帧起恒定 100%</u>，
+且 8 个村民的编号（41102/41113/41124/41135/41146/41157/41158/41159）与祭司 91101
+在评测机日志里全部合理（<code>[TREE-BLACKLIST] farmer=41157 tree=51052</code> 这类行证明
+AI 读到的 SN 是对的）⇒ 这是<u>结构性恒假</u>，不是偶发内存事故。
+</div>
+
+<h2>四、已逐条排除的假设</h2>
+<table>
+<tr><th>假设</th><th>结论</th><th>依据</th></tr>
+<tr><td>引擎版本差（7g vs 7h）</td><td><span class="tag g">排除</span></td><td>7g、7h 两个引擎各跑一次，<code>累计丢弃</code> 均为 0</td></tr>
+<tr><td>地图 map1 有问题</td><td><span class="tag g">排除</span></td><td>本机 map1 两局正常，<code>Work:8</code>、引擎接受 336+ 条派工</td></tr>
+<tr><td>考核模式 <code>-exam</code> 差异</td><td><span class="tag g">排除</span></td><td>加/不加 <code>-exam</code> 都正常；<code>PreProcessDuringExam</code> 两版同构，只写日志</td></tr>
+<tr><td><code>GameReplay</code> 回放分支吞掉指令</td><td><span class="tag g">排除</span></td><td><code>manageOrder(0/1)</code> 在 <code>if/else</code> <b>之外</b>（<span class="mono">Core.cpp:74-75</span>），两条路径都会执行</td></tr>
+<tr><td><code>g_Object</code> 被清空/重建</td><td><span class="tag g">排除</span></td><td>全工程搜不到 <code>g_Object.clear()/erase()</code>，7g/7h 同构；只在对象死亡时置 <code>NULL</code></td></tr>
+<tr><td>指令绕过了 <code>lookupObjectRO</code> 预检</td><td><span class="tag g">排除</span></td><td>全部下发点无限定调用，而 <code>UsrAI.h:157-161</code> 隐藏了基类版本 ⇒ 全部走封装</td></tr>
+<tr><td>AI 的输入感知坏了（浮点垃圾）</td><td><span class="tag g">排除</span></td><td><code>nearE=2.79e10</code> 是「附近无敌军」的<b>哨兵值</b>，非垃圾；<code>[WP] proj=-9</code> 本机同值</td></tr>
+<tr><td>本机可复现</td><td><span class="tag r">不能</span></td><td>四种组合全正常 ⇒ 只能靠评测机侧自证</td></tr>
+</table>
+
+<h2>五、已落地修复（本版已编译进提交件）</h2>
+
+<h3>1. self 判据放宽 —— 与引擎同口径</h3>
+<p><code>instructionSelfOk()</code> → <code>resolveSelfCurrent()</code>：</p>
+<table>
+<tr><th>情形</th><th>旧行为</th><th>新行为</th></tr>
+<tr><td>键不存在（SN 真无效）</td><td>丢弃</td><td>丢弃（不变）</td></tr>
+<tr><td>键存在但当前值为 <code>NULL</code>（对象已死）</td><td>丢弃</td><td>丢弃（不变）</td></tr>
+<tr><td>键存在、非空，但<b>指针已更新</b></td><td class="bad">丢弃 ⇒ 整帧瘫痪</td><td class="ok">改用当前权威指针</td></tr>
+</table>
+<p>新判据与引擎 <span class="mono">Core.cpp:1398</span> 完全同口径：<b>只要 SN 现在能解析出非空对象，就下发。</b>
+用陈旧副本反而更危险（引擎随后就是拿 <code>g_Object</code> 这张表取对象执行）。</p>
+
+<h3>2. 新增 <code>[INS-DIAG]</code> 自证心跳（每 1500 帧一行）</h3>
+<pre>[INS-DIAG f=12] n=12 gObj=1301 drop=0(noKey=0 nullSelf=0) adopt=0 objNull=4 前4=(4,11089)(3,41135)(1,91101)(2,41135)</pre>
+<p>把三种世界一刀切开，一次提交即可定位：</p>
+<ul>
+<li><code>noKey&gt;0 / nullSelf&gt;0</code> ⇒ SN 本身在引擎表里查不到（要回头查 SN 的来源）</li>
+<li><code>adopt&gt;0</code> ⇒ 指针在「构造→提交」窗口内被更新（本版已改为采用当前值 ⇒ 不再瘫痪）</li>
+<li>三者全 0 ⇒ 判据健康</li>
+<li><code>前4=(type,SN)</code> ⇒ 直接看到 AI 到底在给哪些 SN 下命令</li>
+</ul>
+
+<h2>六、校验结果</h2>
+<table>
+<tr><th>项</th><th>结果</th></tr>
+<tr><td><code>g++ -fsyntax-only -Wall -Wextra</code></td><td class="ok">rc=0 · errors=0 · warnings=16（与改动前基线一致）</td></tr>
+<tr><td>行尾规范</td><td class="ok"><code>.cpp</code> 纯 LF 7262 行 · <code>.h</code> 纯 CRLF 508 行 · 无 BOM · 无 <code>\r\r\n</code> · 无三元组</td></tr>
+<tr><td>本机 7h 回归跑局</td><td class="ok"><code>drop=0 adopt=0</code> 全程 ⇒ 行为零变化；正常取胜</td></tr>
+<tr><td>提交件同步</td><td class="ok">7g 工作副本 / 7h 预演副本 / <code>_submit/</code> 三份同 md5 <code>65e8c7c9</code></td></tr>
+</table>
+
+<div class="info">
+<b>为什么这次改动在本机是零风险：</b>本机 <code>dropIns</code> 恒 0 ⇒ <code>resolveSelfCurrent</code>
+返回的必然是同一个指针 ⇒ 新分支<u>从不改写</u> <code>self</code>。也就是说，本机行为在数学上不可能变化，
+而评测机上如果真是指针更新问题，它就正好被治好。
+</div>
+
+<h2>七、下一步</h2>
+<ol>
+<li>把 <code>_submit\UsrAI.cpp</code> + <code>_submit\UsrAI.h</code> 提交，跑一局。</li>
+<li>把返回的日志发我，重点看两行：
+  <ul>
+    <li><code>[INS-BAD]</code> 的<code>累计丢弃</code>是否归 0；</li>
+    <li><code>[INS-DIAG]</code> 的 <code>drop=</code> / <code>adopt=</code> / <code>gObj=</code> / <code>前4=</code>。</li>
+  </ul>
+</li>
+<li>若 <code>noKey/nullSelf</code> 仍然大 ⇒ 根因不在指针更新，而在 SN 来源，届时按 <code>前4=(type,SN)</code>
+    的实际内容继续挖（这条自证就是为此准备的）。</li>
+</ol>
+
+</main>
+</body>
+</html>

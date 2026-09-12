@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>OJ 局 debug_16577 失败分析</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --tx:#1f2328; --tx2:#57606a;
+    --red:#c0392b; --grn:#1a7f37; --amb:#9a6700; --blu:#0969da; --pur:#8250df;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--tx);
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--tx2);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:19px;margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0;
+        box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .verdict{border-left:5px solid var(--red);background:#fff5f4}
+  .ok{border-left:5px solid var(--grn);background:#f3fbf5}
+  .note{border-left:5px solid var(--amb);background:#fffbf0}
+  .info{border-left:5px solid var(--blu);background:#f4f9ff}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;white-space:nowrap}
+  td.n{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  code{background:#eef1f4;padding:1px 5px;border-radius:4px;font:12.5px/1.5 Consolas,Menlo,monospace}
+  .k{color:var(--red);font-weight:700}
+  .g{color:var(--grn);font-weight:700}
+  ul{margin:8px 0 8px 22px;padding:0}
+  li{margin:5px 0}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:99px;background:#eaeef2;color:var(--tx2);margin-right:6px}
+  .mono{font:12.5px/1.6 Consolas,Menlo,monospace;white-space:pre-wrap;background:#f6f8fa;border:1px solid var(--line);
+        border-radius:8px;padding:12px 14px;overflow-x:auto}
+  .bar{height:9px;border-radius:9px;background:#e6e9ed;position:relative;overflow:hidden}
+  .bar > i{position:absolute;left:0;top:0;bottom:0;border-radius:9px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OJ 局 <code>debug_16577</code> 失败分析</h1>
+<div class="sub">日志 10 811 行 · engine v3.0.7h · 地图 <b>map2</b>（已定位） · 结局 祭司被击杀（正常失败，非崩溃）</div>
+
+<div class="card verdict">
+  <h3 style="margin-top:0">一句话结论</h3>
+  这是一次 <b>正常失败</b>（非崩溃、非 RE）：<code>DEFEAT: Priest killed</code>，
+  祭司在 <b>距敌方武器厂 22.9 格</b>处被杀，而感化射程是 <b>12.0 格</b> —— 
+  <b>全程 0 次进入射程</b>（日志 0 条 <code>Priest converting Siege Workshop!</code>）。
+  <br>本局是 map2 上已知的少数「<b>死在半路</b>」型败局：同源 map2 的 17 个祭死局里只有 <b>2 个</b>是这种，
+  其余 15 个死时已经在 12 格内。三条原因同向叠加：<b>发现太晚 · 军队被耗 1/3 · 推进被护驾反复打断</b>。
+</div>
+
+<h2>1 · 基本事实</h2>
+<div class="card">
+<table>
+<tr><th>项</th><th>值</th><th>项</th><th>值</th></tr>
+<tr><td>引擎</td><td><code>v3.0.7h</code>，NOWPLAYER=2 / MAXPLAYER=8 / represent=0</td>
+    <td>地图</td><td><b>map2</b>（见 §6 定位依据）</td></tr>
+<tr><td>结束时刻</td><td>帧 37 945 ≈ <b>25.30 分</b>（时限 30 分）</td>
+    <td>失败类型</td><td><code>DEFEAT: Priest killed</code>（祭司死亡）</td></tr>
+<tr><td>最终得分</td><td>391</td>
+    <td>崩溃证据</td><td><b>无</b>：全日志 0 条 <code>error / abort / exception / backtrace / SIGSEGV</code></td></tr>
+<tr><td>祭司</td><td>SN 91 483（开局 0 秒生成），MaxBlood 100</td>
+    <td>击杀者</td><td>敌 <code>Prof.Lu 91451</code>（25:17:56 最后一击；此前 25:09 敌战车弓兵 91473/91480 先手）</td></tr>
+<tr><td>终局军队</td><td>Mil=19（a=19：方阵兵 8 / 战车弓兵 9 / 其它 2）</td>
+    <td>敌方态势</td><td>nEA=12，nEB=5（已探明敌建筑 5）</td></tr>
+<tr><td>资源</td><td>Fd 319 / Wd 69 / St 300 / Gd 140（<b>不缺</b>）</td>
+    <td>村民</td><td>Work=20 / Walk=2 / Idle=0（<b>全程在干活</b>）</td></tr>
+</table>
+</div>
+
+<h2>2 · 关键时间线（反攻段）</h2>
+<div class="card">
+<table>
+<tr><th>时刻</th><th class="n">帧</th><th class="n">Mil</th><th class="n">nEA</th><th class="n">nEB</th><th>事件</th></tr>
+<tr><td>22:00:12</td><td class="n">33 002</td><td class="n">26</td><td class="n">0</td><td class="n">0</td><td>强制反攻 <code>ALL WAVES DEFEATED! Counterattack!</code>（<b>满编出发</b>）</td></tr>
+<tr><td>22:21:84</td><td class="n">33 545</td><td class="n">27</td><td class="n">0</td><td class="n">0</td><td><code>[STAGE] 段1→2 near=19/27</code></td></tr>
+<tr><td>22:54:84</td><td class="n">34 370</td><td class="n">27</td><td class="n">0</td><td class="n">0</td><td><code>[STAGE] 段2→3 near=<b class="k">0/27</b></code> ← 600 帧超时强推，<b>一个兵都没到汇合点</b></td></tr>
+<tr><td>22:58:64</td><td class="n">~34 391</td><td class="n">27</td><td class="n">0</td><td class="n">1</td><td><code>Enemy base scouted at (751.3,572.4)</code> → 敌方基地 (21,16)：<b>本局第一次探明任何敌方建筑</b>（已开赛 23 分钟）</td></tr>
+<tr><td>23:00:04</td><td class="n">34 500</td><td class="n">27</td><td class="n">7</td><td class="n">1</td><td><code>[LC-DBG] siegeSN=<b class="k">-1</b> mem=(0,0) dS=105.6 seen=1 nearT=81.2</code></td></tr>
+<tr><td>23:18:84</td><td class="n">34 970</td><td class="n">27</td><td class="n">—</td><td class="n">1</td><td><code>[STAGE] 段3→4 near=6/27</code></td></tr>
+<tr><td>23:42:84</td><td class="n">35 570</td><td class="n">26</td><td class="n">13</td><td class="n">1</td><td><code>[STAGE] 段4→5 near=11/26</code></td></tr>
+<tr><td>23:48:04</td><td class="n">35 700</td><td class="n">25</td><td class="n">20</td><td class="n">1</td><td>敌反攻波抵达（nEA 20）</td></tr>
+<tr><td>24:00:04</td><td class="n">36 000</td><td class="n">24</td><td class="n">27</td><td class="n">3</td><td><code>[GATHER] near=<b class="k">0/24</b> gathered=0 expire=1</code> ← 集结彻底垮掉</td></tr>
+<tr><td><b>24:06:32</b></td><td class="n">~36 158</td><td class="n">23</td><td class="n">28(峰)</td><td class="n">4</td><td><b>★ <code>Enemy Siege Workshop found at (24,6)!</code></b>（enemySiegeSN 首次 ≠ −1）</td></tr>
+<tr><td><b>24:06:96</b></td><td class="n">36 173</td><td class="n">23</td><td class="n">—</td><td class="n">4</td><td><b>★ <code>Priest ADVANCE to Siege d=44.6 nearT=38.3 towers=4</code></b>（祭司起手前出，<b>距目标 44.6 格</b>）</td></tr>
+<tr><td>24:18:00</td><td class="n">36 450</td><td class="n"><b class="k">19</b></td><td class="n">28</td><td class="n">5</td><td>军队掉到 19（23:48 起 2 分钟内 27→19）</td></tr>
+<tr><td>25:09:04</td><td class="n">~37 726</td><td class="n">19</td><td class="n">9</td><td class="n">5</td><td>敌战车弓兵 91473 / 91480 开始攻击祭司</td></tr>
+<tr><td>25:15:04</td><td class="n">~37 876</td><td class="n">19</td><td class="n">—</td><td class="n">5</td><td>敌 Prof.Lu 91451 开始攻击祭司</td></tr>
+<tr><td><b>25:17:84</b></td><td class="n">37 945</td><td class="n">19</td><td class="n">12</td><td class="n">5</td><td><b>★ 祭司阵亡</b>（hp 100 → 79 → 0，约 6 秒内）</td></tr>
+<tr><td>25:19:00</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td><code>游戏失败，未达成目标。最终得分为:391</code></td></tr>
+</table>
+</div>
+
+<h2>3 · 三条可量化的原因</h2>
+
+<h3>3.1 时间预算不足 —— 「发现 = 抵达」，而抵达得太晚</h3>
+<div class="card">
+<p style="margin-top:0">
+<code>enemySiegeSN</code> 依赖 <code>enemy_buildings</code>（受 <code>explored||visible</code> 约束），
+而 <code>ENABLE_SCOUT_RECON</code> 在源码里是 <code>false</code> ⇒ <b>反攻前 22 分钟零侦察</b>，
+反攻是"盲推 TC 的对角角落"。直到 <b>24:06:32</b> 我方视野第一次盖到武器厂，<code>enemySiegeSN</code> 才从 −1 变成 (24,6)。
+</p>
+<table>
+<tr><th>里程碑</th><th>时刻</th><th>与武器厂距离</th></tr>
+<tr><td>祭司起手前出</td><td>24:06:96</td><td class="n"><b class="k">44.6 格</b></td></tr>
+<tr><td>祭司阵亡</td><td>25:17:84</td><td class="n"><b class="k">22.9 格</b></td></tr>
+<tr><td>感化射程</td><td><code>PRIEST_CONVERT_SIEGE_RANGE</code></td><td class="n">12.0 格</td></tr>
+</table>
+<ul>
+  <li>71 秒推进了 21.7 格（≈18.3 格/分）；要进 12 格还差 <b>10.9 格 ≈ 再 36 秒</b> —— <b>就差半分钟</b>。</li>
+  <li>同源 map2 对照（<code>club8pop2 / current / fixM / wb4 / pe4</code> 共 84 局）：<br>
+      祭死局死亡时距武器厂 <b>中位 6.3 格</b>，17 局里 <b>15 局（88%）已在 12 格内</b>；
+      本局的"发现@24.06 → 死@25.17、距 22.9 格"与本地另一例（发现@24.06 → 死@25.17、距 21.5 格）几乎逐项重合。</li>
+  <li>发现时点中位 25.2 分 ≈ 祭司死亡中位 25.2 分 ⇒ <b>在 map2 上"发现武器厂"基本就等于"我方走到跟前"</b>，
+      而不是"提前知道方位"。这是反攻时间链的硬瓶颈。</li>
+</ul>
+</div>
+
+<h3>3.2 军队被敌方反攻波耗掉 1/3</h3>
+<div class="card">
+<table>
+<tr><th>分钟</th><th class="n">20</th><th class="n">21</th><th class="n">22</th><th class="n">23</th><th class="n">24</th><th class="n">25</th><th class="n">26</th><th class="n">27</th><th class="n">28</th></tr>
+<tr><td><b>本局 Mil</b></td><td class="n">—</td><td class="n">—</td><td class="n"><b>26</b></td><td class="n">27</td><td class="n"><b>24</b></td><td class="n"><b>18</b></td><td class="n">—</td><td class="n">—</td><td class="n">—</td></tr>
+<tr><td>本地 map2 胜局均</td><td class="n">24.6</td><td class="n">25.9</td><td class="n">26.0</td><td class="n">25.6</td><td class="n">23.0</td><td class="n">21.3</td><td class="n">21.6</td><td class="n">20.1</td><td class="n">19.9</td></tr>
+<tr><td>本地 map2 祭死局均</td><td class="n">20.9</td><td class="n">22.4</td><td class="n">23.5</td><td class="n">22.9</td><td class="n">20.5</td><td class="n">16.5</td><td class="n">11.3</td><td class="n">5.0</td><td class="n">9.0</td></tr>
+</table>
+<ul>
+  <li>本局 23:48→24:18 的 30 秒里，敌兵数 nEA <b>20 → 28</b>，同时我方 Mil <b>27 → 19</b> ——
+      这就是敌"ALL WAVES DEFEATED ⇒ Counterattack"反攻波的正面冲撞。</li>
+  <li>24:00 时 <code>near=0/24 gathered=0 expire=1</code>：24 个兵、<b>0 个</b>在汇合点附近；段推进却仍在走。
+      曲线正好落在本地 map2 <b>祭死局轨迹</b>上（25 分时 18 vs 祭死局 16.5 / 胜局 21.3）。</li>
+</ul>
+</div>
+
+<h3>3.3 推进被「护驾回调」反复打断</h3>
+<div class="card">
+<p style="margin-top:0">24:34 → 25:10 这 36 秒（正是该推进窗口）里，日志出现 <b>19 条</b>护驾回调：</p>
+<div class="mono">[PRIEST GUARD] counterattack HALT -> defend priest, target SN=91452
+[PRIEST GUARD] counterattack HALT -> defend priest, target SN=91460
+[PRIEST GUARD] counterattack HALT -> defend priest, target SN=91450
+[PRIEST GUARD] counterattack HALT -> defend priest, target SN=91462
+[PRIEST GUARD] counterattack HALT -> defend priest, target SN=91453
+[PRIEST GUARD] counterattack HALT -> defend priest, target SN=91474
+[PRIEST GUARD] counterattack HALT -> defend priest, target SN=91480
+[PRIEST GUARD] LOCKED-ON SN=91480 cmds=0 | N=19 ... [sn91701 s12 st3 wo91480 d1.4] ...</div>
+<ul>
+  <li>每次 HALT 都把大军（N=19）从"推进"切到"回防"，且<b>只盯一个敌 SN</b>，打掉一个就换下一个 ⇒
+      大军在"推进 ⇄ 回防"之间来回摆动，实际推进几乎停滞（MIL 27→19 也在这一段）。</li>
+  <li><code>PRIEST_GUARD_URGENT 8.0 / ALERT 15.0 / RECALL 30.0 / MAX_CMDS 12</code> 是这组行为的旋钮。</li>
+  <li>注：<code>[PRIEST-ESCORT]</code>=0 ⇒ 祭司<b>不缺护卫</b>（escortN 始终 ≥3，末段 nearAlly≈1.8 格），
+      所以不是"孤军"问题。</li>
+</ul>
+</div>
+
+<h2>4 · 已排除的假设（逐条对过日志）</h2>
+<div class="card ok">
+<table>
+<tr><th>假设</th><th>证据</th><th>判定</th></tr>
+<tr><td>崩溃 / RE</td><td>0 条 <code>error/abort/exception/backtrace</code>；末行是标准 <code>游戏失败，未达成目标。最终得分为:391</code></td><td class="g">排除</td></tr>
+<tr><td>指令没下发 / AI 瘫痪</td><td>祭司收到 <code>pm cnt=91</code> 条推进令；<code>Priest ADVANCE to Siege</code> 19 次；<code>Ins/objMv</code> 正常</td><td class="g">排除</td></tr>
+<tr><td>资源不足</td><td>终局 Fd319 / Wd69 / St300 / Gd140；村民 Work=20 全程满负荷</td><td class="g">排除</td></tr>
+<tr><td>人口顶格闸（popgate）</td><td><code>POP-FULL</code> 命中 0 ⇒ <b>本版根本没有该闸</b></td><td class="g">不适用</td></tr>
+<tr><td>「敌塔清够」闸卡住祭司</td><td><code>SIEGE-WAIT</code>=0 / <code>SIEGE-HOLD</code>=0。<b>但注意</b>：这两行只在"<b>已进入射程</b>"时才打印 —— 0 条只能说明"从没走到那一步"，<b>不能</b>说明塔闸没问题</td><td class="g">不适用（不可观测）</td></tr>
+<tr><td>祭司单点逻辑退化</td><td>感化冷却 <code>ccd</code> 全程循环（18000→0 反复），期间 <code>玩家 转换高级敌人</code> 成功 11 次；祭司逻辑在跑</td><td class="g">排除</td></tr>
+</table>
+</div>
+
+<h2>5 · 顺手排掉的一个读日志陷阱：<code>dS</code> 是伪指标</h2>
+<div class="card note">
+<p style="margin-top:0">
+<code>[LC-DBG]</code> 里的 <code>dS</code> 与 <code>mem=(rallyDR,rallyUR)</code> 来自同一对变量，
+而它在<b>武器厂被发现之前恒为 (0,0)</b>。于是 <code>dS</code> 实际算的是"祭司到地图格 (1,1) 的距离"，不是"到武器厂的距离"。
+</p>
+<table>
+<tr><th>时刻</th><th class="n">siegeSN</th><th class="n">mem</th><th class="n">dS</th><th class="n">seen</th><th class="n">nearT</th></tr>
+<tr><td>22:20</td><td class="n">−1</td><td class="n">(0,0)</td><td class="n">122.4</td><td class="n">0</td><td class="n">−1.0</td></tr>
+<tr><td>22:40</td><td class="n">−1</td><td class="n">(0,0)</td><td class="n">116.8</td><td class="n">0</td><td class="n">−1.0</td></tr>
+<tr><td>22:48</td><td class="n">−1</td><td class="n">(0,0)</td><td class="n">98.3</td><td class="n">0</td><td class="n">−1.0</td></tr>
+<tr><td>23:00</td><td class="n">−1</td><td class="n">(0,0)</td><td class="n">105.6</td><td class="n">1</td><td class="n">81.2</td></tr>
+<tr><td>23:36</td><td class="n">−1</td><td class="n">(0,0)</td><td class="n">91.3</td><td class="n">1</td><td class="n">66.9</td></tr>
+<tr><td>24:00</td><td class="n">−1</td><td class="n">(0,0)</td><td class="n">68.2</td><td class="n">3</td><td class="n">43.2</td></tr>
+</table>
+<p>
+核对：24:00 时祭司在 (47.2, 51.2) ⇒ 到 (1,1) 的距离 = √(46.2² + 50.2²) = <b>68.2</b>，与 <code>dS</code> <b>逐位吻合</b>。<br>
+⇒ <b>看到 <code>siegeSN=-1</code> 且 <code>mem=(0,0)</code> 时，不要用 <code>dS</code> 判推进进度</b>，它只是"祭司离地图左下角有多远"。
+<b>行为无 bug</b>：真正会用到这对坐标的 early / front 两处发令都在 <code>enemySiegeSN != -1</code> 闸内（已核对 5038/5100/5183 行）。
+</p>
+</div>
+
+<h2>6 · 版本与地图定位</h2>
+<div class="card info">
+<h3 style="margin-top:0">6.1 地图 = map2（三条独立证据）</h3>
+<ul>
+  <li>开局首帧 bbox <code>x62.8..84.7, y80.9..93.6</code> = 本地 map2 局的首帧 bbox，<b>逐字符相同</b>（基地 (73.75, 87.25)）。</li>
+  <li><code>Enemy base scouted at (751.319,572.433)</code> —— 该坐标字符串在本地只出现在 <b>map2</b> 局（map/map1/map3 各为 572.4/2933.7、3363.1/894.4、2754.8/930.2）。</li>
+  <li>敌方基地 (21,16) 与武器厂 (24,6) 的相对位置亦与 map2 布局一致。</li>
+</ul>
+<h3>6.2 提交源码 ≠ 我上一轮留下的版本</h3>
+<table>
+<tr><th>文件</th><th>md5</th><th>说明</th></tr>
+<tr><td>当前 <code>UsrAI.cpp</code></td><td><code>83e36e2b</code></td><td>= 上一轮结束时的 <code>ca45bd24</code> <b>去掉人口闸</b> + <b>去掉 woodearly（第二仓库提前 / 农场让位）</b>，另删 6 行注释</td></tr>
+<tr><td><code>UsrAI.h</code></td><td><code>e39b5d45</code></td><td>未变</td></tr>
+</table>
+<p>OJ 日志侧证据：<code>POP-FULL</code>=0（无人口闸）、<code>POP-SAC</code>=0（非 fixN 血统）、战车弓兵在场、<code>pm … cnt</code> 字段在场 ⇒ 与当前工作版一致。
+<b>这条与分析结论无关</b>，但按项目铁律先记一笔：动手前必 <code>md5sum</code>（本轮又发现源码在会话间被改过一次）。</p>
+</div>
+
+<h2>7 · 下一刀候选（按 ROI 排序）</h2>
+<div class="card">
+<table>
+<tr><th>#</th><th>方向</th><th>依据</th><th>风险/代价</th></tr>
+<tr>
+  <td><b>A</b></td>
+  <td><b>让武器厂方位在 22 分反攻前就被探明</b><br>（开 <code>ENABLE_SCOUT_RECON</code>，或把"对角角落盲推"改成沿对角分层的扫描点；或用已感化的战车弓兵/投石车当侦察）</td>
+  <td>本地 map2：发现时点中位 25.2 分 ≈ 祭死中位 25.2 分 ⇒ <b>发现 = 抵达</b>；<br>本局若提前 2 分钟知道方位，祭司就多 2 分钟推进余量（本局只差 <b>36 秒 / 10.9 格</b>）</td>
+  <td>该开关历史上被关（疑因探路单位卡死）⇒ <b>先查当年为什么关</b>；要跑 ≥24 局/臂才可判</td>
+</tr>
+<tr>
+  <td><b>B</b></td>
+  <td><b>护驾回调收敛</b>：只在祭司"真被打"（掉血 / 进入敌射程）时才 <code>HALT</code>，且锁定目标改为"围攻祭司的敌人"而非"最近单个敌 SN"</td>
+  <td>本局 24:34~25:10 出现 19 条 HALT、每次只盯 1 个敌 SN；同期军队 27→19、推进停滞</td>
+  <td>会削弱祭司保命；本局祭司是"先被杀"不是"先孤军"，方向需小步验证</td>
+</tr>
+<tr>
+  <td><b>C</b></td>
+  <td><b>反攻期保军力</b>：22→24.4 分 Mil 27→19 是败因主体。可查"段推进 600 帧超时强推"（本局 22:54 段2→3 在 <code>near=0/27</code> 时强行推进）⇒ 改成"<code>near</code> 低于阈值就不推进"</td>
+  <td>集结 24:00 <code>near=0/24 expire=1</code>；段推进一路强推，等于让散兵逐个被集火</td>
+  <td>与上次发现的"人口闸绕过集结闸"是<u>同一类</u>问题；但"减动作"型修法在本项目有多次反例（fixJ/fixN），<b>须先做因果实验</b></td>
+</tr>
+</table>
+<p style="margin-bottom:0"><span class="tag">铁律</span>任何一条都要 <b>≥24 局/臂</b>（n=24 带 ±14pp）才能下胜负结论；主判据优先机制量（祭司进入射程次数 / 祭死时距武器厂格数），总胜率作次级端点。</p>
+</div>
+
+<div class="sub" style="margin-top:34px">
+分析脚本：<code>_diag_oj16577.py</code>（本局逐帧）· <code>_diag_siegediscovery.py</code>（2 844 局发现时点分布）· <code>_diag_map2_attrition.py</code>（map2 军队衰减 + 祭死距离）· <code>_diag_oj_vs_local.py</code>（同源对照）
+</div>
+
+</div>
+</body>
+</html>

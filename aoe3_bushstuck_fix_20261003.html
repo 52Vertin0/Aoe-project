@@ -1,0 +1,157 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>浆果采集者卡死 · 修复报告</title>
+<style>
+body{font-family:-apple-system,'Microsoft Yahei',sans-serif;margin:22px;background:#f6f7f9;color:#1a1a1a;line-height:1.65}
+.wrap{max-width:1000px;margin:0 auto}
+h1{font-size:21px;margin:0 0 4px}h2{font-size:17px;margin:22px 0 8px;border-left:4px solid #3a6ea5;padding-left:9px}
+h3{font-size:14px;margin:12px 0 5px}
+.card{background:#fff;border:1px solid #e3e6ea;border-radius:8px;padding:12px 16px;margin:10px 0}
+.tldr{background:#fdf4f3;border-left:5px solid #c0392b}
+.ok{background:#f0f9f3;border-left:5px solid #1e7e46}
+.warn{background:#fffbf0;border-left:5px solid #d9a400}
+.note{color:#666;font-size:12.5px}
+table{border-collapse:collapse;font-size:13px;width:100%;margin:8px 0}
+td,th{border:1px solid #e3e6ea;padding:5px 9px;text-align:left;vertical-align:top}
+th{background:#eef1f5;font-weight:600}
+tbody tr:nth-child(even){background:#fafbfc}
+pre{background:#1e242c;color:#e6edf3;padding:11px 14px;border-radius:7px;font-size:12.5px;
+    overflow-x:auto;line-height:1.5;font-family:Consolas,'Courier New',monospace}
+pre .c{color:#8b949e}pre .hl{color:#ff8b81;font-weight:700}pre .g{color:#7ee2a8;font-weight:700}
+code{font-family:Consolas,monospace;font-size:12.5px;background:#eef1f5;padding:1px 4px;border-radius:3px}
+.mono{font-family:Consolas,monospace;font-size:12.5px}
+.tag{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 6px;border-radius:4px}
+.t-red{background:#fdf1f0;color:#c0392b;border:1px solid #f0c6c1}
+.t-grn{background:#eef8f1;color:#1e7e46;border:1px solid #c2e5d0}
+.t-amb{background:#fff8e6;color:#9a6700;border:1px solid #f0dcae}
+.k{color:#3a6ea5;font-weight:600}
+</style></head><body><div class="wrap">
+
+<h1>「浆果采集者一直不动」—— 修复报告</h1>
+<p class="note">2026-10-03 · 修复版 = <code>pre_canary 7fc73965</code> 基线 + 本次 32 行改动 ·
+源码 <code>UsrAI.cpp</code> <b>7113 行</b>（改动前 7081）· <code>UsrAI.h</code> <b>508 行</b>（改动前 507）</p>
+
+<div class="card tldr">
+<h3 style="margin-top:0">TL;DR</h3>
+上次归因出的 <b>三层缺陷</b>（拉黑打错对象 / 主路径不查黑名单 / 打断不复位）全部修掉，共 <b>13 处 / +32 行</b>。<br>
+关键判断：<b>只修前两层不够</b> —— 拉黑再准，村民若不回到 <code>IDLE</code>，只认 IDLE 的派工逻辑仍捞不回它，
+"一直不动"照旧。所以本次引入 <code>pendingRedispatch</code>：<b>卡死村民被注入待重派集合，下一帧无视 IDLE 强制换目标</b>。<br>
+<span class="note">验收：语法 0 err / 16 warn · 编译成功 · 时间戳链完整 · 冒烟活满 21.2 s · 新代码字符串已进 exe。</span>
+</div>
+
+<div class="card warn">
+<b>⚠ 一句话说清这次修的是什么</b><br>
+旧逻辑：村民被派去一个<b>到不了</b>的浆果丛 → 卡 60 秒 → 兜底把它<b>派回 TC</b> → 它变成"卡在去 TC 的路上"（仍非 IDLE）<br>
+⇒ 60 秒后原样复发，<b>周期 1502 帧、永久循环</b>（实测三次触发帧号严格等间隔）。<br>
+新逻辑：同一时刻<b>拉黑那个丛 + 把村民塞进待重派队列</b> → 下一帧主循环无视 IDLE 给它<b>换一个新丛</b> ⇒ 它动起来了。
+</div>
+
+<h2>1. 上次归因的三层缺陷（本次逐一修掉）</h2>
+<table>
+<thead><tr><th>#</th><th>缺陷</th><th>旧代码</th><th>本次改法</th></tr></thead>
+<tbody>
+<tr><td><b>A</b></td><td><b>拉黑打错对象</b>：兜底取 <code>villLastTreeSN</code>（只在派树时写入）⇒ 浆果卡死时拉黑的是很久以前那棵树，或干脆 -1</td><td class="mono">:6936</td><td>泛化为 <code>villLastResourceSN</code>，<b>树/浆果/瞪羚/金/石</b>五类派工全都记录目标</td></tr>
+<tr><td><b>B</b></td><td><b>黑名单在主路径压根不查</b>：<code>assignIdleSimple</code> 浆果/瞪羚两段无检查（只有冷路径 <code>tryAssignFood</code> 查）⇒ 被拉黑的丛每帧照样被重选</td><td class="mono">:3328 / :3355</td><td>两段各补 <code>if (stuckResourceUntil.count(r.SN)) continue;</code>，并给 <code>findNearestResource</code>（金/石）也补上 —— 一处改动全局生效</td></tr>
+<tr><td><b>C</b></td><td><b>打断不复位</b>：只发一条 <code>HumanAction(f.SN, center-&gt;SN)</code> ⇒ 状态从"卡死原目标"变成"卡死去 TC"，既非 IDLE 又无有效目标</td><td class="mono">:6938</td><td><b>核心修复</b>：注入 <code>pendingRedispatch</code>，主循环下一帧无视 IDLE 强制重派（见 §3）</td></tr>
+</tbody></table>
+
+<h2>2. 改动清单（13 处 / +32 行）</h2>
+<table>
+<thead><tr><th>#</th><th>落点</th><th>内容</th><th>性质</th></tr></thead>
+<tbody>
+<tr><td>1</td><td class="mono">UsrAI.h:238</td><td><code>villLastTreeSN</code> → <code>villLastResourceSN</code>（语义泛化）+ 注释更新</td><td><span class="tag t-amb">改名</span></td></tr>
+<tr><td>2</td><td class="mono">UsrAI.h:239</td><td>新增 <code>std::set&lt;int&gt; pendingRedispatch;</code></td><td><span class="tag t-grn">新增</span></td></tr>
+<tr><td>3</td><td class="mono">cpp:3119 / 3124</td><td><code>issueTreeOrder</code> 内两处改名（树路径）</td><td><span class="tag t-amb">改名</span></td></tr>
+<tr><td>4</td><td class="mono">cpp:3302</td><td>黄金派工后记录目标 <code>villLastResourceSN[f.SN] = gold-&gt;SN;</code></td><td><span class="tag t-grn">新增</span></td></tr>
+<tr><td>5</td><td class="mono">cpp:3316</td><td>石头派工后记录目标</td><td><span class="tag t-grn">新增</span></td></tr>
+<tr><td>6</td><td class="mono">cpp:3350</td><td><b>浆果主路径补黑名单检查</b></td><td><span class="tag t-red">修缺陷 B</span></td></tr>
+<tr><td>7</td><td class="mono">cpp:3355</td><td>浆果派工后记录目标</td><td><span class="tag t-grn">新增</span></td></tr>
+<tr><td>8</td><td class="mono">cpp:3371</td><td><b>瞪羚主路径补黑名单检查</b></td><td><span class="tag t-red">修缺陷 B</span></td></tr>
+<tr><td>9</td><td class="mono">cpp:3376</td><td>瞪羚派工后记录目标</td><td><span class="tag t-grn">新增</span></td></tr>
+<tr><td>10</td><td class="mono">cpp:5945</td><td><code>findNearestResource</code> 补黑名单检查（其 6 个调用点全部受益）</td><td><span class="tag t-red">修缺陷 B</span></td></tr>
+<tr><td>11</td><td class="mono">cpp:3284</td><td><b>主循环前闸：<code>pendingRedispatch</code> 成员无视 IDLE</b></td><td><span class="tag t-red">修缺陷 C</span></td></tr>
+<tr><td>12</td><td class="mono">cpp:6926-6932</td><td><code>pendingRedispatch</code> 存活清理（防集合无限增长）</td><td><span class="tag t-grn">新增</span></td></tr>
+<tr><td>13</td><td class="mono">cpp:6953-6975</td><td>STUCK：改名 + 注入待重派 + 诊断行扩字段</td><td><span class="tag t-red">修缺陷 A/C</span></td></tr>
+</tbody></table>
+
+<h3>关键改动一：主循环前闸（缺陷 C 的修法）</h3>
+<pre><span class="c">// cpp:3281  assignIdleSimple() 主循环</span>
+  for (auto &amp;f : infoPtr-&gt;farmers) {
+      if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+      if (f.Resource &gt; 0) continue;
+<span class="g">+     const bool redispatch = (pendingRedispatch.erase(f.SN) &gt; 0);
++     if (!redispatch &amp;&amp; f.NowState != HUMAN_STATE_IDLE) continue;</span>
+      if (elephantPartyPending.count(f.SN)) continue;
+  <span class="c">// …后续派工链（树→金→石→浆果→瞪羚→农场→兜底）不变</span></pre>
+<p class="note">语义：卡死村民被注入集合后，<b>下一帧这一次</b>无视 IDLE 走完整派工链；黑名单此时已生效 ⇒ 必然换到另一个目标。
+集合项在 <code>erase</code> 处取用即消耗，不会造成指令风暴（每 1500 帧最多一次）。</p>
+
+<h3>关键改动二：打断动作（缺陷 A/C 的修法）</h3>
+<pre><span class="c">// cpp:6954  detectStuckGatherers()</span>
+  const int stuckFrames = frame - gatherStuckFrame[f.SN];
+  int targetSN = f.WorkObjectSN;
+<span class="hl">- if (targetSN &lt;= 0 &amp;&amp; villLastTreeSN.count(f.SN)) targetSN = villLastTreeSN[f.SN];</span>
+<span class="g">+ if (targetSN &lt;= 0 &amp;&amp; villLastResourceSN.count(f.SN)) targetSN = villLastResourceSN[f.SN];</span>
+  if (targetSN &gt; 0) stuckResourceUntil[targetSN] = frame + STUCK_BLACKLIST_FRAMES;
+<span class="g">+ pendingRedispatch.insert(f.SN);          // ★ 关键：下一帧无视 IDLE 强制换目标</span>
+  HumanAction(f.SN, center-&gt;SN);            <span class="c">// 先打断与坏目标的关系</span>
+  gatherStuckFrame.erase(f.SN);
+<span class="hl">- DebugText("[STUCK f=%1] 村民SN=%2 寻路卡死, 目标资源SN=%3 已拉黑")</span>
+<span class="g">+ DebugText("[STUCK f=%1] 村民SN=%2 state=%3 空手%4帧 目标资源SN=%5 位置=(%6,%7) 距TC=%8格 已拉黑+待重派")</span></pre>
+
+<h2>3. 为什么必须三处同改（不能只做 A+B）</h2>
+<div class="card">
+<p>这是本次最关键的一步推理，也是上次"先做 A+B+D 看看"会被判失败的原因：</p>
+<pre>只做 A+B：拉黑准确了、主路径也遵守了
+  ⇒ 但【村民本身没有回到 IDLE】⇒ 主循环第 3 行 `if (f.NowState != HUMAN_STATE_IDLE) continue;` 照样跳过它
+  ⇒ 它继续"卡在去 TC 的路上"，1500 帧后 STUCK 再次触发
+  ⇒ 唯一变化：这次拉黑的是正确的丛 —— 可村民<b>还是不动</b></pre>
+<p><b>结论</b>：A+B 只解决"AI 下次别选那个坏丛"，不解决"这个村民已经动不了了"。
+必须让 <code>detectStuckGatherers</code> 具备<b>直接重派</b>的能力 ⇒ 这就是 <code>pendingRedispatch</code> 存在的理由。</p>
+</div>
+
+<h2>4. 验收（全绿）</h2>
+<table>
+<thead><tr><th>项</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>源码</td><td><code>UsrAI.cpp</code> 7113 行 / <b>纯 LF</b>（CRLF=0）；<code>UsrAI.h</code> 508 行 / <b>纯 CRLF</b>（CR 单=0）</td></tr>
+<tr><td>旧名残留</td><td><code>grep villLastTreeSN</code> = <b>0</b> ✓</td></tr>
+<tr><td>语法</td><td><code>errors = 0 ; warnings = 16</code>（与基线同口径，<code>grep warning:</code> = 12）</td></tr>
+<tr><td>编译</td><td>成功，28 s；时间戳链 <code>.cpp</code> 11:53:31 &lt; <code>.o</code> 11:54:49 &lt; <code>exe</code> 11:54:55 ✓</td></tr>
+<tr><td>产物</td><td>exe <b>2209792 B</b>（pre_canary 2208256 → <b>+1536 B</b>）</td></tr>
+<tr><td><b>新代码进二进制</b></td><td><code>grep -a "待重派" release/newAOE.exe</code> = <b>1</b>（旧备份源码 = 0）✓</td></tr>
+<tr><td>冒烟</td><td><code>exit=124</code>（活满 21.2 s），日志到「初始化结束，游戏开始;」✓</td></tr>
+</tbody></table>
+
+<h2>5. 跑一局怎么看（判读口径）</h2>
+<div class="card ok">
+<b>① 看 <code>[STUCK]</code> 行是否"不再等间隔复发"</b><br>
+改前铁证：同一村民三次触发帧号 <code>5817 → 7319 → 8822</code>（间隔严格 1502/1503 帧）＝打断无效的确定性判据。<br>
+改后应为：<b>同一村民不再出现第 2 次等间隔触发</b>；即使再触发，两次之间的目标 SN 必须不同。<br><br>
+<b>② 看新增字段（本次诊断增强）</b><br>
+<code>[STUCK f=… ] 村民SN=… state=3 空手1602帧 目标资源SN=21218 位置=(x,y) 距TC=8.4格 已拉黑+待重派</code><br>
+—— <code>state</code> 告诉你它卡在哪个状态（真值取自 <code>config.h:228</code>：<b>0=IDLE / 1=WALKING / 2=WORKING / 3=ATTACKING</b>；
+因检测已排除 IDLE，这里必为 1/2/3 —— <b>2 或 3 = "正在采/打但采不到"</b>，<b>1 = 一直在走路</b>，两者指向的病因不同），<code>位置/距TC</code> 告诉你它到底停在哪，
+<code>目标资源SN</code> 现在能正确指向<b>浆果丛</b>而不是旧树 ⇒ 一次跑局即可定位"最初病因"（不可达 / 满员 / 被挤掉）。<br><br>
+<b>③ 看村民名册（单位级指令数）</b><br>
+改前 4 人在"派工 3~4 帧"后沉默 3330~5226 帧。改后这些人的<b>末条指令帧应接近局末</b>（正常村民 11~17 条指令）。
+</div>
+
+<h2>6. 风险 / 回滚</h2>
+<table>
+<thead><tr><th>项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>可能的行为变化</td><td><code>findNearestResource</code> 现在会跳过被拉黑的资源 ⇒ 金/石派工在拉黑期内改选次近者（预期行为，但属于<b>超出原需求的波及面</b>，故显式列出）</td></tr>
+<tr><td>未覆盖</td><td><b>农场</b>（建筑 SN，混入资源黑名单有 SN 段混用风险，未记录）；<b>大象</b>（走 <code>elephantPartyUntil</code> 自有拉黑机制，未记录）——卡死时报 -1，不拉黑（与改前等价，不是退步）</td></tr>
+<tr><td>回滚</td><td>整体回退：<code>cp UsrAI.cpp.bak_20260929_pre_canary UsrAI.cpp</code> + <code>cp UsrAI.h.bak_20260929_pre_canary UsrAI.h</code>（或 <code>_1056_pre_rollback_canary</code> 那份 .cpp）</td></tr>
+<tr><td>⚠ 未验证项</td><td>本报告只证明"机制已装上"。<b>效果需跑 ≥1 局实机</b>（看 §5 三项判据）。⚠ 依铁律，单批 &lt;24 局不得对<b>胜负</b>下结论</td></tr>
+</tbody></table>
+
+<h2>7. 溯源</h2>
+<p class="note">
+基线：<code>UsrAI.cpp.bak_20260929_pre_canary</code> · <code>7fc73965</code> · 495828 B · 7081 行<br>
+修复版：<code>UsrAI.cpp.bak_20261003_fix_bushstuck</code> · 499180 B · 7113 行 ＋ <code>UsrAI.h.bak_20261003_fix_bushstuck</code> · 40099 B · 508 行<br>
+提交件 <code>_submit/</code> 仍停留在 <code>f425fcb1</code>（7199 行）⇒ <b>已不反映本修复</b>，提交前须重跑 <code>mk_submit.py</code>。<br>
+上次归因报告：<code>aoe3_bushstuck_20261003.html</code>
+</p>
+
+</div></body></html>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>改动记录 · EARLY_CLUBMAN_TARGET 6→8</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#f5f6f8;color:#1c1f23;font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:32px 20px}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:25px;letter-spacing:-.3px}
+  .sub{color:#6b7280;font-size:13.5px;margin-top:6px}
+  .banner{margin:22px 0;background:#fff;border-left:5px solid #1a7f37;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  .banner .big{font-size:19px;font-weight:700;color:#166534}
+  .banner p{color:#374151;margin-top:8px;font-size:14px}
+  h2{font-size:17px;margin:30px 0 12px;padding-bottom:7px;border-bottom:2px solid #e5e7eb}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:9px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:14px}
+  th,td{padding:10px 13px;text-align:left;border-bottom:1px solid #eef0f3}
+  th{background:#f0f2f5;font-weight:600;font-size:13px;color:#4b5563}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:none}
+  .good{color:#1a7f37;font-weight:600}
+  .warn{color:#b45309;font-weight:600}
+  .bad{color:#b52b26;font-weight:600}
+  .hl{background:#fdf6e3}
+  .card{background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:14px;font-size:14px}
+  .card b{color:#111827}
+  .card.warncard{border-left:4px solid #f0ad4e}
+  ul{margin:8px 0 0 20px}li{margin:5px 0}
+  pre{background:#1e2530;color:#d7dde5;border-radius:8px;padding:13px 16px;overflow-x:auto;font-size:12.7px;line-height:1.6;font-family:Consolas,monospace}
+  code{background:#eef1f5;border-radius:4px;padding:1.5px 6px;font-size:12.8px;font-family:Consolas,monospace}
+  pre code{background:none;padding:0}
+  .kv{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px}
+  .kv div{flex:1 1 190px;background:#f8f9fb;border-radius:8px;padding:10px 13px;font-size:13px}
+  .kv span{display:block;color:#6b7280;font-size:11.5px;margin-bottom:2px}
+  .foot{color:#9ca3af;font-size:12.5px;margin-top:26px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>改动记录 · <code>EARLY_CLUBMAN_TARGET</code> 6 → 8</h1>
+  <div class="sub">方案 A 执行 · 2026-10-08 · 依据：48 局/臂 干净 A/B（club6 胜率 50%→35.4%，祭司死 13→22）</div>
+
+  <div class="banner">
+    <div class="big">改动已落地并构建通过，抽检未退化</div>
+    <p>源码 <code>ca45bd24</code>（= <code>3c504a46</code> 仅此行改动）｜<code>UsrAI.h</code> 未动 <code>e39b5d45</code>｜
+    抽检 20 局：<b>14W / 5P / 1U</b>，重点图 map 2/2 胜；人口顶格闸与 clubman8 共存正常（4/8 触发）。</p>
+  </div>
+
+  <h2>一、改动内容</h2>
+  <table>
+    <tr><th>位置</th><th>改动</th><th>说明</th></tr>
+    <tr class="hl"><td><code>UsrAI.cpp:256</code></td><td><code>EARLY_CLUBMAN_TARGET 6 → 8</code></td><td>前期棍棒兵目标数回改 8（A/B 证 6 有害）</td></tr>
+    <tr><td><code>UsrAI.cpp:304 / 1322 / 5644</code></td><td>不变</td><td>人口顶格闸 <code>COUNTER_ATTACK_POP_FULL 50</code> 与 <code>|| popFull</code> <b>保留</b></td></tr>
+  </table>
+  <div class="kv" style="margin-top:14px">
+    <div><span>源码 md5</span><code>ca45bd24</code>（改前 <code>3c504a46</code>）</div>
+    <div><span>UsrAI.h md5</span><code>e39b5d45</code>（未动）</div>
+    <div><span>exe</span>11:48:32 构建通过</div>
+    <div><span>备份</span><code>bak_20261008_club8pop_*</code></div>
+  </div>
+
+  <h2>二、抽检结果（20 局，PAR=8）</h2>
+  <table>
+    <tr><th>批次</th><th>覆盖</th><th class="num">n</th><th class="num">W</th><th class="num">P</th><th class="num">T</th><th class="num">U</th><th class="num">胜率</th></tr>
+    <tr><td><code>club8pop</code></td><td>四图 ×2</td><td class="num">8</td><td class="num good">6</td><td class="num">1</td><td class="num">0</td><td class="num warn">1*</td><td class="num">75.0%</td></tr>
+    <tr><td><code>club8pop2</code></td><td>map2 ×12</td><td class="num">12</td><td class="num good">8</td><td class="num">4</td><td class="num">0</td><td class="num">0</td><td class="num">66.7%</td></tr>
+    <tr class="hl"><td colspan="2"><b>合计</b></td><td class="num"><b>20</b></td><td class="num"><b>14</b></td><td class="num"><b>5</b></td><td class="num"><b>0</b></td><td class="num"><b>1</b></td><td class="num"><b>70.0%</b></td></tr>
+  </table>
+  <div class="card" style="margin-top:12px">
+    <b>* 那 1 个 U 是 SIGSEGV（见下）</b>。重点图 <b>map 抽检 2/2 胜</b>；人口闸 <code>POP-FULL COUNTERATTACK</code> 触发 <b>4/8</b> 局 ⇒ <b>clubman8 与人口闸共存无冲突</b>。<br>
+    ⚠ <b>n=20 只用于"能跑通 + 不退化"的连通性检查，不足以下胜率结论</b>（欲定量请跑 48 局/臂）。
+  </div>
+
+  <h2>三、一次 SIGSEGV 的排查结论：偶发，与本改动无关</h2>
+  <div class="card warncard">
+    <b>现场</b>：<code>club8pop_map2_r0_2</code> exit=139，崩于 f=26119（17.4 分）。日志尾部连续正常打印（最后一行是常规引擎动作），<b>无任何 AI 侧 error / abort / 异常</b>，<code>.err</code> 仅 <code>[OJ-ENV]</code> 一行 —— 形态属既有的 <code>shared_ptr infoPtr</code> 野指针类崩溃。
+    <ul>
+      <li><b>复跑 map2 ×12 全部 exit=0/3，无 139</b> ⇒ 不可复现，判为<b>偶发（≈1/20）</b>。</li>
+      <li>该局 <code>popfull=0</code>（<b>根本没走人口闸路径</b>），且 clubman 数量差仅影响造兵分支、不涉内存 ⇒ <b>与本次改动无关</b>。</li>
+      <li>★ 排查中<b>排除的假线索</b>：<code>nearE=27950849718.9</code>（2.8e10）看似脏数据，但 club8pop / club6n / wbase <b>三臂每一局都上百行</b> ⇒ 是"无敌目标"的<b>常态哨兵值</b>，非崩溃特异信号。<br><span style="color:#6b7280">教训：判"异常"前先与对照臂比频次。</span></li>
+    </ul>
+  </div>
+
+  <h2>四、人口顶格闸的取舍（决策：保留）</h2>
+  <table>
+    <tr><th>方案</th><th>效果</th><th>结论</th></tr>
+    <tr class="hl"><td><b>保留 <code>|| popFull</code></b>（现行）</td><td>"总人口 50 ⇒ 即可反攻"真正生效</td><td class="good">采纳</td></tr>
+    <tr><td>只留状态机提前入口</td><td><code>readyToAttack</code> 仍被集结闸挡住，60s 定时吃掉提前量 ⇒ <b>功能形同虚设</b></td><td class="bad">否决</td></tr>
+  </table>
+  <div class="card warncard" style="margin-top:12px">
+    <b>⚠ 已知隐患（未处理）</b>：<code>|| popFull</code> 会<b>绕过集结闸</b> —— 触发局实测 <code>[GATHER f=33000] near=0/27 gathered=0 ready=1 pop=50 full=1</code>，即<b>军队 0% 集结就开推</b>，散兵易被集火（集结闸 gg1 当初正是为压这一项而加）。<br>
+    <b>可选加固（未做）</b>：把条件改为 <code>popFull &amp;&amp; near &gt;= 最低集结值</code>，在"提前"与"别散兵"之间取折中。
+  </div>
+
+  <h2>五、复现</h2>
+  <pre><code># 构建（本机无 make，必须 mingw32-make）
+export PATH="/d/360Downloads/Tools/mingw530_32/bin:/d/360Downloads/5.9.2/mingw53_32/bin:$PATH"
+mingw32-make -j8
+
+# 跑局
+MAPS="map.njust map1.njust map2.njust map3.njust" ROT=0 N=2 PAR=8 TAG=club8pop TMO=420 bash _quad_run.sh
+
+# 统计（结局 + 反攻前早死）
+python _probe_club6.py club8pop</code></pre>
+
+  <div class="foot">
+    改前 <code>3c504a46</code>（clubman6 + 人口闸）→ 现行 <code>ca45bd24</code>（clubman8 + 人口闸）<br>
+    A/B 依据：<code>_report_club68_ab.html</code>（48 局/臂，club8 50.0% vs club6 35.4%）
+  </div>
+</div>
+</body>
+</html>

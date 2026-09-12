@@ -1,0 +1,9 @@
+run	frame	score	foodMax	woodMax	goldMax	armorIssue	ack	done	retry	order	reason
+1	41724	488	808	387	269	4	4	4	0	[步兵护甲>弓兵护甲>步兵鳞甲>弓兵鳞甲]	PRIEST_DEAD
+2	45001	559	806	399	324	4	4	4	0	[步兵护甲>弓兵护甲>步兵鳞甲>弓兵鳞甲]	TIMEOUT
+3	3783	35	200	200	0	0	0	0	0	[-]	PRIEST_DEAD
+4	3561	25	200	200	0	0	0	0	0	[-]	PRIEST_DEAD
+5	15526	115	806	294	0	0	0	0	0	[-]	PRIEST_DEAD
+6	45001	553	807	774	659	4	4	4	0	[步兵护甲>弓兵护甲>步兵鳞甲>弓兵鳞甲]	TIMEOUT
+7	45001	570	806	334	240	4	4	4	0	[步兵护甲>弓兵护甲>步兵鳞甲>弓兵鳞甲]	TIMEOUT
+8	44585	571	805	341	226	4	4	4	0	[步兵护甲>弓兵护甲>步兵鳞甲>弓兵鳞甲]	PRIEST_DEAD

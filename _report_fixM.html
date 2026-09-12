@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AoE3 UsrAI · fixM 判决（W3 祭司优先感化投石车）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --sub:#5b6470; --line:#e3e6ea;
+    --ok:#0b8a4b; --warn:#c26a00; --bad:#c0392b; --accent:#1f5fd0; --mono:#f0f2f5;
+    --near:#8a6d00;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--sub);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:18.5px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15.5px;margin:22px 0 8px;color:var(--ink)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+  th{background:#eef1f5;font-weight:600;font-size:13px;color:#39414c}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .mono{font-family:Consolas,"SF Mono",Menlo,monospace;font-size:13px;background:var(--mono);
+        padding:2px 6px;border-radius:4px}
+  pre{background:#22262b;color:#e6e9ed;padding:14px 16px;border-radius:8px;overflow-x:auto;
+      font:13px/1.6 Consolas,"SF Mono",Menlo,monospace;margin:10px 0}
+  .tag{display:inline-block;padding:1px 8px;border-radius:11px;font-size:12px;font-weight:600;color:#fff}
+  .t-ok{background:var(--ok)} .t-warn{background:var(--warn)} .t-bad{background:var(--bad)} .t-neu{background:#7b848f}
+  .verdict{background:linear-gradient(180deg,#ffffff,#f2f7ff);border:1px solid #cfe0fa;border-left:5px solid var(--accent)}
+  .stop{background:linear-gradient(180deg,#ffffff,#fff6f4);border:1px solid #f6d5cf;border-left:5px solid var(--bad)}
+  .lead{font-size:15.5px}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin:14px 0}
+  .kpi div{background:#fff;border:1px solid var(--line);border-radius:9px;padding:12px 14px}
+  .kpi b{display:block;font-size:23px;line-height:1.25;font-variant-numeric:tabular-nums}
+  .kpi span{font-size:12.5px;color:var(--sub)}
+  .good{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--sub)}
+  .near{color:var(--near)}
+  ul{margin:8px 0;padding-left:22px} li{margin:4px 0}
+  .bar{height:20px;background:#e8ebef;border-radius:4px;overflow:hidden;position:relative;min-width:120px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  .bar b{display:block;height:100%;background:var(--ok)}
+  .bar p{display:block;height:100%;background:var(--bad)}
+  .bar span{position:absolute;right:7px;top:0;font-size:12px;line-height:20px;color:#333}
+  footer{margin-top:44px;color:var(--sub);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>fixM 判决 — W3（第三波）祭司优先感化投石车</h1>
+<div class="sub">
+  工程 <span class="mono">C:\new-aoe3.0.7g</span> ｜ 每臂 96 局（四图 × 24，<span class="mono">ROT=0</span>）｜
+  源码 <span class="mono">055e3668·7649</span> ／ <span class="mono">UsrAI.h 996fc2c6</span> ／ exe <span class="mono">8c799139</span><br>
+  需求（用户原话）：「<b>提高第三波投石车转化成功率，尝试不让士兵攻击投石车让祭司感化的收益</b>」；
+  追问澄清：「<b>反攻期可以攻击投石车，不需要在反攻期限制；着重看第三波</b>，而不是反攻期」
+</div>
+
+<div class="card verdict">
+<h2 style="margin-top:0;border:none;padding:0">一句话结论</h2>
+<p class="lead" style="margin:6px 0 0">
+  <b>用户给的两条路径一废一成：</b><br>
+  · <b class="bad">路径 a「不让士兵打投石车」→ 实测不可行</b>（fixL 无效）。真因是那些攻击令里
+    <b>72% 是引擎自动锁定</b>（Δ≤3 帧连续重发），AI 节流下发只占 <b>1%</b> ⇒ <b>AI 侧关不掉</b>。<br>
+  · <b class="good">路径 b「让祭司优先感化投石车」→ 有效</b>（fixM 保留）。W3 段感化成功
+    <b>10 → 28（+180%）</b>、<b>四张图全部上涨</b>、反攻期 <b>68 → 66 持平（净增非挪移）</b>、护栏守住。<br>
+  · <b>胜率 46.9% → 61.5%（+14.6pp / +14 局），为全部 96 局臂最高</b>；
+    Fisher 双尾 <b>p=0.059</b>（<b>边缘显著</b>）⇒ <b>方向可信、幅度待定（±5pp）</b>。详见 §8。
+</p>
+</div>
+
+<div class="kpi">
+  <div><b class="good">10 → 28</b><span>W3 段投石车感化成功（+180%）</span></div>
+  <div><b class="good">4 / 4</b><span>四张图全部上涨（含基线为 0 的 map）</span></div>
+  <div><b class="good">68 → 66</b><span>反攻期感化持平 → 净增非挪移</span></div>
+  <div><b class="good">46.9% → 61.5%</b><span>胜率（+14.6pp，全臂最高；p=0.059）</span></div>
+</div>
+
+<h2>1 · 三臂总览</h2>
+<table>
+<thead><tr><th>臂</th><th>说明</th><th class="n">胜率</th><th class="n">祭死</th><th class="n">超时</th><th class="n">崩盘<br><span class="dim" style="font-weight:400">mil_max&lt;16</span></th><th class="n">死在反攻<br>起点前</th><th class="n">Mil 首&gt;4<br>中位帧</th></tr></thead>
+<tbody>
+<tr><td><b>fixI</b> <span class="tag t-neu">基线</span></td><td>反攻期不主动追敌<br><span class="dim mono">2887e006</span></td>
+    <td class="n">45/96 46.9%</td><td class="n">39</td><td class="n">12</td><td class="n">18</td><td class="n">14</td><td class="n">14102</td></tr>
+<tr><td><b>fixL</b> <span class="tag t-warn">保留但无效</span></td><td>W3 护驾对象排除投石车<br><span class="dim mono">3d667802</span></td>
+    <td class="n">46/96 47.9%</td><td class="n">41</td><td class="n">9</td><td class="n">17</td><td class="n">16</td><td class="n">14102</td></tr>
+<tr><td><b>fixM</b> <span class="tag t-ok">当前</span></td><td>W3 把投石车提到「远程军队」之前<br><span class="dim mono">055e3668</span></td>
+    <td class="n">59/96 <b>61.5%</b></td><td class="n">30</td><td class="n">7</td><td class="n">11</td><td class="n"><b>8</b> ★</td><td class="n">14176 ★</td></tr>
+</tbody>
+</table>
+<p class="dim" style="margin-top:-2px">
+  ★ = 护栏。<b>死在反攻起点前</b>（表征"祭司为了感化投石车而提前送死"）fixI 14 / fixL 16 / <b>fixM 8</b> ⇒ 未变差、反而更少；
+  <b>Mil 首&gt;4</b> 中位帧 14102 → 14176（+74 帧 ＝ 3 秒，噪声内）⇒ <b>fixM 没有挤占前期出兵节奏</b>。
+  ⚠ 胜率与崩盘列按 §8 的噪声标定判读：胜率 <b class="near">边缘显著</b>，崩盘列仅作方向参考。
+</p>
+
+<h3>分图胜率</h3>
+<table>
+<thead><tr><th>地图</th><th class="n">fixI</th><th class="n">fixL</th><th class="n">fixM</th><th class="n">I→M</th><th class="n">Fisher p</th><th>判读</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">map</span></td><td class="n">7/24</td><td class="n">1/24</td><td class="n">7/24</td><td class="n">+0.0pp</td><td class="n">1.000</td>
+    <td class="dim">唯一持平图 —— 该图崩盘率最高（29%），大量局在 W3 前已结束</td></tr>
+<tr><td><span class="mono">map1</span></td><td class="n">12/24</td><td class="n">12/24</td><td class="n">16/24</td><td class="n good">+16.7pp</td><td class="n">0.380</td><td class="dim">↑</td></tr>
+<tr><td><span class="mono">map2</span></td><td class="n">12/24</td><td class="n">15/24</td><td class="n">18/24</td><td class="n good">+25.0pp</td><td class="n">0.135</td><td class="dim">↑</td></tr>
+<tr><td><span class="mono">map3</span></td><td class="n">14/24</td><td class="n">18/24</td><td class="n">18/24</td><td class="n good">+16.7pp</td><td class="n">0.359</td><td class="dim">↑</td></tr>
+<tr><td><b>合计</b></td><td class="n">45/96 46.9%</td><td class="n">46/96 47.9%</td><td class="n">59/96 <b>61.5%</b></td><td class="n near">+14.6pp</td><td class="n near"><b>0.059</b></td>
+    <td class="dim">3 涨 1 平；<b>边缘显著</b></td></tr>
+</tbody>
+</table>
+<p class="dim" style="margin-top:-2px">
+  ⚠ 单图 n=24 的 95% CI 宽达 ≈27~37pp ⇒ <b>分图数字只能看方向，不能单独下结论</b>；总量才是有意义的分母。
+</p>
+
+<h2>2 · 先把口径校准对（本轮做对的三件事）</h2>
+<div class="card">
+<ul>
+  <li><b>"转化率"的主体是祭司、客体是投石车（单位），不是武器厂（建筑）。</b>
+      胜利条件仍是"祭司转换敌攻城武器厂"（唯一，无旁路）；而投石车 <span class="mono">AT_STONE_THROWER</span> 是<b>敌方单位</b>，
+      感化它的收益 = 得一辆射程 10 的我方投石车 ＋ 敌方减员。</li>
+  <li><b><span class="mono">flag</span> 标定</b>：ait 第 4 段 —— <span class="mono">flag=0</span> 我方 ·
+      <span class="mono">flag=1</span> 敌方 · <span class="mono">flag=-1</span> 引擎计分行（如"玩家 转换高级敌人，分数+8"＝人类玩家分数事件）。<br>
+      标定方法：用"<b>祭司</b>设置转换目标为…"这类<b>必然属于我方</b>的指令反推（祭司是 <span class="mono">player[0]</span>）。</li>
+  <li><b>"感化成功"的可稳定检出定义</b>：同一个 <span class="mono">HumanAction:投石车 &lt;SN&gt; 设置…</span> 的 SN，
+      <b>首次以 flag=1 出现、其后以 flag=0 出现</b> ⇒ 该 SN 由敌转我 ＝ 感化成功（我方首帧用于分段）。
+      <span class="dim">不要用引擎计分行判。</span></li>
+</ul>
+</div>
+
+<h3>基线（fixI 96 局）</h3>
+<table>
+<thead><tr><th>指标</th><th class="n">值</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>我方对投石车下攻击令</td><td class="n"><b>21038</b> 条</td><td>W3 段 9839 / 反攻期 11199；出现在 83/96 局</td></tr>
+<tr><td>上述攻击令首帧</td><td class="n">f=21550</td><td><b>14.4 分 ≈ W3 起点</b></td></tr>
+<tr><td>下令人兵种构成</td><td class="n">复合弓兵 64%</td><td>棍棒兵 15%、方阵兵 12%</td></tr>
+<tr><td>祭司把投石车设为感化目标</td><td class="n">110 次</td><td>W3 段 46 / 反攻期 64；65/96 局有过</td></tr>
+<tr><td><b>投石车被感化（归属 1→0）</b></td><td class="n"><b>78 次</b></td><td><b>W3 段仅 10</b> / 反攻期 68；有投石车局 87，其中 60 局成功 ⇒ <b>局级 69%</b></td></tr>
+</tbody>
+</table>
+
+<h2>3 · 路径 a 失败：fixL（"不让士兵打投石车"）</h2>
+<div class="card stop">
+<h3 style="margin-top:0">改动</h3>
+<p style="margin:6px 0 12px">
+  <span class="mono">manageMilitary</span> 里"优先级-2 护驾"原用 <span class="mono">priestEnemySN2</span>（＝<span class="mono">findNearestEnemySN</span>，含投石车）；
+  非反攻期改用新增的 <span class="mono">priestEnemyNoStoneSN</span>（同 15 格口径，<b>仅排除投石车</b>）⇒ 15 格内只有投石车时本帧不派兵。
+</p>
+<h3>实测：落在噪声内</h3>
+<table>
+<thead><tr><th>指标</th><th class="n">fixI</th><th class="n">fixL</th><th class="n">Δ</th><th>同代码段对照</th></tr></thead>
+<tbody>
+<tr><td>W3 段我方打投石车</td><td class="n">9839</td><td class="n">9188</td><td class="n">−7.5%</td><td rowspan="2"><span class="mono">fixK</span>（<b>完全未改该处代码</b>）给出 W3 11422、反攻期 22349<br>⇒ 批次波动 <b>+16% / +100%</b></td></tr>
+<tr><td>反攻期我方打投石车</td><td class="n">11199</td><td class="n">16884</td><td class="n">+50.8%</td></tr>
+</tbody>
+</table>
+<h3>★★★ 根因：这些攻击令 AI 关不掉</h3>
+<table>
+<thead><tr><th>攻击令 Δ 间隔</th><th class="n">占比</th><th>性质</th></tr></thead>
+<tbody>
+<tr><td>Δ ≤ 3 帧（连续重发）</td><td class="n"><b>72%</b></td><td><b>引擎自动锁定</b> —— 单位进射程后引擎每帧自动锁敌并写 HumanAction</td></tr>
+<tr><td>Δ &gt; 40 帧</td><td class="n">7%</td><td>零散 / 重选目标</td></tr>
+<tr><td>Δ 4~40 帧</td><td class="n"><b>1%</b></td><td><b>AI 节流下发</b> —— 这才是 AI 唯一能省的份额</td></tr>
+</tbody>
+</table>
+<p style="margin-bottom:0">
+  ⇒ <b>AI 无法用 HumanAction 关闭引擎自动锁定</b>。想靠"不让士兵打"提高转化率，只能改
+  <b>站位 / 接敌几何</b>（使单位离投石车超过自身射程），不是改下令逻辑。
+  <b>处置：保留 fixL</b>（AI 可控部分已消除、方向与既有 <span class="mono">findNearestEnemyNoStone</span>「投石车留给祭司」设计一致、护栏持平），
+  但<b>明确标注"无实测收益，不可宣称"</b>。
+</p>
+</div>
+
+<h2>4 · 路径 b 成功：fixM（W3 把投石车提到"远程军队"之前）</h2>
+<div class="card">
+<h3 style="margin-top:0">病根 —— 一个纯算术事实</h3>
+<p style="margin:6px 0 10px">
+  <span class="mono">pickByBlood</span> 四档固定为
+  <b>0 方阵兵 &gt; 1 其余近战 &gt; 2 远程军队 &gt; 3 投石车（第 4 档）</b>
+  ⇒ <b>W3 期间只要场上有近战 / 远程，祭司永不选投石车</b>。这直接解释了"W3 段感化成功仅 10 次 / 反攻期 68 次"。
+</p>
+<h3>改动（<span class="mono">UsrAI.cpp:1517</span>，新增 12 行 / 删除 1 行）</h3>
+<pre>int t;
+if ((t = pickByBlood(0)) &gt;= 0) return t;   // 0) 方阵兵       ← 保命档，不动
+if ((t = pickByBlood(1)) &gt;= 0) return t;   // 1) 其余近战     ← 保命档，不动
+// ★★★ 2026-10-06 fixM：W3(第三波) 把投石车提到"远程军队"之前 ★★★
+if (state == DEFENSE_WAVE3) { if ((t = pickByBlood(3)) &gt;= 0) return t; }   // W3：投石车提前
+if ((t = pickByBlood(2)) &gt;= 0) return t;   // 2) 远程军队
+if (state != DEFENSE_WAVE3) { if ((t = pickByBlood(3)) &gt;= 0) return t; }   // 3) 投石车（非 W3 仍第四）</pre>
+<p class="dim" style="margin-top:-2px">
+  ⚠ <b>保命档 0 / 1 不动</b>：方阵兵与近战直接威胁祭司，而祭司死 ＝ 立即失败 ⇒ 保命优先级必须高于感化收益。<br>
+  ⚠ <b>仅 W3 生效</b>：其它阶段（含反攻期）维持原序 ⇒ 符合用户"反攻期不限制"的要求。
+</p>
+<h3>机制量实测（主判据）</h3>
+<table>
+<thead><tr><th>指标</th><th class="n">fixI</th><th class="n">fixL</th><th class="n">fixM</th><th class="n">Δ(I→M)</th><th>判读</th></tr></thead>
+<tbody>
+<tr><td>祭司设投石车为目标（总 / W3 / CA）</td><td class="n">110 / 46 / 64</td><td class="n">144 / 34 / 110</td>
+    <td class="n"><b>125 / 63 / 62</b></td><td class="n">W3 +37%</td><td class="good">W3 显著上升，CA 持平</td></tr>
+<tr><td><b>投石车被感化</b>（总 / W3 / CA）</td><td class="n">78 / <b>10</b> / 68</td><td class="n">82 / <b>9</b> / 73</td>
+    <td class="n"><b>94 / 28 / 66</b></td><td class="n"><b>W3 ×2.8</b></td><td class="good"><b>主判据达成</b></td></tr>
+<tr><td>局级成功率（有投石车局中 ≥1 辆）</td><td class="n">60/87 69%</td><td class="n">58/84 69%</td>
+    <td class="n"><b>67/89 75%</b></td><td class="n">+6pp</td><td class="good">↑</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>5 · 反"偶发 / 单图驱动"证据</h2>
+<table>
+<thead><tr><th>W3 段「至少感化 1 辆」的局数</th><th class="n">fixI</th><th class="n">fixL</th><th class="n">fixM</th><th>图示（fixI → fixM）</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">map</span></td><td class="n">0</td><td class="n">1</td><td class="n"><b>8</b></td>
+    <td><div class="bar"><b style="width:100%"></b><span>0 → 8</span></div></td></tr>
+<tr><td><span class="mono">map1</span></td><td class="n">6</td><td class="n">3</td><td class="n"><b>8</b></td>
+    <td><div class="bar"><b style="width:100%"></b><span>6 → 8</span></div></td></tr>
+<tr><td><span class="mono">map2</span></td><td class="n">1</td><td class="n">3</td><td class="n"><b>6</b></td>
+    <td><div class="bar"><b style="width:100%"></b><span>1 → 6</span></div></td></tr>
+<tr><td><span class="mono">map3</span></td><td class="n">3</td><td class="n">2</td><td class="n"><b>6</b></td>
+    <td><div class="bar"><b style="width:100%"></b><span>3 → 6</span></div></td></tr>
+<tr><td><b>合计</b></td><td class="n">10/96</td><td class="n">9/96</td><td class="n"><b>28/96</b></td>
+    <td><div class="bar"><i style="width:100%"></i><span>10 → 28</span></div></td></tr>
+</tbody>
+</table>
+<p>
+  ⇒ <b>四张图全部上涨</b>（含基线为 0 的 <span class="mono">map</span>）；而 fixL 是"有涨有跌"（1 / 3 / 3 / 2）
+  ⇒ fixM 的增益<b>不是单图偶发、也不是批次漂移</b>。
+</p>
+<div class="card verdict">
+<b>净增，而非挪移（关键反证）</b><br>
+反攻期感化成功 <b>68 → 66</b>（−2，噪声内）；反攻期设目标 <b>64 → 62</b>（未降）。
+若只是"把反攻期的选择提前"，反攻期应同步大幅下降一个量级 —— 事实没有。
+⇒ <b>fixM 开辟的是新增的感化窗口（W3 段），不是把反攻期的收益左移。</b>
+</div>
+
+<h2>6 · 护栏</h2>
+<table>
+<thead><tr><th>护栏</th><th class="n">fixI</th><th class="n">fixL</th><th class="n">fixM</th><th>判读</th></tr></thead>
+<tbody>
+<tr><td><b>死在反攻起点前</b>（<span class="mono">dth≤33000</span>）</td><td class="n">14</td><td class="n">16</td><td class="n"><b>8</b></td>
+    <td class="good">未出现"为感化投石车而提前送死"（反而更少）</td></tr>
+<tr><td><b><span class="mono">Mil</span> 首 &gt;4 中位帧</b></td><td class="n">14102</td><td class="n">14102</td><td class="n">14176</td>
+    <td class="good">+74 帧（3 秒），未挤占前期出兵</td></tr>
+<tr><td>崩盘率（<span class="mono">mil_max&lt;16</span>）</td><td class="n">18/96</td><td class="n">17/96</td><td class="n">11/96</td>
+    <td class="dim">方向未变差（量本身是混沌结局量，不作判读）</td></tr>
+</tbody>
+</table>
+
+<div class="card stop">
+<b>⚠ 护栏口径的一处自查（本轮修正）</b><br>
+原先记录的护栏"W3 段祭司死亡 <span class="mono">0 → 0</span>"是<b>假的</b>：统计脚本取死亡帧的正则写成
+<span class="mono">\|(\d+)\|</span>，而真实行是 <span class="mono">| 15387 | black | 0 | …</span>（<b>两侧有空格</b>）⇒ 恒不命中 ⇒ 指标恒 0。
+修正后真实值 = <b>死在反攻起点前 14 / 16 / 8</b>（fixI / fixL / fixM）。<br>
+<b>教训：凡"护栏恒 0 / 恒不变"，先怀疑口径，别当好消息。</b>
+</div>
+
+<h2>7 · 判读边界与可沉淀的教训</h2>
+<div class="card">
+<ul>
+  <li><b>★ 教训 1（排序类改动的通用前置检查）</b>：<b>改"优先级 / 排序"前，先做"当前排序下该目标能否被选中"的算术检验。</b>
+      fixM 的病根就是这条极简算术（第 4 档 ＋ 场上常有近战/远程 ⇒ 永不被选），<b>一行排序可解，不需要加任何闸门</b>。</li>
+  <li><b>★ 教训 2（修法分类）</b>：<b>"减少动作"（fixJ / fixL）在活锁与"对抗引擎"上无出路；"改排序 / 改落点"（fixK / fixM）代价小且可验证。</b>
+      遇到"某行为收益低"时，先在<b>选择顺序 / 落点</b>上找解，最后才考虑加闸。</li>
+  <li><b>★ 教训 3（判"能不能关掉引擎行为"）</b>：<b>先量指令的 Δ 间隔分布</b> —— 连续重发（Δ≤3）占绝对多数即说明
+      "这是引擎自动行为、AI 关不掉"，此时应立刻放弃该路径，转而改变<b>使引擎触发该行为的前置条件</b>（站位 / 距离）。</li>
+  <li><b>★ 教训 4（护栏要覆盖"新行为可能带来的新风险"）</b>：fixM 让祭司更早盯投石车，最大风险是"在 W3 火力下提前送死"，
+      因此护栏特意取"<b>死在反攻起点前</b>"这类针对性指标，而不是泛泛的"总祭死数"。</li>
+  <li><b>★ 教训 5（口径自查）</b>：<b>"恒 0 / 恒不变"的护栏要先当故障查</b>；统计脚本必须自带"已知数据自校验"。</li>
+</ul>
+</div>
+
+<h2>8 · 胜率对照与噪声标定（<span class="mono">_winall.py</span>）</h2>
+<h3>8.1 fixM 在全部 96 局臂中的位置</h3>
+<table>
+<thead><tr><th>臂</th><th>说明</th><th class="n">胜率</th><th class="n">vs fixM 的 Fisher p</th></tr></thead>
+<tbody>
+<tr><td>base1</td><td>更早基线</td><td class="n">37/96 38.5%</td><td class="n good">0.0024</td></tr>
+<tr><td>fixH</td><td>满编即出发（已回退）</td><td class="n">40/96 41.7%</td><td class="n good">0.0092</td></tr>
+<tr><td>fix2</td><td>Fix A+B（已回退）</td><td class="n">42/96 43.8%</td><td class="n good">0.0205</td></tr>
+<tr><td>fixJ</td><td>脱困总预算（已回退）</td><td class="n">44/96 45.8%</td><td class="n good">0.0425</td></tr>
+<tr><td><b>fixI</b></td><td>本轮基线（反攻期不主动追敌）</td><td class="n">45/96 46.9%</td><td class="n near">0.0594</td></tr>
+<tr><td>fixL</td><td>W3 护驾排除投石车（无效保留）</td><td class="n">46/96 47.9%</td><td class="n">0.0816</td></tr>
+<tr><td>fixK</td><td>落点可达性分级退化</td><td class="n">49/96 51.0%</td><td class="n">0.1903</td></tr>
+<tr style="background:#f2fbf5"><td><b>fixM</b> <span class="tag t-ok">当前</span></td><td>W3 祭司优先感化投石车</td><td class="n"><b>61.5%</b></td><td class="n">—</td></tr>
+</tbody>
+</table>
+<p class="dim" style="margin-top:-2px">
+  ⇒ fixM 是<b>所有 96 局臂里胜率最高的一版</b>；相对紧邻的 fixK/fixL 高出 10.4 / 13.5pp。
+  对 fixI/fixK 未达 p&lt;0.05 —— <b>96 局/臂的功效不足，不是"没效果"</b>。
+</p>
+
+<h3>8.2 ★★★ 噪声到底多大（本节的判读依据）</h3>
+<table>
+<thead><tr><th>尺度</th><th>实测复现性</th><th class="n">80% power 最小可检出差</th></tr></thead>
+<tbody>
+<tr><td><b>局级</b>（单局胜负）</td>
+    <td><span class="mono">fixI↔fixJ</span> 结局一致率 <b>38.5%</b>（fixJ 只在 7/96 局行为偏离）<br>
+        <span class="mono">fixK↔fixK2</span>（<b>同一份二进制</b>复跑）<b>50%</b></td><td class="n">—</td></tr>
+<tr><td><b>n=24</b>（单图）</td>
+    <td>同二进制批间 <b>3/24 vs 4/24</b>（Δ4.2pp）<br>95% CI 宽 <b>±27pp</b></td>
+    <td class="n bad">40.4pp</td></tr>
+<tr><td><b>n=96</b>（总量）</td>
+    <td>"同行为"臂间差实测 <b>1 / 1 / 3 / 4 局</b>（RMS <b>2.6 局</b>）<br>独立二项模型上界：两臂差 SD <b>6.9 局</b></td>
+    <td class="n near">20.2pp（Δ=14.6pp 需 <b>≈179 局/臂</b>）</td></tr>
+</tbody>
+</table>
+<div class="card verdict">
+<b>关键机制：局级完全混沌，总量却极稳。</b>
+两个近等价的臂之间，单局胜负会翻转六成；但<b>总胜局数只差 0~4 局</b>（difficulty 层面的差异被同一批地图共享，正相关抵消了单局抖动）。<br><br>
+<b>⚠ 修正一处旧铁律</b>：此前记录"24 局/臂噪声带 ≈±17pp"，并据此把 96 局臂的 12~17pp 差异判为"不可判读"。
+该 ±17pp 的证据（<span class="mono">fix1</span> map <b>4/12</b> = 33%）其实是 <b>n=12、CI 宽 47pp</b> 的小样本，<b>不能外推到 n=96</b>。<br>
+<b>现在口径</b>：n=24 带 ≈±14pp（不足以下胜率结论）；<b>n=96 带 ≈±5~7pp（可判读 ≥15pp）</b>。
+</div>
+<p>
+  ⇒ <b>对 fixM 的落地判读</b>：+14.6pp（14 局）在保守的 Fisher 模型下是 <b class="near">p=0.059，边缘显著</b>；
+  在"同行为臂间差 ≤4 局"的实测可复现性口径下则远超噪声。
+  <b>结论：增益方向可信，幅度的不确定度约 ±5pp（约 55%~67%）；不宣称"提升 15pp"。</b>
+  叠加机制量证据（W3 感化 ×2.8、四图同向、反攻期持平、护栏守住），fixM 判定为<b>保留</b>。
+</p>
+
+<footer>
+  数据：每臂 96 局（四图 × 24，<span class="mono">-rotate 0</span>，<span class="mono">PAR=8</span>，<span class="mono">TMO=420</span>）；
+  脚本 <span class="mono">_fixM.py</span>（主判据 ＋ 护栏）、<span class="mono">_fixL.py</span>（攻击令分段 ＋ Δ 间隔分布）、
+  <span class="mono">_winall.py</span>（全臂胜率 ＋ Fisher ＋ 噪声标定）。<br>
+  回退锚点：<span class="mono">UsrAI.cpp.bak_20261006_fixM</span> ＝ fixL <span class="mono">3d667802·7638</span>。
+  判决：<b>fixM 保留</b>；fixL 保留但标注"无效、不可宣称"。<br>
+  ⚠ 本版已修正两处旧口径：① "W3 段祭死 0→0" 系正则漏空格导致的<b>假绿</b>（真实 14/16/8）；
+  ② ±17pp 噪声带原为 n=24 口径、被误外推到 n=96（修正后 n=96 ≈±5~7pp）。
+</footer>
+
+</div>
+</body>
+</html>

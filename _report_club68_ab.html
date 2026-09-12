@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>clubman 8 vs 6 · 干净 A/B</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#f5f6f8;color:#1c1f23;font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:32px 20px}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:26px;letter-spacing:-.3px}
+  .sub{color:#6b7280;font-size:13.5px;margin-top:6px}
+  .verdict{margin:22px 0;background:#fff;border-left:5px solid #d9534f;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  .verdict .big{font-size:20px;font-weight:700;color:#b52b26}
+  .verdict p{color:#374151;margin-top:8px;font-size:14px}
+  h2{font-size:17px;margin:32px 0 12px;padding-bottom:7px;border-bottom:2px solid #e5e7eb}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:9px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:14px}
+  th,td{padding:10px 13px;text-align:left;border-bottom:1px solid #eef0f3}
+  th{background:#f0f2f5;font-weight:600;font-size:13px;color:#4b5563}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:none}
+  .good{color:#1a7f37;font-weight:600}
+  .bad{color:#b52b26;font-weight:600}
+  .hl{background:#fdf6e3}
+  .bar{display:flex;height:26px;border-radius:5px;overflow:hidden;margin:6px 0 2px}
+  .bar span{display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:600}
+  .legend{font-size:12px;color:#6b7280;margin-bottom:14px}
+  .card{background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:14px;font-size:14px}
+  .card b{color:#111827}
+  ul{margin:8px 0 0 20px}
+  li{margin:5px 0}
+  code{background:#eef1f5;border-radius:4px;padding:1.5px 6px;font-size:12.8px;font-family:Consolas,monospace}
+  .foot{color:#9ca3af;font-size:12.5px;margin-top:26px;text-align:center}
+  .tag{display:inline-block;background:#eef1f5;border-radius:20px;padding:2px 11px;font-size:12px;color:#4b5563;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>clubman 8 vs 6 · 干净 A/B</h1>
+  <div class="sub">map 单图 · 48 局/臂 · <code>map.njust rot0 N=48 PAR=8 TMO=420</code> · 两臂同并行度 · 2026-10-08</div>
+
+  <div class="verdict">
+    <div class="big">clubman 6 拉低 map 胜率 −14.6pp（50.0% → 35.4%）</div>
+    <p>伤害路径<b>几乎全部集中在"祭司死"</b>（13 → 22 局，+18.8pp）。机制改动已确认生效且剂量线性对应。
+    ⇒ <b><code>EARLY_CLUBMAN_TARGET</code> 应取 8，不是 6。</b></p>
+  </div>
+
+  <h2>一、机制验证：改动确实生效（剂量-反应）</h2>
+  <div class="card">
+    统计口径：AIText 中 <code>flag=0</code>（我方）的 <code>产生了新的棍棒兵(编号:…)</code> 去重计数。
+    <ul>
+      <li>TARGET <b>8 → 6（−2）</b> ⇒ 实测产量 均值 <b>11.0 → 9.0（−2.0）</b>、中位 10 → 8。</li>
+      <li>两臂产量 &lt; TARGET 的局均为 <b>0/48</b> ⇒ 目标数即硬下限。</li>
+      <li>⇒ <b>−2 的剂量精确产生 −2 的产出</b>，不存在"白跑一臂"的风险。</li>
+    </ul>
+  </div>
+
+  <h2>二、结局分布（Fisher 双尾·超几何）</h2>
+  <table>
+    <tr><th>臂</th><th>源码</th><th class="num">W 胜</th><th class="num">P 祭死</th><th class="num">T TC毁</th><th class="num">U 超时</th><th class="num">胜率 (95%CI)</th><th class="num">反攻前早死</th></tr>
+    <tr class="hl"><td><b>wbase</b> · club<b>8</b></td><td><code>0565ef20</code></td><td class="num good">24</td><td class="num">13</td><td class="num">1</td><td class="num">10</td><td class="num good">50.0% (36.4~63.6)</td><td class="num">3</td></tr>
+    <tr><td><b>club6n</b> · club<b>6</b></td><td><code>4515b55a</code></td><td class="num bad">17</td><td class="num bad">22</td><td class="num">0</td><td class="num">9</td><td class="num bad">35.4% (23.4~49.6)</td><td class="num">5</td></tr>
+  </table>
+
+  <div style="margin-top:16px" class="legend">胜率对比（红=本刀 clubman6）</div>
+  <div class="bar">
+    <span style="width:50%;background:#5b8def">club8 &nbsp;50.0%</span>
+    <span style="width:50%;background:#dfe3e8;color:#6b7280"></span>
+  </div>
+  <div class="bar">
+    <span style="width:35.4%;background:#d9534f">club6 &nbsp;35.4%</span>
+    <span style="width:64.6%;background:#dfe3e8;color:#6b7280"></span>
+  </div>
+
+  <h2>三、显著性</h2>
+  <table>
+    <tr><th>端点</th><th>club8</th><th>club6</th><th class="num">Δ</th><th class="num">Fisher p（双尾）</th><th>判读</th></tr>
+    <tr><td><b>胜（W）</b></td><td>24/48 (50.0%)</td><td>17/48 (35.4%)</td><td class="num">−14.6pp</td><td class="num">0.216</td><td>方向明确，未达 0.05</td></tr>
+    <tr><td><b>祭司死（P）</b></td><td>13/48 (27.1%)</td><td>22/48 (45.8%)</td><td class="num">−18.8pp</td><td class="num">0.089</td><td>机制量，接近显著</td></tr>
+    <tr><td>祭司反攻前早死</td><td>3/48</td><td>5/48</td><td class="num">—</td><td class="num">0.714</td><td>噪声内</td></tr>
+  </table>
+  <div class="card" style="margin-top:14px">
+    <b>功效说明</b>：n=48/臂的局级混沌带约 <b>±14pp</b>；Δ=14.6pp 恰处可判读边界。
+    本项目铁律为"<b>主判据优先机制量</b>" —— 祭司死这一机制量方向 + 幅度（+18.8pp）比总胜率更锐利，且与胜率损失一一对应（胜 −7 / 祭死 +9）。
+  </div>
+
+  <h2>四、结论</h2>
+  <div class="card">
+    <ul>
+      <li><b>clubman 6 有害</b>：−14.6pp 胜率、+18.8pp 祭司死，三条信号同向。</li>
+      <li>这是本项目<b>首个"外部强制改机制量 → 结局同向变化"的正向因果证据</b>：与 fixN（军队 27→33 强制，胜率反降 13.5pp）恰好成对照 —— 差别在于 <b>前期棍棒兵保祭司，而后期堆 <code>Mil</code> 无用</b>。</li>
+      <li>建议：<b>把 <code>EARLY_CLUBMAN_TARGET</code> 从 6 改回 8</b>（若要更激进可试 10，但需单独一臂验证）。</li>
+      <li>若要固化该结论：加跑一轮（96 局/臂 ⇒ 带 ±5pp）即可达 p&lt;0.05。</li>
+    </ul>
+  </div>
+
+  <h2>五、复现</h2>
+  <div class="card">
+    <span class="tag">跑局</span><code>MAPS="map.njust" ROT=0 N=48 PAR=8 TAG=club6n TMO=420 bash _quad_run.sh</code><br><br>
+    <span class="tag">完整性</span><code>python _check_complete.py club6n</code> → 48/48 完整、0 伪 U<br>
+    <span class="tag">A/B</span><code>python _map_cmp6.py wbase club6n</code><br>
+    <span class="tag">机制量</span><code>python _clubcount.py wbase club6n</code>
+  </div>
+
+  <div class="foot">A = wbase（clubman8，<code>0565ef20</code>）｜B = club6n（clubman6，<code>4515b55a</code>）｜两臂唯一差异 = <code>UsrAI.cpp:256</code> 一行<br>
+  工程状态：A/B 后源码已恢复 <code>3c504a46</code>（clubman6 + 人口顶格闸）并重编译</div>
+</div>
+</body>
+</html>

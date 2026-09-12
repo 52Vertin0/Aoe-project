@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OJ「所有资源不动」第二层根因：HumanAction 的 obj 判据（2026-10-04）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1c1f24; --sub:#5b6470; --line:#e2e6ec;
+    --red:#c0392b; --redbg:#fdf0ee; --grn:#1e7e34; --grnbg:#eef8f0;
+    --blu:#1c5fb0; --blubg:#eef4fc; --amb:#9a6700; --ambbg:#fdf6e3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+       font:14px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px;letter-spacing:.2px}
+  .meta{color:var(--sub);font-size:12.5px;margin-bottom:22px}
+  h2{font-size:16.5px;margin:30px 0 10px;padding-left:10px;border-left:3px solid var(--blu)}
+  h3{font-size:14px;margin:18px 0 8px;color:var(--sub)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin:12px 0}
+  .verdict{border-left:4px solid var(--red);background:var(--redbg)}
+  .ok{border-left:4px solid var(--grn);background:var(--grnbg)}
+  .info{border-left:4px solid var(--blu);background:var(--blubg)}
+  .warn{border-left:4px solid var(--amb);background:var(--ambbg)}
+  code{background:#eef1f5;padding:1px 5px;border-radius:3px;font-family:Consolas,Menlo,monospace;font-size:12.5px}
+  pre{background:#1e2229;color:#e6e9ee;padding:12px 14px;border-radius:6px;overflow-x:auto;
+      font-family:Consolas,Menlo,monospace;font-size:12.5px;line-height:1.6;margin:10px 0}
+  pre .r{color:#ff8a7a} pre .g{color:#7ee08a} pre .y{color:#ffd479} pre .d{color:#8b95a3}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f0f3f7;font-weight:600}
+  td.n{text-align:right;font-family:Consolas,Menlo,monospace}
+  .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11.5px;font-weight:600}
+  .p-red{background:#f8d7d3;color:#8c2417}
+  .p-grn{background:#d6efdb;color:#155724}
+  .p-blu{background:#d6e6fa;color:#134a8e}
+  .p-amb{background:#fbeec2;color:#7a5200}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:4px 0}
+  .kbd{font-family:Consolas,Menlo,monospace;font-size:12.5px;background:#eef1f5;padding:1px 5px;border-radius:3px}
+  .foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);color:var(--sub);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OJ「所有资源均不动」——第二层根因：<code>HumanAction</code> 的 <code>obj</code> 判据</h1>
+<div class="meta">提交 6204 复盘 ｜ 引擎 <code>v3.0.7h</code> ｜ 对照：本机 7g / 7h × <code>-exam</code>/非<code>-exam</code> 四种组合 ｜ 2026-10-04</div>
+
+<div class="card verdict">
+  <b>一句话：</b>不是引擎拒收指令，也不是「AI 没下指令」——是 AI 每帧为 <b>全部 12 个村民</b>下发的
+  <code>INS_HUMANACTION</code>（设置工作目标），在<b>帧末提交体检</b>里被 100% 丢弃；引擎一条都收不到，所以资源 33 分钟一动不动、祭司站桩被打死。
+</div>
+
+<h2>一、断点定位：自检有两层，上轮只拆了第一层</h2>
+
+<div class="card info">
+<p><code>commitInstruction()</code> 提交前逐条体检两个裸指针，两层是<b>串联</b>的：</p>
+<pre><span class="d">// ① self（执行者）——上一轮已放宽为「以权威表当前值为准」</span>
+Coordinate* curSelf = resolveSelfCurrent(c);
+if (!curSelf) { <span class="r">丢弃</span>; continue; }              <span class="d">// 键不存在 / 值为 NULL</span>
+if (curSelf != c.self) { <span class="g">采用当前指针</span>; }        <span class="d">// ← 上轮的修法</span>
+
+<span class="d">// ② obj（工作目标）——本轮才发现它仍要求「逐字节相同」</span>
+if (c.type == INS_HUMANACTION) {
+    if (it == end() || it->second != c.obj) { <span class="r">丢弃</span>; }  <span class="d">// ← 上一轮的旧口径，未被 ① 覆盖</span>
+}</pre>
+<p>评测机日志（提交 6204）的数值形状把这两层的先后关系钉死了：</p>
+<pre>[INS-DIAG f=12]   n=12  drop=<span class="r">9</span>(noKey=0 nullSelf=3) adopt=<span class="g">8</span>   objNull=3
+[INS-DIAG f=1500] n=9   drop=<span class="r">9</span>(noKey=0 nullSelf=0) adopt=<span class="g">9</span>   objNull=0
+[INS-DIAG f=3000] n=12  drop=<span class="r">12</span>(noKey=0 nullSelf=0) adopt=<span class="g">12</span>  objNull=0  <span class="d">前4=(2,41159>..)(2,41124>..)(2,41146>..)(2,41135>..)</span></pre>
+<p><code>noKey=0 / nullSelf=0</code> ⇒ ① <b>不再丢任何一条</b>（上轮修法生效）；<code>drop</code> 却仍等于 <code>n</code> ⇒ 丢弃<b>全部来自 ②</b>。
+而 <code>前4</code> 全是 <code>type=2</code>（<code>INS_HUMANACTION</code>，见 <code>config.h:646</code>）⇒ 被丢的就是村民工作令。</p>
+</div>
+
+<h2>二、本地 vs 评测机：同源码、同引擎，全口径分界</h2>
+
+<table>
+<tr><th>机制量</th><th>本机 7h（本轮实测）</th><th>OJ 提交 6204</th><th>判读</th></tr>
+<tr><td><code>INS-DIAG drop</code></td><td class="n">0</td><td class="n">9 → 12 / 帧</td><td><span class="pill p-red">分界</span></td></tr>
+<tr><td><code>INS-DIAG adopt</code></td><td class="n">0</td><td class="n">9 → 12 / 帧</td><td><span class="pill p-red">分界</span></td></tr>
+<tr><td><code>INS-SEG 5=</code>（树 / 动物段）</td><td class="n">1079</td><td class="n">待测</td><td>探针本轮新增</td></tr>
+<tr><td><code>INS-PTR</code> self vs now</td><td>同址（<code>a05e418</code>）</td><td class="n">待测</td><td>探针本轮新增</td></tr>
+<tr><td>引擎 <code>设置工作目标</code></td><td class="n">702</td><td class="n">0</td><td><span class="pill p-red">分界</span></td></tr>
+<tr><td>引擎 <code>移动至</code></td><td class="n">2119</td><td class="n">23</td><td><span class="pill p-red">分界</span></td></tr>
+<tr><td>ECO 行</td><td><code>Idle:0 Work:8</code></td><td><code>Idle:7 Work:1</code></td><td><span class="pill p-red">分界</span></td></tr>
+<tr><td>资源</td><td>持续消耗</td><td><code>Fd:150 Wd:75</code> 恒定</td><td><span class="pill p-red">分界</span></td></tr>
+<tr><td>祭司</td><td>感化成功（+4/+8 分）</td><td>0.26 → 被击杀</td><td><span class="pill p-red">分界</span></td></tr>
+<tr><td>结局</td><td>正常推进</td><td><code>GameOver,Win:0</code>（得分 8）</td><td>—</td></tr>
+</table>
+
+<p>本机引擎侧原文（<code>-exam</code> 模式下仍落盘，因取证支路在闸之前）：</p>
+<pre><span class="g">HumanAction:村民 41102 设置工作目标为 浆果丛 21285</span>
+<span class="g">HumanAction:村民 41113 设置工作目标为 树 50975</span>
+<span class="g">HumanAction:祭司 91101 设置转换目标为 刀斧兵 91110</span></pre>
+
+<div class="card warn">
+<b>顺带验尸了 OJ 日志里一条容易被误读的行：</b><code>[TREE-BLACKLIST] farmer=41158 tree=50975</code>（1551 条）。
+把这 1551 条的 <code>farmer</code> / <code>tree</code> 全部提取后统计：<code>farmer</code> ∈[41102,41320]，恰好 <b>12 个唯一值</b>（= <code>n=12</code> 的 12 个村民）；
+<code>tree</code> ∈[50012,51078]，<b>234 个唯一值，全部落在 50000–51999</b>。
+⇒ <b>快照里的 SN 完全规整、没有乱码</b>，配合 <code>[DIRTY-SNAP] 累计脏快照拦截=0</code>，可排除「快照被踩」。
+所以问题不在「AI 读到错误的 SN」，而在「AI 给出的 SN 在引擎表里<b>取不到对象指针</b>」。
+</div>
+
+<h2>三、本轮改动（已编译进提交件）</h2>
+
+<div class="card ok">
+<h3>1. <code>② obj</code> 与 <code>① self</code> 统一口径（核心修复）</h3>
+<p>旧口径 <code>it->second != c.obj</code> 要求「帧末的表值」与「构造时的副本」<b>逐字节相同</b>——这比引擎自己还严。
+引擎执行时用的是 <code>Core.cpp:1394</code> 的 <code>Coordinate* obj = cur.obj;</code>，存在性闸只有
+<code>obj == NULL || g_Object[cur.obSN] == NULL</code>（<code>Core.cpp:1395</code>），<b>从不比对副本</b>。
+新口径：键不存在 ⇒ 丢；值为 <code>NULL</code> ⇒ 丢；<b>键存在且非空 ⇒ 把当前权威指针填进 <code>c.obj</code></b>（引擎随即用的就是这个对象）。</p>
+</div>
+
+<div class="card ok">
+<h3>2. 三行自证心跳（无论有无丢弃都打；这是下一版日志的判读依据）</h3>
+<pre><span class="y">[INS-DIAG f=%1]</span> n= gObj= drop=(noKey= nullSelf=) adopt= objNull= 前4=(type,SN&gt;obSN)
+<span class="y">[INS-SEG  f=%1]</span> null= 4= 5= 2= 9= 1= O= objMiss=(SN&gt;obSN)...
+<span class="y">[INS-PTR  f=%1]</span> objMoved= objNoKey= objIsNull= objDropNull= [SN= self= now= | obSN= obj= nowO=]</pre>
+<ul>
+  <li><code>前4</code> 现在是 <code>(type,SN&gt;obSN)</code>：直接看到「谁给谁下令」——本机实测 <code>(2,41135&gt;50201)</code>＝村民 41135 去砍树 50201。</li>
+  <li><code>INS-SEG</code> 按 <code>globalNum/10000</code> 给 <code>g_Object</code> 分段：<code>4</code>=我方单位 <code>5</code>=树/动物 <code>2</code>=浆果金矿石矿 <code>9</code>=我方军事 <code>1</code>=敌 <code>null</code>=值为 NULL 的键。</li>
+  <li><code>INS-PTR</code> 打印<b>十六进制地址</b>：<code>self</code>/<code>now</code> 与 <code>obj</code>/<code>nowO</code> 是否同一地址，一眼可判「指针被更新」还是「对象已换」。</li>
+</ul>
+</div>
+
+<h2>四、下一版日志判读表</h2>
+<table>
+<tr><th>看到的形态</th><th>含义</th><th>下一步</th></tr>
+<tr><td><code>drop</code> 归 0，正常取胜</td><td>第二层就是最后一层，修好了</td><td>收工，回到胜率统计</td></tr>
+<tr><td><code>objMoved &gt; 0</code>（<code>obj</code>≠<code>nowO</code>）</td><td>指针在窗口内被更新 —— 本版已改用当前值</td><td>应当随 <code>drop</code> 归 0；若仍丢，看下两行</td></tr>
+<tr><td><code>INS-SEG 5=0</code></td><td><b>引擎表里没有 50xxx 的树</b>：表与地图不同源</td><td>转查 <code>Animal</code> 注册时机（<code>Animal.cpp:50-51</code>）</td></tr>
+<tr><td><code>objNoKey</code> / <code>objIsNull &gt; 0</code>，<code>objMiss=(41102&gt;50975)</code></td><td>AI 给的 <code>obSN</code> 在表里查不到或值为 NULL</td><td>按 <code>objMiss</code> 里的实值追「谁把该键删了/置空」</td></tr>
+<tr><td><code>INS-SEG 5=1079</code> 但 <code>objMiss</code> 里的 <code>obSN</code> 不是 50xxx</td><td>AI 送的<b>不是树 SN</b>（取错了字段）</td><td>按 <code>objMiss</code> 的 <code>obSN</code> 段位回查调用点 <code>UsrAI.cpp:3197/3382/3396</code></td></tr>
+</table>
+
+<h2>五、已逐条排除（本轮新增否证）</h2>
+<table>
+<tr><th>假设</th><th>否证方式</th><th>结论</th></tr>
+<tr><td>引擎版本差（7g vs 7h）</td><td>7h + 本 AI 本机跑局正常（<code>drop=0</code>、702 条工作令）</td><td><span class="pill p-grn">排除</span></td></tr>
+<tr><td>快照被踩 / SN 乱码</td><td>1551 条 <code>TREE-BLACKLIST</code> 的 SN 全规整；<code>bad=0</code></td><td><span class="pill p-grn">排除</span></td></tr>
+<tr><td>树被「采集完成」置 NULL</td><td>两个置 NULL 点（<code>Core.cpp:347/382</code>）都在死亡/采完分支，开局不可能</td><td><span class="pill p-grn">排除</span></td></tr>
+<tr><td>AI 线程对 <code>g_Object</code> 结构性写</td><td><code>UsrAI.cpp</code> 里 <code>g_Object[</code> 全是注释；<code>isHuman/isBuilding</code> 在 AI 侧零调用点</td><td><span class="pill p-grn">排除</span></td></tr>
+<tr><td><code>GameReplay</code> 吞掉指令</td><td><code>manageOrder(0/1)</code> 在 <code>if/else</code> 之外（<code>Core.cpp:74-75</code>）</td><td><span class="pill p-grn">排除</span></td></tr>
+<tr><td><code>lookupObjectRO</code> 与构造读不同表</td><td>两者都用 <code>g_Object.find</code>（<code>UsrAI.cpp:777</code>）</td><td><span class="pill p-grn">排除</span></td></tr>
+</table>
+
+<h2>六、提交与回退</h2>
+<div class="card info">
+<p><b>提交两个文件（成对）：</b></p>
+<pre>C:\new-aoe3.0.7g\_submit\UsrAI.cpp   md5 632386fe  7329 行 纯 LF
+C:\new-aoe3.0.7g\_submit\UsrAI.h     md5 18cf1d82   508 行 纯 LF</pre>
+<p><b>校验：</b><code>syn.py</code> <code>rc=0 / errors=0 / warnings=16</code>（与基线一致）；本机 7h 跑局 <code>drop=0 adopt=0</code>，行为零变化。</p>
+<p><b>回退锚点：</b><code>UsrAI.cpp.bak_20261004_pre_objrelax</code>（md5 <code>65e8c7c9</code>，即提交 6204 那一版）。
+<b>回退＝整文件替换：</b><code>cp UsrAI.cpp.bak_20261004_pre_objrelax UsrAI.cpp</code>。</p>
+</div>
+
+<div class="foot">
+复现命令：<code>newAOE.exe -exam -offscreen -freq MAX -map map1.njust -rotate 90</code>（7h 构建目录，PATH 需同含 Qt 5.9.2 mingw53_32 与 mingw530_32）。<br>
+本报告的每条数字都来自日志原文或引擎源码行号；未标注来源的推断均已用「已排除」表处理。
+</div>
+
+</div>
+</body>
+</html>

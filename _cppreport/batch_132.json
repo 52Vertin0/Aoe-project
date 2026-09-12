@@ -1,0 +1,27 @@
+{
+  "file_id": "C:/Users/ZhuanZ/Downloads/C++课程设计报告_帝国时代游戏.docx",
+  "blocks": [
+    {"block": "paragraph", "calls": [
+      {"tool": "doc_insert_paragraph_with_text", "args": {
+        "runs": [{"type": "image", "image_path": "C:/new-aoe3.0.7g/_cppreport/fig2_flow.png", "w": 285, "h": 344}],
+        "paragraph_property": {"jc": "center"}}}
+    ]},
+    {"block": "paragraph", "calls": [
+      {"tool": "doc_insert_paragraph_with_text", "args": {
+        "text": "图 2  程序总体流程图",
+        "text_format": {"font_family": "宋体", "font_size": 10.5},
+        "paragraph_property": {"jc": "center", "first_line_indent": 0}}}
+    ]},
+    {"block": "paragraph", "calls": [
+      {"tool": "doc_insert_paragraph_with_text", "args": {
+        "runs": [{"type": "image", "image_path": "C:/new-aoe3.0.7g/_cppreport/fig3_fsm.png", "w": 430, "h": 265}],
+        "paragraph_property": {"jc": "center"}}}
+    ]},
+    {"block": "paragraph", "calls": [
+      {"tool": "doc_insert_paragraph_with_text", "args": {
+        "text": "图 3  阶段状态机状态转移图",
+        "text_format": {"font_family": "宋体", "font_size": 10.5},
+        "paragraph_property": {"jc": "center", "first_line_indent": 0}}}
+    ]}
+  ]
+}

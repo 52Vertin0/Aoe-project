@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AoE3 UsrAI — OJ 第 5 次 SIGSEGV：加固为何"用不上"（2026-09-29）</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f23;--dim:#5c6672;--line:#e2e6eb;
+        --red:#c0392b;--grn:#1e8449;--amb:#b8860b;--blu:#1f6feb}
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.2px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  h2{font-size:18px;margin:34px 0 12px;padding-left:10px;border-left:4px solid var(--blu)}
+  h3{font-size:15px;margin:20px 0 8px;color:#2b3038}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:12px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px;background:var(--card);
+        border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th,td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#eef1f5;font-weight:600;font-size:13px}
+  tr:last-child td{border-bottom:none}
+  code{background:#eceff3;padding:1px 5px;border-radius:4px;font-family:Consolas,Menlo,monospace;font-size:12.8px}
+  pre{background:#f2f4f7;border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto;
+      font-family:Consolas,Menlo,monospace;font-size:12.6px;line-height:1.6;margin:10px 0}
+  .hit{color:var(--grn);font-weight:600}
+  .bad{color:var(--red);font-weight:600}
+  .warn{color:var(--amb);font-weight:600}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;font-weight:600}
+  .p-ok{background:#e7f6ec;color:var(--grn)}
+  .p-no{background:#fdecea;color:var(--red)}
+  .p-hold{background:#fdf6e3;color:var(--amb)}
+  .key{background:#fff8e1;border-left:5px solid #d4a017;padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+  .key b{color:#8a6100}
+  .fix{background:#eaf4ff;border-left:5px solid var(--blu);padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+  ul{margin:8px 0 8px 20px;padding:0}
+  li{margin:5px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .big{font-size:16px;font-weight:700}
+  .mono{font-family:Consolas,Menlo,monospace;font-size:12.8px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>OJ 第 5 次 SIGSEGV —— 加固为什么"用不上"</h1>
+<div class="sub">
+提交对象 <code>UsrAI.cpp</code> md5 <code>58143847</code>·7048 行 ／ <code>UsrAI.h</code> <code>370b53c7</code>·507 行
+（gsync＋ghost-build 版）｜分析时间 2026-09-29 11:10–12:00
+</div>
+
+<h2>0. 一句话结论</h2>
+<div class="key">
+<b>不是"加固失效"，是"加固只覆盖了一半写者"。</b><br>
+上一轮的 gsync 把 <code>UsrAI</code> 侧对全局 <code>g_Object</code> 的写彻底消除了（有 <code>[INS-BAD] 累计丢弃恒 0</code> 作证），
+但<b>引擎自带的 <code>enemyai.cpp</code> 里还有 <b>36 处</b>直调 <code>HumanMove/HumanAction</code></b>，
+由 <code>EnemyAI</code> 线程在写同一棵 <code>std::map</code> —— 这部分<b>选手侧关不掉</b>，
+所以树仍被"主线程 + EnemyAI 线程"并发改，崩溃照旧。
+</div>
+
+<div class="card">
+<span class="big">本次栈（Thread 5 "AI"）</span>
+<pre>Thread 5 "AI" (LWP 20)
+  #0  UsrAI::processFrame (this@entry=0x5601d58c1830)  at UsrAI.cpp:756
+  #1  UsrAI::processData                                at UsrAI.cpp:731
+  #2  AI::run                                           at AI.cpp:64
+
+Thread 6 "AI" (= EnemyAI)   AI::run at AI.cpp:73（等待中）
+Thread 1 主线程             AI::startProcessing  ← MainWidget::gameDataUpdate (MainWidget.cpp:2267)
+                            ← QTimer::timeout ← libqoffscreen.so</pre>
+</div>
+
+<h2>1. 三件事逐条钉死</h2>
+
+<h3>① gsync 与本次崩溃无关 —— 崩点族自 09-28 没变过</h3>
+<table>
+<tr><th>版本</th><th>该语句的行号</th><th>语句内容</th></tr>
+<tr><td><code>bak_20260929_pre_gsync</code>（6988 行）</td><td><code>UsrAI.cpp:700</code></td><td rowspan="2" class="mono">frame = infoPtr-&gt;GameFrame;</td></tr>
+<tr><td><b>本次提交 <code>58143847</code>（7048 行）</b></td><td><b><code>UsrAI.cpp:756</code></b></td></tr>
+</table>
+<p><b>同一句，只挪了 56 行。</b>5 次崩溃的崩点分别是
+<code>:428</code> / <code>:501</code>（<code>infoPtr = fresh</code>）/ <code>shared_ptr_base.h:1665 get()</code>（内联）/
+<code>:700</code> / <code>:756</code> —— <span class="bad">位置各异却全落在堆访问上</span> ⇒ 这是<b>内存被踩</b>，不是逻辑漏判；
+崩点只是"被踩之后最方便挂掉的那个堆访问点"。</p>
+
+<h3>② 评测机引擎 = 7h 同源，但行号偏移 <span class="warn">+2</span></h3>
+<p>（<b>本节是对上一轮结论的修正</b>：原写"评测机 = 7h"不精确，实为"= 7h 多 2 行"。）</p>
+<table>
+<tr><th>评测机栈</th><th>7h 对应行</th><th>7h 该行内容</th><th>偏移</th></tr>
+<tr><td><code>MainWidget.cpp:2267</code>（本次）</td><td>2265</td><td class="mono">emit startAI();</td><td class="bad">+2</td></tr>
+<tr><td><code>MainWidget.cpp:2261</code>（第 3 次）</td><td>2259</td><td class="mono">core-&gt;infoShare();</td><td class="bad">+2</td></tr>
+<tr><td><code>AI.cpp:64</code>（第 3、5 次）</td><td>62</td><td class="mono">processData();</td><td class="bad">+2</td></tr>
+<tr><td><code>GlobalVariate.cpp:1013</code>（第 1 次）</td><td>1011</td><td class="mono">tagInfo &amp;tagInfo::operator=(const tagInfo &amp;)</td><td class="bad">+2</td></tr>
+<tr><td><code>Core_List.cpp:848</code> / <code>Core_CondiFic.h:127</code></td><td>848 / 127</td><td class="hit">逐字一致</td><td class="hit">0</td></tr>
+<tr><td colspan="3">7g 对照：<code>emit startAI();</code> 在 <b>2269</b>、<code>operator=</code> 在 <b>1072</b></td><td class="bad">对不上</td></tr>
+</table>
+<p><b>四个独立文件同 <code>+2</code>、两个文件 <code>0</code> ⇒ 同源确立。</b>
+预演评测机用 7h 仍然正确，<span class="warn">但读栈时行号必须先减 2</span>。</p>
+<div class="key">
+<b>踩过的坑：行号指纹不能只看单点。</b><code>MainWidget.cpp:2267</code> 在 7h 实为 <code>else {</code> —— 直接比对会得出"不是 7h"的<b>错误结论</b>；
+减 2 才落回 <code>emit startAI();</code>。必须<b>算出偏移量并跨多个文件自洽验证</b>。
+</div>
+
+<h3>③ 评测机 <code>Buffer0[2]</code> 越界被 A/B 排除 ⇒ NOWPLAYER = 2</h3>
+<p>7h（<code>Core.cpp</code> 仍是 <code>Buffer0[2]</code>）上做单变量 A/B，只改 <code>config.json</code> 的 <code>NOWPLAYER</code>，
+同 exe / 同图 / 同参数：</p>
+<table>
+<tr><th>臂</th><th>NOWPLAYER</th><th>结果</th></tr>
+<tr><td>A（对照）</td><td>2</td><td class="hit">3/3 <code>exit=0</code>，跑满 f=35623 / 43583 / 45000</td></tr>
+<tr><td>B</td><td>3</td><td class="bad">3/3 SIGSEGV（<code>exit=139</code>），jsonl 仅 86 B、末帧 = 1</td></tr>
+</table>
+<p><b>物理含义</b>：<code>NOWPLAYER ≥ 3</code> 的越界发生在<b>第 1~2 帧的主线程</b>（<code>infoShare()</code> 内），进程 <code>frame=1</code> 就死；
+而选手 AI 线程要 <code>g_frame &gt; 10</code> 才进 <code>processData()</code>。</p>
+<div class="key">
+⇒ 本次栈（AI 线程已跑到 <code>processFrame</code>）与"<code>NOWPLAYER ≥ 3</code> + <code>Buffer0[2]</code> 越界"<b>不相容</b>
+⇒ 评测机 <code>NOWPLAYER</code> 实际应为 <b>2</b>。<br>
+<code>Buffer0[MAXPLAYER]</code> 的修法仍建议采纳（运行期值与编译期长度不匹配），但<b>它不是本次崩溃的原因</b>。
+</div>
+
+<h2>2. 第一嫌疑：<code>g_Object</code> 跨线程无锁并发结构性写</h2>
+<div class="card">
+<p><code>g_Object</code> 是全局 <code>std::map&lt;int, Coordinate*&gt;</code>（<code>MainWidget.cpp:35</code>），
+<b>全工程零锁</b>；唯一那把 <code>AI::aiLock</code>（<code>ai.h:49</code>）<b>零调用点 —— 是死对象</b>。</p>
+<div class="grid">
+<div>
+<h3>AI 线程侧（每条指令都在写）</h3>
+<pre>// GlobalVariate.cpp（v3.0.7h）
+instruction::instruction(...,SN,obSN,...)  // 535/536
+    { self=g_Object[SN]; obj=g_Object[obSN]; }
+instruction::instruction(...,SN,BL,BU,op)  // 541 HumanBuild
+    { self=g_Object[SN]; }
+instruction::instruction(...,SN,L,U)       // 549 HumanMove
+    { self=g_Object[SN]; }
+instruction::instruction(...,SN,option)    // 556 BuildingAction
+    { self=g_Object[SN]; }</pre>
+<p><code>std::map::operator[]</code> 在 key 不存在时<b>插入节点并旋转红黑树</b> —— 这是<b>结构性写</b>，不是读。</p>
+</div>
+<div>
+<h3>主线程侧（同一棵树）</h3>
+<pre>insert：
+  Army.cpp:75 / 118
+  Farmer.cpp:61
+  Building.cpp:55
+  Animal.cpp:51
+置空（=NULL，不 erase）：
+  Core.cpp:143 / 264 / 347 / 382 / 417
+
+放大器：
+  Core.cpp:1350 / 1355
+  → 无 null 检查解引用 cur.self</pre>
+</div>
+</div>
+</div>
+
+<h3><span class="bad">上一轮的漏判（这是最关键的一条）</span></h3>
+<div class="card">
+<p>gsync 的做法是：<b>name hiding</b> 隐藏基类 <code>ai.h:21-25</code> 五个非虚 public 指令入口，
+再用 <code>find()</code> 只读预检 ⇒ <b>命中有键 ⇒ 引擎构造里的 <code>g_Object[key]</code> 退化为纯查找</b>。
+这一步是对的，也有运行期证据（<code>[INS-BAD] 累计丢弃</code> 全批恒 0 ⇒ 没有削掉任何合法指令）。</p>
+<p><b>但它只堵住了 <code>UsrAI</code> 这一半写者。</b>引擎自带的 <code>enemyai.cpp</code> 里有：</p>
+<pre>enemyai.cpp：36 处直调 HumanMove(...) / HumanAction(...)
+            ＋ 1 处 instruction(INS_CANCEL, …)</pre>
+<p>这些调用跑在 <b><code>EnemyAI</code> 线程</b>，一样会执行 <code>g_Object[SN]</code>。
+⇒ 写者集合仍是 <b>{主线程, EnemyAI 线程}</b>，树仍被并发改。选手无法从自己的两个文件里关掉它。</p>
+</div>
+
+<div class="fix">
+<b class="mono">给平台方的 5 行修法（语义等价，只是把 operator[] 换成 find）</b>
+<pre>static inline Coordinate* g_ObjectRO(int sn) {
+    auto it = g_Object.find(sn);
+    return it == g_Object.end() ? nullptr : it->second;
+}</pre>
+把 <code>GlobalVariate.cpp</code> 那 5 行的 <code>g_Object[SN]</code> 换成 <code>g_ObjectRO(SN)</code> 即可。
+注意 <code>EnemyAI</code> 侧也走同一批构造函数，所以改一处即覆盖全部。
+</div>
+
+<h2>3. 本机复现能力 = 0（所以"本机不崩"是零信息量的绿灯）</h2>
+<table>
+<tr><th>实验</th><th>规模</th><th>结果</th></tr>
+<tr><td>7g × Release(-O2)</td><td>100+ 局</td><td class="hit">零 SIGSEGV</td></tr>
+<tr><td>7h × Release(-O2)</td><td>100+ 局</td><td class="hit">零 SIGSEGV</td></tr>
+<tr><td>7h × Debug(-O0)</td><td>6 局</td><td class="hit">零 SIGSEGV，全部跑满</td></tr>
+<tr><td>评测机（Linux/gcc13）</td><td>5 次提交</td><td class="bad">5 次 SIGSEGV</td></tr>
+</table>
+<div class="key">
+<b>收回措辞</b>：此前记的「h2＋h3 共 48/48 局零 SIGSEGV ⇒ gsync 初步有效」<b>已作废</b>。<br>
+理由：本机在 gsync <b>之前</b>也从没崩过 ⇒ "48/48 零崩"只证明<b>本机触发路径不存在</b>，对评测机零预测力。
+（旧记录里"g3 批第 21 局崩溃"用的是<b>不含 ghost/gsync 的旧 exe</b>，不能当对照。）<br>
+评测机跑 <b>Debug(-O0 -g)</b>：<code>std::map</code> 操作不内联 ⇒ 竞态窗口远大于 -O2 ⇒ 这能解释"评测机必崩、本机百局不崩"。
+</div>
+
+<h2>4. 下一手：先交"诊断版"，把猜变成证</h2>
+<div class="card">
+<p>盲改盲交＝浪费提交次数。诊断版在<b>不改变任何判据与指令</b>的前提下塞入两处纯 <code>&lt;cstdio&gt;</code> 观测：</p>
+<pre>// 1) 环境自述（stdout + stderr 双写，立即 fflush）
+const std::string engVer = GAME_VERSION;   // ⚠ 必须先存具名变量
+fprintf(stdout, "[OJ-ENV] engine=%s NOWPLAYER=%d MAXPLAYER=%d represent=%d frame=%d\n",
+        engVer.c_str(), (int)NOWPLAYER, (int)MAXPLAYER, (int)NOWPLAYERREPRESENT, frame);
+
+// 2) 心跳（每 300 帧一次）⇒ 崩溃帧 = 最后一行 + ≤300
+static int hb = 0;
+if (++hb &gt;= 300) { hb = 0; fprintf(stdout, "[OJ-HB] f=%d\n", frame); fflush(stdout); }</pre>
+<p><b>为什么走 stdout 而不是引擎的 DebugText</b>：7h 的 <code>call_debugText</code> 在 <code>-exam</code> 闸<b>之后</b>
+⇒ 我们的 <code>[ENV]/[SNAP]/[INS-BAD]</code> 文本在评测机上很可能被整条丢弃。
+而 backtrace 里带着 gdb 自己的 stderr（<code>could not find '.gnu_debugaltlink'</code>）
+⇒ <b>评测机捕获了进程输出</b> ⇒ <code>fprintf</code> + <code>fflush</code> 是唯一能被回读的通道。</p>
+<p class="mono">⚠ 已踩的坑：<code>GAME_VERSION</code> 是 <code>RuntimeConfig_GAME_VERSION()</code> 返回的<b>临时 std::string</b>，
+写成 <code>const char* p = GAME_VERSION.c_str();</code> 就是 use-after-free —— 会凭空造一个假崩点。</p>
+</div>
+
+<table>
+<tr><th>项目</th><th>值</th></tr>
+<tr><td>提交目录</td><td><code>C:\new-aoe3.0.7g\_submit\</code></td></tr>
+<tr><td><code>UsrAI.cpp</code></td><td><code>7fc73965</code> · 7081 行 · <span class="hit">纯 LF（0 CR）</span></td></tr>
+<tr><td><code>UsrAI.h</code></td><td><code>4dd7829a</code> · 507 行 · <span class="hit">纯 LF（0 CR）</span></td></tr>
+<tr><td>基线关系</td><td><code>58143847</code> + 33 行纯诊断（0 err / 16 warn，零增量）</td></tr>
+<tr><td>本机冒烟</td><td><span class="hit">通过</span>（stdout 出现 <code>[OJ-ENV] engine=v3.0.7g NOWPLAYER=2 …</code> 与周期 <code>[OJ-HB] f=</code>）</td></tr>
+<tr><td class="warn">崩点行号变化</td><td><code>processFrame();</code> :731 → <b>:752</b>　｜　<code>frame = infoPtr-&gt;GameFrame;</code> :756 → <b>:777</b></td></tr>
+</table>
+<div class="key">
+⇒ <b>下次若还崩，栈里是 <code>:777</code> / <code>:752</code></b> —— 看到这两个数字别误判成"崩点变了"。<br>
+交诊断版换回的是：<b>评测机真实 <code>NOWPLAYER</code></b>（直接证实或推翻上面反推的 2）
+＋ <b>崩溃帧号</b>（把"死在 1~2 帧 = 引擎初始化/接线"与"死在万帧级 = 竞态/踩内存"彻底分开）。
+</div>
+
+<h2>5. 已证伪的方向（别再查）</h2>
+<table>
+<tr><th>假设</th><th>为什么排除</th></tr>
+<tr><td>快照层（<code>infoPtr</code> / 深拷贝 / 零拷贝 / 哨兵）</td>
+    <td>三轮加固全无效；连"AI 线程只直读 <code>getInfo()</code>、零指令"的最小探针都不崩 ⇒ 崩只在策略层/指令路径。<code>[SNAP] bad=0</code> 也照崩。</td></tr>
+<tr><td><code>Buffer0[2]</code> 越界（<code>NOWPLAYER ≥ 3</code>）</td>
+    <td>A/B 实测：<code>NOWPLAYER=3</code> 在 <b>第 1~2 帧</b>就死（AI 要 <code>g_frame &gt; 10</code>）；与本次栈不相容。</td></tr>
+<tr><td><code>clearInsRet()</code></td><td>全工程 0 调用点。</td></tr>
+<tr><td><code>isHuman/isBuilding</code> 用 <code>operator[]</code></td><td><code>UsrAI.cpp</code> 内 0 调用点。</td></tr>
+<tr><td><code>tagGame::update()</code> 的 locker 被注释</td><td><code>update()</code> 与 <code>getInfo()</code> 现在都在主线程 ⇒ 串行。</td></tr>
+</table>
+
+<h2>6. 一句实话</h2>
+<div class="key">
+这条崩溃路径<b>选手侧已经修不动了</b>。<code>g_Object</code> 的另一个写者住在 <code>enemyai.cpp</code>，
+不在提交范围内。剩下的选项只有三个：<br>
+① 交诊断版把参数钉死（成本最低，先做）；<br>
+② 加 <code>infoPtr</code> 金丝雀，把"野指针解引用 ⇒ 猝死"降级为"检测到被踩 ⇒ 丢一帧 + 尝试恢复"（治标，能提完赛率）；<br>
+③ 推动平台方改引擎那 5 行。
+</div>
+
+<div class="sub" style="margin-top:34px">
+证据档案：<code>.workbuddy\memory\2026-09-29.md</code> §15–§17 ｜ <code>MEMORY.md</code> §0/§3 ｜
+技能 <code>aoe3-oj-crash-triage</code> §2.6 ｜ 平台缺陷报告 <code>C:\new-aoe3.0.7g\aoe3_oj_defect_report.md</code>
+</div>
+
+</div></body>
+</html>

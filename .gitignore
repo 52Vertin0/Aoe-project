@@ -1,10 +1,16 @@
-*.orig
-*.user*
+# ==========================================================
+#  Aoe-project / 帝国时代 AI 课程设计
+#  仅源码入库；跑局产物、日志、二进制一律排除
+# ==========================================================
 
-# Qt相关临时文件
-Makefile*
+# ---------- 构建产物 ----------
 *.o
 *.obj
+*.a
+*.lib
+*.exe
+*.dll
+Makefile*
 moc_*
 ui_*.h
 qrc_*.cpp
@@ -12,37 +18,68 @@ qrc_*.cpp
 object_script.*
 *.qmake.stash
 *.pro.user*
-# 构建目录
 debug/
 release/
 build/
+output/
 
-# 日志文件
+# ---------- Qt 资源（由 res.qrc 生成，体积大） ----------
+res/
+res.rcc
+*.rcc
+
+# ---------- 跑局产物 / 日志（单文件可达 50 MB） ----------
 *.log
+*.glog
+*.ait
+*.jsonl
+*.out
+*.err
+*.dbg
+*.release
+*.debug
 
-# CursorAI相关文件
-.cursor
+# ---------- 引擎二进制快照 ----------
+*.bin
+*.zip
+*.7z
+*.rar
+*.video
+library/fixed_point/benchmark_linux
 
-# VS Code相关文件
-.vscode/
-
-# JetBrains IDE相关文件
-.idea/
-
-# 系统相关文件
-.DS_Store
-Thumbs.db
-
-# 临时文件
+# ---------- 版本快照 ----------
+# 说明：UsrAI 的逐版本快照已完整承载于 git 提交历史
+#       （162 个「版本 <tag>」提交），此处不再重复入库。
 *.bak
+*.bak_*
+bak_*_UsrAI.cpp
+bak_*_UsrAI.h
+_submit.bak_*/
+
+# ---------- 草稿 / 临时 ----------
+_*.json
+_*.txt
 *.tmp
 *.temp
 *~
-output/
+*.orig
+*.user
+*.code-workspace
+*.stash
+_stale_*/
+_dsh*/
+__pycache__/
+*.pyc
+*.pyo
 
-# 静态图片文件
-res/
-res.rcc
+# ---------- 编辑器 ----------
+.vscode/
+.idea/
+.cursor
 
-# 本地生成的架构文档
+# ---------- 系统 ----------
+.DS_Store
+Thumbs.db
+
+# ---------- 本地生成的架构文档 ----------
 docs/architecture/

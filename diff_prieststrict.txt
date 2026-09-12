@@ -1,0 +1,125 @@
+--- bak_20260916_pre_prieststrict_UsrAI.cpp	2026-09-16 13:55:47.515559600 +0800
++++ UsrAI.cpp	2026-09-16 15:07:00.175907700 +0800
+@@ -270,6 +270,18 @@
+ //   半径复用 PRIEST_SIEGE_CLEAR_TOWER_R（同一语义单一真源，不新增第二套塔距判据）。
+ //   已起手（WorkObjectSN==武器厂）时不打断——中断施法会重置进度（铁律 14）。
+ #define PRIEST_SIEGE_GUARD_HP      0.45  // 起手血量闸：低于此值且最近敌塔 <= CLEAR_TOWER_R 格 ⇒ 本帧不起手
++// ★★★ 2026-09-16 用户需求：感化武器厂条件收紧为【敌方士兵全灭 + 箭塔全拆】★★★
++//   原判据 localClear = 【局部】清场（敌军队距祭司<8格 / 敌塔距祭司<14格才算"未清场"）
++//   ⇒ 8 格外有敌兵、14 格外有塔都放行 ⇒ 祭司贴上去施法时仍在挨塔/挨兵（实测 10 次起手 9 次塔在射击）。
++//   新判据 globalClear = 【全局】清场，两道条件全部满足才允许感化：
++//     ① 敌方军队列表【无任何活单位】（info.enemy_armies 中 Blood>0 者计数 == 0）
++//     ② 敌方建筑列表【无任何箭塔】（info.enemy_buildings 中 BUILDING_ARROWTOWER 计数 == 0）
++//   ⚠⚠ 已知风险（务必保留此注释，勿删）：实测 32 局中该全局状态【从未出现】——
++//     敌方每局持续产兵 120~143 个、我方击杀仅 16~40 个 ⇒ "敌全灭"结构性不可达；
++//     且我方每局反被拆 3 座塔 ⇒ "塔全拆"亦从未做到。故本闸一旦启用，感化武器厂大概率 0 次、
++//     胜局归零，属【预期内】的实验结果（铁律 24：加闸前已量化"闸后是不是唯一的路"）。
++//     如需回滚：把 PRIEST_SIEGE_REQUIRE_GLOBAL_CLEAR 改为 false 即可恢复原 localClear 行为。
++#define PRIEST_SIEGE_REQUIRE_GLOBAL_CLEAR true   // true = 启用全局清场闸（敌全灭+塔全拆）；false = 回退局部清场
+ #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
+ // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
+ // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
+@@ -4983,6 +4995,45 @@
+                       .arg(towerCnt).arg((nearTowerD > 1e8) ? -1.0 : nearTowerD / BL, 0, 'f', 1));
+         }
+ 
++        // ★★★ 2026-09-16 用户需求：感化武器厂条件 = 【敌方士兵全灭 + 箭塔全拆】★★★
++        //   ⚠ 位置说明：本判据【必须在 early 路径之前】——early 是实际主力下发点（实测 6/6 起手走它），
++        //     且它此前【无任何敌情判据】（只受"已发现+冷却+射程"三约束）。判据放在 early 之后 = 闸形同虚设。
++        //   ⚠ 单一真源：early / front 两条路径共用这里的 clearOk，绝不各写一份（铁律 21/26）。
++        //   ① 局部清场（旧判据）：周边半径内无活敌军队 + 无箭塔（保留作回退路径与诊断对比）
++        bool localClear = true;
++        for (auto &e : info.enemy_armies)
++            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_CLEAR_ARMY_R * BL) { localClear = false; break; }
++        if (localClear)
++            for (auto &b : info.enemy_buildings)
++                if (b.Type == BUILDING_ARROWTOWER &&
++                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_CLEAR_TOWER_R * BL) { localClear = false; break; }
++        //   ② 全局清场（新判据）：不看距离，看全球总量——敌活军队 == 0 且 敌箭塔 == 0
++        //   ⚠ 受 Core.cpp:622 explored||visible 约束：列表为空也可能是"未探明"。故叠加【已探明保险】——
++        //     只有武器厂已被发现（enemySiegeSN != -1）才认这份计数（此时我方已深入敌腹地，可见性才够）。
++        int enemyAliveArmyN = 0;
++        for (auto &e : info.enemy_armies)
++            if (e.Blood > 0) enemyAliveArmyN++;
++        int enemyTowerN = 0;
++        for (auto &b : info.enemy_buildings)
++            if (b.Type == BUILDING_ARROWTOWER) enemyTowerN++;
++        const bool globalClear = (enemyAliveArmyN == 0 && enemyTowerN == 0 && enemySiegeSN != -1);
++        const bool clearOk = PRIEST_SIEGE_REQUIRE_GLOBAL_CLEAR ? globalClear : localClear;
++        // ★★ 2026-09-14 前出感化【迟滞锁】：防 clearOk 在边界处逐帧翻转 ★★
++        //   进入：清场成立 + 武器厂已发现；退出：敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP)。
++        if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR && clearOk && enemySiegeSN != -1) {
++            priestSiegeApproach = 1;
++        } else if (priestSiegeApproach == 1) {
++            bool hardAbort = false;
++            for (auto &e : info.enemy_armies)
++                if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_ABORT_R * BL) { hardAbort = true; break; }
++            double pBRap = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
++            // ★ 2026-09-16：全局闸启用时，迟滞锁不能靠"已进入"续命——否则首次满足后永久放行，闸形同虚设。
++            //   故全局模式下退出条件追加 clearOk 失效（敌再现/塔再现即立即退出）。
++            if (hardAbort || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1 ||
++                (PRIEST_SIEGE_REQUIRE_GLOBAL_CLEAR && !clearOk)) priestSiegeApproach = 0;
++        }
++        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (clearOk || priestSiegeApproach == 1);
++
+         // ★★★ 2026-09-14 关键修复：武器厂感化【提前到状态/移动闸之前】★★★
+         //   铁证：[LC-DBG] 8 局仅命中 1 次 ⇒ 下方整段执行率 <1%（被 NowState 闸 + priestMoveCooldown 闸挡住）。
+         //   而【感化是 HumanAction，与 priestMoveCooldown(移动节流) 无关】——引擎侧转换冷却由 ConvertCooldown 管。
+@@ -5010,6 +5061,16 @@
+                                       .arg(towerN0).arg(sD0 / BL, 0, 'f', 1));
+                         return;   // 本帧不接管祭司
+                     }
++                    // ★★★ 2026-09-16 用户需求：全局清场闸（敌全灭 + 塔全拆）★★★
++                    //   early 路径此前【无任何敌情判据】⇒ 祭司一进 12 格就顶着敌兵/敌塔起手（实测 9/10 次塔在射击）。
++                    //   与 front 路径共用同一份 clearOk（单一真源）；不满足则本帧不起手，交回下游逻辑。
++                    if (!clearOk) {
++                        if (frame % 100 == 0)
++                            DebugText(QString("[SIEGE-WAIT f=%1] hp=%2 clearOk=0 alive=%3 towers=%4 dS=%5")
++                                      .arg(frame).arg(pHp0, 0, 'f', 2).arg(enemyAliveArmyN)
++                                      .arg(enemyTowerN).arg(sD0 / BL, 0, 'f', 1));
++                        return;   // 本帧不接管祭司（不清场就不感化）
++                    }
+                     HumanAction(priestSN, enemySiegeSN);
+                     priestCounterCooldown = PRIEST_SIEGE_CONVERT_LOCKOUT;
+                     // 每次发令必打（原为 frame%50 采样 ⇒ 起手过程不可观测）；发令本身已被 lockout 节流到 <=1/400 帧
+@@ -5063,25 +5124,6 @@
+         //   修：祭司周边无军事威胁时解除 18 格约束。判据用【局部清场】（周边无活敌军队 + 无箭塔）而非
+         //   "全局敌全灭"——后者实测 7/8 局从未出现；用户描述的本质是"祭司身边安全了就该去干活"。
+         // ★ 2026-09-14 半径 20→8/14：旧 20 格 > 感化射程 12 格 ⇒ 结构死锁（祭司永远够不到）。
+-        bool localClear = true;
+-        for (auto &e : info.enemy_armies)
+-            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_CLEAR_ARMY_R * BL) { localClear = false; break; }
+-        if (localClear)
+-            for (auto &b : info.enemy_buildings)
+-                if (b.Type == BUILDING_ARROWTOWER &&
+-                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_CLEAR_TOWER_R * BL) { localClear = false; break; }
+-        // ★★ 2026-09-14 前出感化【迟滞锁】：防 localClear 在半径边界处逐帧翻转 ★★
+-        //   进入：清场成立 + 武器厂已发现；退出：敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP)。
+-        if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear && enemySiegeSN != -1) {
+-            priestSiegeApproach = 1;
+-        } else if (priestSiegeApproach == 1) {
+-            bool hardAbort = false;
+-            for (auto &e : info.enemy_armies)
+-                if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_ABORT_R * BL) { hardAbort = true; break; }
+-            double pBRap = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
+-            if (hardAbort || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1) priestSiegeApproach = 0;
+-        }
+-        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (localClear || priestSiegeApproach == 1);
+         // ★ 2026-09-15 清理：原"扩到 28 格后 priestEnemy>=0 return"是 WRONG-LAYER return——反攻期祭司前出后
+         //   28 格内**恒有敌** ⇒ 几乎每帧触发 ⇒ 祭司段永远跑不到 ⇒ 停在 TC 不动。该查询已彻底删除。
+         //   managePriest 仍独立按"投石车→近战→远程→村民"感化；本段只负责感化武器厂 + HumanMove 推进。
+@@ -5137,11 +5179,12 @@
+             return;   // 清场期：本帧祭司任务就是感化武器厂，不走下方后撤逻辑
+         }
+ 
+-        if (siege && pDist < 12 * BL && priest->ConvertCooldown <= 0) {
++        // ★ 2026-09-16：legacy 被动感化路径同样受全局清场闸约束（三处下发点共用同一 clearOk，铁律 21/26）。
++        if (siege && pDist < 12 * BL && priest->ConvertCooldown <= 0 && clearOk) {
+             // 在感化范围内→感化武器厂！
+             HumanAction(priestSN, siege->SN);
+             priestCounterCooldown = 60; priestMoveCooldown = 60;
+-            DebugText(">> Priest converting Siege Workshop!");
++            DebugText(">> Priest converting Siege Workshop! path=legacy");
+         } else if (priestCounterCooldown <= 0 || priestTooClose) {
+             // ★ 2026-09-12（用户需求"祭司反攻不要太靠前"）：旧版把祭司推到 target(敌基地)-5格(仅沿 DR 轴)，
+             //   几乎与大军一起冲到敌方基地外 5 格，前线一崩就暴露在敌塔/敌兵火力下 = 立即失败。

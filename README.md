@@ -145,6 +145,47 @@ DebugText(QString("Frame: %1, Food: %2").arg(frame).arg(info.Meat));
 
 ---
 
+---
+
+## 🕓 版本演进历史
+
+本仓库 `main` 分支共 **163 个提交**，其中 **162 个是 `UsrAI` 的逐版本快照**（每个提交对应一次策略改动），最后 1 个提交为工程当前状态（含全部引擎源码、脚本与文档）。
+
+- 完整版本清单（编号 / 日期 / 标签 / 源码 md5 / 行数）：[`VERSIONS.md`](VERSIONS.md)
+- 与课程设计报告《1.7 版本记录》一节对应。
+
+### 常用命令
+
+```bash
+# 列出全部版本提交
+git log --oneline -- UsrAI.cpp
+
+# 导出某个历史版本的源码
+git show <commit>:UsrAI.cpp > UsrAI.cpp
+
+# 回退到某个版本
+git checkout <commit> -- UsrAI.cpp UsrAI.h
+
+# 对比两个版本
+git diff <commitA> <commitB> -- UsrAI.cpp
+```
+
+> **关于本地 `UsrAI.cpp.bak_<日期>_<标签>` 快照文件**：它们的内容已完整保存在提交历史中，因此已在 `.gitignore` 中排除，不再重复入库。本地备份习惯可照旧保留。
+
+### 行尾约定
+
+仓库通过 `.gitattributes`（`* -text`）关闭了 git 的全部行尾转换，保证字节级保真：
+
+| 文件 | 行尾 | 说明 |
+|---|---|---|
+| `UsrAI.cpp` 等 `.cpp` | 纯 LF | 与构建工具链约定一致 |
+| `UsrAI.h` 等 `.h` | 纯 CRLF | 与构建工具链约定一致 |
+| `config.json` | 纯 LF | |
+
+> ⚠ 不要移除 `* -text`：否则 git 会将 `.h` 的 CRLF 静默归一为 LF，破坏本地构建前提。
+
+---
+
 ## 🙏 致谢
 
 - 原游戏《帝国时代1》（Microsoft，1997）

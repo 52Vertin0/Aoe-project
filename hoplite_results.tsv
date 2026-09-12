@@ -1,0 +1,9 @@
+run	frame	score	win	food	gold	hopMax	limitLast	lastHop	lastComp	atkCnt	lateCnt	armyHopMax	reason
+1	40729	473	false	380	0	5	12	5	14	1	5	5	PRIEST_DEAD
+2	45001	530	false	538	10	5	5	3	5	5	3	5	TIMEOUT
+3	16187	143	false	56	30	NA	NA	NA	NA	0	0	NA	PRIEST_DEAD
+4	45001	526	false	512	0	5	7	4	7	5	4	5	TIMEOUT
+5	45001	545	false	578	13	4	5	2	5	5	4	5	TIMEOUT
+6	45001	543	false	229	9	4	8	3	8	5	4	5	TIMEOUT
+7	44453	514	false	385	20	4	8	3	8	6	0	3	PRIEST_DEAD
+8	45001	544	false	39	20	7	5	2	5	6	7	7	TIMEOUT

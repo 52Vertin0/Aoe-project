@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>当前版本各地图胜率测试（fixM 行为等价）</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#f5f6f8;color:#1f2329;margin:0;padding:28px;}
+  h1{font-size:20px;margin:0 0 4px;}
+  .sub{color:#6b7280;font-size:13px;margin-bottom:18px;}
+  .card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+  h2{font-size:15px;margin:0 0 12px;color:#374151;border-left:3px solid #3b82f6;padding-left:8px;}
+  table{border-collapse:collapse;width:100%;font-size:13px;}
+  th,td{border:1px solid #e5e7eb;padding:7px 10px;text-align:center;}
+  th{background:#f3f4f6;font-weight:600;color:#374151;}
+  tr:nth-child(even) td{background:#fafafa;}
+  .win-good{color:#dc2626;font-weight:600;}
+  .win-bad{color:#16a34a;font-weight:600;}
+  .note{background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:12px 14px;font-size:13px;color:#7c2d12;line-height:1.6;}
+  .ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;border-radius:8px;padding:12px 14px;font-size:13px;line-height:1.6;}
+  code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px;}
+  .big{font-size:26px;font-weight:700;}
+</style>
+</head>
+<body>
+<h1>当前版本各地图胜率测试</h1>
+<div class="sub">TAG=current · 4 图×24 局（rot=0, PAR=8, −freq MAX）· 胜率口径 = 祭司转换敌攻城武器厂 · 生成于 2026-10-07</div>
+
+<div class="card">
+  <h2>一、当前版本分图胜率</h2>
+  <table>
+    <tr><th>地图</th><th>局数</th><th>胜</th><th>胜率</th><th>95%CI</th><th>祭死</th><th>TC毁</th><th>超时</th></tr>
+    <tr><td>map</td><td>24</td><td>2</td><td class="win-bad">8.3%</td><td>[2,26]</td><td>18</td><td>0</td><td>4</td></tr>
+    <tr><td>map1</td><td>24</td><td>14</td><td>58.3%</td><td>[39,76]</td><td>9</td><td>0</td><td>1</td></tr>
+    <tr><td>map2</td><td>24</td><td>14</td><td>58.3%</td><td>[39,76]</td><td>9</td><td>0</td><td>1</td></tr>
+    <tr><td>map3</td><td>24</td><td>17</td><td class="win-good">70.8%</td><td>[51,85]</td><td>6</td><td>0</td><td>1</td></tr>
+    <tr style="font-weight:600;background:#eef2ff;"><td>总体</td><td>96</td><td>47</td><td>49.0%</td><td>[39,59]</td><td>42</td><td>0</td><td>7</td></tr>
+  </table>
+  <p style="font-size:12px;color:#6b7280;margin:10px 0 0;">分图胜率降序：<b>map3 70.8% &gt; map1 = map2 58.3% &gt;&gt; map 8.3%</b></p>
+</div>
+
+<div class="card">
+  <h2>二、与历史 fixM 基线对照（同口径重算，n=96）</h2>
+  <table>
+    <tr><th>地图</th><th>fixM（历史）</th><th>current（本次）</th><th>Δ</th><th>双尾 Fisher p</th></tr>
+    <tr><td>map</td><td>7/24 = 29.2%</td><td>2/24 = 8.3%</td><td class="win-bad">−20.8pp (−5局)</td><td>0.073</td></tr>
+    <tr><td>map1</td><td>16/24 = 66.7%</td><td>14/24 = 58.3%</td><td>−8.4pp (−2局)</td><td>0.766</td></tr>
+    <tr><td>map2</td><td>18/24 = 75.0%</td><td>14/24 = 58.3%</td><td>−16.7pp (−4局)</td><td>0.359</td></tr>
+    <tr><td>map3</td><td>18/24 = 75.0%</td><td>17/24 = 70.8%</td><td>−4.2pp (−1局)</td><td>1.000</td></tr>
+    <tr style="font-weight:600;background:#eef2ff;"><td>总体</td><td>59/96 = 61.5%</td><td>47/96 = 49.0%</td><td>−12.5pp (−12局)</td><td>0.110</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>三、判读结论</h2>
+  <div class="ok">
+    <p style="margin:0 0 8px;"><b>1. 分图排序完全稳定。</b> 当前批次与历史 fixM 同为 <b>map3 最好 &gt; map1≈map2 &gt; map 最差</b>，说明地图难度结构未变，map 仍是前期崩盘（C1 桶：祭司死在基地旁，Mil 4→0）主导的最难图。</p>
+    <p style="margin:0 0 8px;"><b>2. 总胜率下滑 12.5pp 不构成可判定的行为退化。</b> 当前源码 <code>ffcb941a</code> 是 fixM 的<b>纯注释清理版（token 级零变动）</b>，行为必然等价；差异应判定为 96 局抽样的随机噪声——总体 Fisher p=0.11（&gt;0.05 不显著），分图除 map 边缘（p=0.07）外均不显著，与"局级完全混沌"铁律吻合。</p>
+    <p style="margin:0;"><b>3. 单批 96 局不足以下胜负结论。</b> 96 局/臂波动 SD 保守上界 ≈6.9 局（±7pp），判读阈 ≥15pp 需 ≈180 局/臂。若要确认当前版本"真实"稳定胜率，需补到 ~180 局/臂（≈4×）。</p>
+  </div>
+  <div class="note" style="margin-top:12px;">
+    <b>附：败因分解</b> 当前批次祭死 42/96（vs fixM 30/96，多 12 局），正好是总胜率少 12 局的机械镜像（祭死即输）。TC 毁 0 局，超时 7 局（两批相同）。这 12 局祭死波动落在二项噪声带内（p≈0.31，SD≈4.7局，12局≈2.5σ），属可观测但非异常的抽样摆动。
+  </div>
+</div>
+
+<div class="card">
+  <h2>四、测试环境与可复现</h2>
+  <ul style="font-size:13px;line-height:1.7;margin:0;padding-left:18px;color:#374151;">
+    <li>源码：<code>UsrAI.cpp</code> <code>ffcb941a</code>（= fixM 行为等价，注释清理），已通过 <code>g++ −fsyntax−only</code>（0 err / warning 口径 12 = 基线），<code>release/newAOE.exe</code> 已与源码对齐。</li>
+    <li>命令：<code>MAPS="map map1 map2 map3" ROT=0 N=24 PAR=8 TAG=current TMO=420 bash _quad_run.sh</code></li>
+    <li>统计：<code>_win_current.py</code>（胜率口径 = <code>被祭司转换,归属阵营1-&gt;0</code>；精匹 <code>DEFEAT: Priest killed</code>/<code>DEFEAT: Town Center destroyed</code> 判祭死/TC毁，其余算超时；带 Wilson 95%CI）。</li>
+    <li>产物：<code>current_map{r0,1,2,3}_r0_*.ait</code>（96 个）；对照历史 <code>fixM_*_r0_*.ait</code>（96 个，仍在磁盘）。</li>
+  </ul>
+</div>
+</body>
+</html>

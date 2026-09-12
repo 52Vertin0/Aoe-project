@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>map2 探路期敌情闸 验证报告（n1 批 · 12 局）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1c1f23; --sub:#5b6470; --line:#e2e6eb;
+    --red:#c0392b; --green:#1e8449; --amber:#b7791f; --blue:#1f6feb; --purple:#6b46c1;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 64px}
+  h1{font-size:24px;margin:0 0 6px}
+  h2{font-size:18px;margin:34px 0 12px;padding-left:10px;border-left:4px solid var(--blue)}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--sub)}
+  .lead{color:var(--sub);margin:0 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .verdict{border-left:5px solid var(--red)}
+  .verdict strong{color:var(--red)}
+  .ok{border-left:5px solid var(--green)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  thead th{background:#eef1f5;color:var(--sub);font-weight:600}
+  tbody tr:hover{background:#fafbfc}
+  .num{font-variant-numeric:tabular-nums}
+  .bad{color:var(--red);font-weight:600}
+  .good{color:var(--green);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+  code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:#1e2228;color:#d7dee8;padding:12px 14px;border-radius:8px;
+      overflow-x:auto;font-size:12.5px;line-height:1.6}
+  .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
+        background:#eef1f5;color:var(--sub);margin-right:6px}
+  ul{margin:8px 0;padding-left:22px}
+  .tl{font-size:13.5px}
+  .tl td:first-child{width:70px;color:var(--sub)}
+  .note{font-size:13px;color:var(--sub)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>map2 探路期敌情闸 —— 验证报告</h1>
+  <p class="lead">n1 批 12 局 · 2026-09-27 · 代码 <code>e3fde282</code>·6463 行（exe 12:47 编译）<br>
+  改动：结束探路的触发 从「纯时间闸」改为「时间闸 <b>∨</b> 祭司附近(≤12 格)出现敌军」</p>
+
+  <div class="card verdict">
+    <strong>结论：闸的机制生效了，但方向相反 —— 它把祭司从「一直走路的探路态」推进「停下施法的感化态」，死得更早。</strong>
+    <ul>
+      <li>12 局 <b>0 胜 12 负</b>，祭司 <b>12/12 死亡</b>，其中 <b>9 局早死</b>（3007~3477 帧）。</li>
+      <li>9 个触发闸的局，<b>「首次感化令」全部落在 <code>[SCOUT-BREAK]</code> 帧的 +1 帧</b> —— 闸一开，祭司立刻停下感化敌人。</li>
+      <li>对照改动前同图 z2 批（3 局，早死局死在 3788/4165）：<b>加闸后死亡帧更早</b>（中位 ~3376）。</li>
+    </ul>
+  </div>
+
+  <h2>一、结果对比</h2>
+  <table>
+    <thead><tr><th>批次</th><th>地图</th><th>n</th><th>胜 / 负 / 未决</th><th>胜率</th><th>祭司死亡</th><th>早死(&lt;5000帧)</th><th>SCOUT-BREAK 触发</th></tr></thead>
+    <tbody>
+      <tr><td>z2（改动前，无闸）</td><td>map2</td><td class="num">3</td><td class="num">0 / 3 / 0</td><td class="num bad">0.0%</td><td class="num">3</td><td class="num">2 <span class="note">(3788 / 4165)</span></td><td class="num">—</td></tr>
+      <tr><td><b>n1（本次，有闸）</b></td><td>map2</td><td class="num">12</td><td class="num">0 / 12 / 0</td><td class="num bad">0.0%</td><td class="num">12</td><td class="num bad">9 <span class="note">(3007~3477)</span></td><td class="num">9 / 12</td></tr>
+    </tbody>
+  </table>
+  <p class="note">判据：胜 = jsonl 任一行 <code>"win":true</code>；负 = ait 含 <code>DEFEAT: Priest killed</code>（<code>ALL WAVES DEFEATED!</code> 是反攻启动事件，非胜负）。</p>
+
+  <h3>逐局明细</h3>
+  <table class="num">
+    <thead><tr><th>局</th><th>结果</th><th>死亡帧</th><th>SCOUT-BREAK</th><th>首次感化</th><th>WAVE1</th><th>首次锁定</th><th>首个军事单位</th><th>Priest st= 行数</th></tr></thead>
+    <tbody>
+      <tr><td>n101</td><td class="bad">负</td><td>3045</td><td>2764</td><td class="bad">2765</td><td>—</td><td>2800</td><td>2948</td><td>2</td></tr>
+      <tr><td>n102</td><td class="bad">负</td><td>3477</td><td>2938</td><td class="bad">2939</td><td>—</td><td>2950</td><td>3100</td><td>4</td></tr>
+      <tr><td>n103</td><td class="bad">负</td><td>3357</td><td>2854</td><td class="bad">2855</td><td>—</td><td>2900</td><td>3089</td><td>3</td></tr>
+      <tr><td>n104</td><td class="bad">负</td><td>3376</td><td>2763</td><td class="bad">2764</td><td>—</td><td>2800</td><td>2940</td><td>5</td></tr>
+      <tr><td>n105</td><td class="bad">负</td><td>3455</td><td>2763</td><td class="bad">2764</td><td>—</td><td>2800</td><td>2955</td><td>5</td></tr>
+      <tr><td>n106</td><td class="bad">负</td><td>3028</td><td>2787</td><td class="bad">2788</td><td>—</td><td>2800</td><td>2958</td><td>2</td></tr>
+      <tr><td>n107</td><td class="bad">负</td><td>3007</td><td>2763</td><td class="bad">2764</td><td>—</td><td>2850</td><td>2834</td><td>2</td></tr>
+      <tr><td>n108</td><td class="bad">负</td><td>3411</td><td>2939</td><td class="bad">2940</td><td>—</td><td>2950</td><td>3072</td><td>3</td></tr>
+      <tr><td>n109</td><td class="bad">负</td><td>36238</td><td>—</td><td>6686</td><td>5018</td><td>14150</td><td>6722</td><td>274</td></tr>
+      <tr><td>n110</td><td class="bad">负</td><td>14447</td><td>—</td><td>6656</td><td>5018</td><td>6550</td><td>6870</td><td>98</td></tr>
+      <tr><td>n111</td><td class="bad">负</td><td>15501</td><td>—</td><td>6733</td><td>5034</td><td>14850</td><td>6747</td><td>111</td></tr>
+      <tr><td>n112</td><td class="bad">负</td><td>3043</td><td>2797</td><td class="bad">2798</td><td>—</td><td>2800</td><td>3003</td><td>2</td></tr>
+    </tbody>
+  </table>
+  <p class="note">「首次感化」= <code>HumanAction:祭司 … 设置转换目标为 …</code> 首次出现帧。<b>9 个触发闸的局，该值 = SCOUT-BREAK + 1</b>，无一例外。</p>
+
+  <h2>二、决定性机制：闸打开的不是保命，是感化</h2>
+  <div class="card">
+    <p><code>processData</code> 的强推块设 <code>scoutPhase = 20</code> ⇒ 探路模块交还管理权 ⇒ <code>managePriest</code> 接管。而 <code>managePriest</code> 的<b>头号优先级是感化</b>（<code>if (convSN &gt;= 0)</code> 无条件先走，两子分支均 <code>return</code>，用户早前定的「不用安全感化」）。</p>
+    <p>⇒ <b>「结束探路」的语义 = 「把祭司交给一个感化优先于逃跑的模块」</b>。敌在 12 格内时交出去，祭司的第一反应是<b>停下施法</b>，而不是跑。</p>
+  </div>
+
+  <h3>n101 逐帧时间线（完整证据）</h3>
+  <table class="tl num">
+    <tbody>
+      <tr><td>f=17→2710</td><td>探路直线推进：<code>HumanMove 祭司 → (667,3021) … → (2545,1048)</code>，一路走向地图右下（<b>距 TC 已达 56 格</b>）</td></tr>
+      <tr><td>f=2708</td><td class="bad">敌 <b>10 个单位同时把祭司设为目标</b>：复合弓兵、战车弓兵×2、阔剑兵×2、Prof.Lu×3、刀斧兵、方阵兵</td></tr>
+      <tr><td>f=2764</td><td><code>[SCOUT-BREAK]</code> 触发（敌已进入 12 格）⇒ 结束探路</td></tr>
+      <tr><td>f=2765</td><td class="bad"><code>HumanAction:祭司 设置转换目标为 Prof.Lu 91461</code> ← <b>闸 +1 帧就停下感化</b></td></tr>
+      <tr><td>f=2900</td><td>状态行 <code>Priest st=0 hp=0.57 nearE=2.4 mode=1 | ally=1</code>（敌贴到 2.4 格，唯一友军在 8 格外）</td></tr>
+      <tr><td>f=2940</td><td>首次撤离移动令 <code>→ (1507,2114)</code> ← 距感化令已<b>静止 175 帧</b></td></tr>
+      <tr><td>f=2940~3030</td><td>每 18 帧<b>重发同一坐标</b> (1507,2114)，<b>90 帧零位移</b>（被攻击反复打断）</td></tr>
+      <tr><td>f=3045</td><td class="bad">DEFEAT: Priest killed</td></tr>
+    </tbody>
+  </table>
+
+  <h2>三、为什么「跑」也救不了：速度差 3.5 倍</h2>
+  <table>
+    <thead><tr><th>量</th><th>实测</th><th>换算</th></tr></thead>
+    <tbody>
+      <tr><td>祭司探路推进（f=17→2710，56 格）</td><td class="num">0.021 格/帧</td><td class="num">≈ 0.5 格/秒</td></tr>
+      <tr><td>敌方接敌（f=2764→2900，≤12 → 2.4 格）</td><td class="num">0.071 格/帧</td><td class="num warn">≈ 1.76 格/秒</td></tr>
+    </tbody>
+  </table>
+  <p>敌方（10 个单位含战车弓兵）移动速度约为祭司的 <b>3.5 倍</b>。⇒ <b>一旦进入接触距离，「撤 / 折返 / 逃离」类方案全部无效</b>；探路态（z202/z203）之所以死得稍晚，只是因为它一直在走、延缓了被围。</p>
+
+  <h2>四、结论与出路</h2>
+  <div class="card verdict">
+    <p><b>本轮改动（时间闸 ∨ 敌情闸）证伪</b>：闸生效（9/12 触发、提前 ~300~1200 帧结束探路），但因「结束探路 = 交出给感化优先模块」，净效果是<b>把祭司从移动态变成静止靶</b>，死亡帧更早。</p>
+  </div>
+  <p>要救 map2 早死的祭司，机制上只剩两条路：</p>
+  <table>
+    <thead><tr><th>#</th><th>做法</th><th>依据</th><th>代价 / 风险</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>A</b></td>
+        <td><b>缩短探路半径</b>（<code>SCOUT_DIST 100 → 40</code> 格，或以 TC 为圆心限幅），让祭司压根不接触敌主力</td>
+        <td>map2 敌主力在<b>距 TC ~56 格</b>处；祭司探到 56 格正好撞上。限 40 格即避开</td>
+        <td>地图探索覆盖缩小 ⇒ 敌基地/远处资源可能更晚发现（<b>map3 上可能有副作用，需一并回归</b>）</td>
+      </tr>
+      <tr>
+        <td><b>B</b></td>
+        <td>探路遇敌时<b>保持移动</b>（直接下发回 TC 移动令，不交出管理权、不感化）</td>
+        <td>针对「闸 → 感化」这一机制</td>
+        <td>速度差 3.5 倍，<b>预期仍跑不掉</b>（仅能延缓，难救命）</td>
+      </tr>
+      <tr>
+        <td><b>C</b></td>
+        <td><b>回退</b>本轮闸，恢复无闸基线</td>
+        <td>避免「更早死」的净损失</td>
+        <td>map2 仍 0%（但 0% 是无闸 / 有闸共同结果）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>五、复现</h2>
+  <pre>cd /c/new-aoe3.0.7g
+PAR=8 bash n1_verify.sh          # 12 局 map2（单局约 20~60s，8 路并发）
+python analyze_n1.py             # 与 z2 批对比
+grep -n "SCOUT-BREAK\|设置转换目标" n101.ait</pre>
+  <p class="note">改动点：<code>UsrAI.cpp</code> 新常量 <code>SCOUT_BREAK_ENEMY_DIST 12.0</code>（L227）；<code>processData</code> 强推块 <code>scoutBreakByEnemy</code>（L467~487）；<code>managePriestScout</code> 的 <code>enemyDist</code> 改用同常量（L2295，等价重命名）。备份 <code>bak_20260927_scoutbreak_enemy_UsrAI.cpp</code>。syn 0 error / 16 warning，build rc=0。</p>
+  <p class="note">⚠ 本闸<b>不区分地图</b>（代码里拿不到地图名），仅验证于 map2；map3 上若探路期敌进 12 格亦会触发，需一并回归。</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AOE3 AI · 祭司推进脱困（②b 修复）验证报告 · 2026-09-27</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1b1f24; --ink2:#4b5563; --ink3:#6b7280;
+    --line:#e3e6ea; --line2:#eef0f3;
+    --ok:#0f7a3d; --okbg:#e8f5ec;
+    --bad:#b3261e; --badbg:#fdeceb;
+    --warn:#8a5a00; --warnbg:#fdf4e3;
+    --blue:#1a56b3; --bluebg:#eaf0fb;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.68 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--ink3);font-size:13.5px;margin-bottom:26px}
+  .sub code{font-family:var(--mono);font-size:12.5px;background:var(--line2);padding:2px 6px;border-radius:4px}
+  h2{font-size:19px;margin:38px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--ink);letter-spacing:-.2px}
+  h3{font-size:15.5px;margin:22px 0 8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}
+  .kpi>div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .kpi .lab{font-size:12px;color:var(--ink3);letter-spacing:.4px;text-transform:uppercase}
+  .kpi .val{font-size:24px;font-weight:650;margin-top:4px;letter-spacing:-.5px}
+  .kpi .note{font-size:12px;color:var(--ink3);margin-top:2px}
+  .up{color:var(--ok)} .down{color:var(--bad)} .flat{color:var(--ink3)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px;background:var(--card)}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line2);text-align:left}
+  th{background:#f0f2f5;font-weight:600;font-size:12.5px;color:var(--ink2);
+     border-bottom:1px solid var(--line);white-space:nowrap}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr.hl td{background:var(--okbg)}
+  tr.hl2 td{background:var(--bluebg)}
+  tr.warnrow td{background:var(--warnbg)}
+  code{font-family:var(--mono);font-size:12.5px}
+  pre{background:#1e2228;color:#dfe4ea;padding:14px 16px;border-radius:8px;overflow-x:auto;
+      font-family:var(--mono);font-size:12.3px;line-height:1.58;margin:12px 0}
+  pre .k{color:#7fd1ff} pre .g{color:#8ee08b} pre .r{color:#ff9b92} pre .y{color:#ffd479}
+  pre .c{color:#7c8794}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;
+       vertical-align:middle;line-height:1.7}
+  .t-ok{background:var(--okbg);color:var(--ok)} .t-bad{background:var(--badbg);color:var(--bad)}
+  .t-warn{background:var(--warnbg);color:var(--warn)} .t-info{background:var(--bluebg);color:var(--blue)}
+  ul{margin:8px 0;padding-left:22px} li{margin:5px 0}
+  .muted{color:var(--ink3)} .sm{font-size:12.5px}
+  .quote{border-left:3px solid var(--blue);background:var(--bluebg);padding:10px 14px;margin:12px 0;
+         border-radius:0 8px 8px 0;font-size:13.5px}
+  .warnbox{border-left:3px solid var(--warn);background:var(--warnbg);padding:10px 14px;margin:12px 0;
+           border-radius:0 8px 8px 0;font-size:13.5px}
+  .badbox{border-left:3px solid var(--bad);background:var(--badbg);padding:10px 14px;margin:12px 0;
+          border-radius:0 8px 8px 0;font-size:13.5px}
+  .okbox{border-left:3px solid var(--ok);background:var(--okbg);padding:10px 14px;margin:12px 0;
+         border-radius:0 8px 8px 0;font-size:13.5px}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0;font-size:13px}
+  .flow span{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+  .flow i{color:var(--ink3);font-style:normal}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>祭司推进脱困：②b 修复验证报告</h1>
+<div class="sub">
+  AOE3 UsrAI · 2026-09-27（下篇）｜ 变更版本 <code>UsrAI.cpp 4bf8f9a0 · 6700</code> ／ <code>UsrAI.h 78b64ea7 · 402</code>（exe 14:32:22）<br>
+  备份 <code>bak_20260927_priest_escape_UsrAI.cpp/.h</code> ｜ 跑批 <code>q1/q2</code>（map2 共 36 局）＋ <code>r1/r2</code>（map3 共 36 局）
+</div>
+
+<h2>1 结论摘要</h2>
+
+<div class="kpi">
+  <div>
+    <div class="lab">map2 胜率</div>
+    <div class="val up">83.3%</div>
+    <div class="note">30/36（q1+q2）<br>无保护基线 58.3%</div>
+  </div>
+  <div>
+    <div class="lab">map2 未决</div>
+    <div class="val up">0 / 36</div>
+    <div class="note">此前 7/36 → 2/24<br>②b 死锁已消除</div>
+  </div>
+  <div>
+    <div class="lab">脱困触发局</div>
+    <div class="val up">12/12 胜</div>
+    <div class="note">触发即胜，无一失败</div>
+  </div>
+  <div>
+    <div class="lab">显著性</div>
+    <div class="val up">p=0.0367</div>
+    <div class="note">vs 无保护基线<br><span class="muted">首达显著</span></div>
+  </div>
+</div>
+
+<div class="okbox">
+<b>判定：采纳保留。</b>三条相互独立的证据同时成立 ——
+① <b>机制正确</b>（铁律 9 合规、假阳性已排除）；
+② <b>触发即胜</b>（12 局触发，12 局全胜）；
+③ <b>零副作用</b>（6 局未决全部 <code>escape=0</code>，脱困从未在任何失败局中介入）。
+map2 未决归零、胜率对无保护基线达统计显著（p=0.0367）。
+</div>
+
+<h2>2 改动内容</h2>
+
+<h3>2.1 新增常量（7 个）与成员（5 个）</h3>
+<pre><span class="c">// UsrAI.cpp 常量</span>
+#define PRIEST_ADV_STUCK_FRAMES 120   <span class="c">// 连续 N 帧未真正逼近 &gt;0.5 格 ⇒ 判卡死（≈4.8 秒@25fps）</span>
+#define PRIEST_ADV_RESET_BL     6.0   <span class="c">// 反而远出此格数 ⇒ 场景已变，基准重锚</span>
+#define PRIEST_ADV_SIDESTEP     4.0   <span class="c">// A 档侧移距离(格)</span>
+#define PRIEST_ADV_ESCAPE_CD    60    <span class="c">// 脱困动作后的冷却帧</span>
+#define PRIEST_ADV_CLEAR_R      2.0   <span class="c">// B 档清障半径(格)</span>
+#define PRIEST_ADV_CLEAR_PUSH   6.0   <span class="c">// B 档清障推离距离(格)</span>
+#define PRIEST_ADV_CLEAR_MAX    3     <span class="c">// B 档单次最多挪走的友军数</span>
+
+<span class="c">// UsrAI.h 成员</span>
+double priestAdvBest;    <span class="c">// 到武器厂记忆点的历史最近距离（进展判据真源）</span>
+int    priestAdvBestFrame; <span class="c">// 最后一次"真进展"的帧号</span>
+int    priestEscapeStage;  <span class="c">// 0=无 / 1=侧移 / 2=清障</span>
+int    priestEscapeCd;     <span class="c">// 冷却</span>
+int    priestEscapeSide;   <span class="c">// 侧移方向交替 ±1</span></pre>
+
+<h3>2.2 逻辑：进展判据 + 两段脱困阶梯</h3>
+<pre><span class="c">// ① 进展判据（铁律 9：脱困动作绝不算进展）</span>
+if (dSiege &gt; priestAdvBest + PRIEST_ADV_RESET_BL * BL) {      <span class="c">// 远出很多 ⇒ 场景已变</span>
+    priestAdvBest = dSiege; priestAdvBestFrame = frame; priestEscapeStage = 0;
+} else if (dSiege &lt; priestAdvBest - 0.5 * BL) {               <span class="c">// 真进展</span>
+    priestAdvBest = dSiege; priestAdvBestFrame = frame; priestEscapeStage = 0;
+} else if (dSiege &lt; priestAdvBest) {
+    priestAdvBest = dSiege;                                   <span class="c">// 慢速蠕动：更新基准但【不】重置计时</span>
+}
+const bool priestAdvStuck = (frame - priestAdvBestFrame &gt; PRIEST_ADV_STUCK_FRAMES);
+
+<span class="c">// ② 脱困阶梯（A ⇄ B 交替）</span>
+<span class="k">A 档</span>：侧移 4 格绕开堵点（左右交替） → 下次仍卡则换 B
+<span class="k">B 档</span>：把祭司 2 格内的友军沿【侧向】推开 6 格（≤3 个）
+       <span class="y">保命前提</span>：仅当祭司 15 格内无活敌才清障（否则推开护卫=送祭司）
+<span class="c">两档均：只重置"卡死计时"与"冷却"，绝不动 priestAdvBest</span></pre>
+
+<h3>2.3 ★ 设计时排除的假阳性（关键正确性检查）</h3>
+<div class="warnbox">
+<b>疑点：</b>祭司抵达推进落点（距武器厂 11 格）后不再逼近 ⇒ 会被判"卡死"并开始侧移 —— 会不会误触发？<br>
+<b>结论：不会。</b>推进落点距武器厂 <code>PRIEST_CONVERT_SIEGE_RANGE - 1 = 11 格</code>，而 <b>11 ≤ 12 = 感化射程</b>
+⇒ 祭司一旦到达就命中上方的 <b>感化分支</b>（<code>HumanAction(祭司, 武器厂)</code>）并 <code>return</code>，
+<b>根本进不到 ADVANCE 分支</b>。<br>
+⇒ ADVANCE 分支只在 <code>dSiege &gt; 12</code> 时运行；在该区间内「120 帧未逼近 0.5 格」<b>必然是物理卡死</b>。
+</div>
+
+<h2>3 验证数据</h2>
+
+<table>
+<thead>
+<tr>
+  <th>臂</th><th>地图</th><th class="num">N</th>
+  <th class="num">胜</th><th class="num">负</th><th class="num">未决</th>
+  <th class="num">胜率</th><th>Fisher（双侧）</th>
+</tr>
+</thead>
+<tbody>
+<tr class="hl2"><td>n2+n4+n5</td><td>map2</td><td class="num">36</td><td class="num">21</td><td class="num">8</td><td class="num">7</td><td class="num">58.3%</td><td class="muted">基线（无建造者保护）</td></tr>
+<tr class="hl2"><td>n6+n7</td><td>map2</td><td class="num">24</td><td class="num">18</td><td class="num">4</td><td class="num">2</td><td class="num">75.0%</td><td>vs 基线 <b>p=0.270</b></td></tr>
+<tr class="hl"><td><b>q1+q2</b></td><td>map2</td><td class="num"><b>36</b></td><td class="num"><b>30</b></td><td class="num"><b>6</b></td><td class="num"><b>0</b></td><td class="num"><b>83.3%</b></td><td>vs 基线 <b class="up">p=0.0367 ✅</b>｜vs 仅保护 p=0.517</td></tr>
+<tr class="warnrow"><td>n3／n8</td><td>map3</td><td class="num">12</td><td class="num">7</td><td class="num">4</td><td class="num">1</td><td class="num">58.3%</td><td class="muted">基线</td></tr>
+<tr class="warnrow"><td>r1</td><td>map3</td><td class="num">12</td><td class="num">5</td><td class="num">4</td><td class="num">3</td><td class="num">41.7%</td><td class="muted">单批抖动</td></tr>
+<tr class="warnrow"><td><b>r1+r2</b></td><td>map3</td><td class="num"><b>36</b></td><td class="num">19</td><td class="num">11</td><td class="num">6</td><td class="num"><b>52.8%</b></td><td>vs 基线 <b>p=1.0000</b>（无差异可辨）</td></tr>
+</tbody>
+</table>
+
+<div class="quote">
+<b>关于 map3 的 41.7%（r1）：是方差，不是回归。</b><br>
+r1 单批 12 局给出 41.7%，补到 36 局后回到 <b>52.8%</b>（p=1.0000，与基线无差异可辨）。
+更关键的是：<b>r1 的全部 3 个未决 + 4 个败局的 <code>[PRIEST-ESCAPE]</code> 计数都是 0</b> ——
+脱困从未触发，因此这些失败<b>在因果上不可能</b>由本次改动引起。
+</div>
+
+<h2>4 ★ 核心证据：触发脱困的 12 局，全部获胜</h2>
+
+<table>
+<thead><tr><th>地图</th><th>局</th><th class="num">触发次数</th><th>结果</th></tr></thead>
+<tbody>
+<tr class="hl"><td>map2</td><td>q101 / q103 / q107 / q111 / q122 / q205</td><td class="num">各 1</td><td><span class="tag t-ok">全部 WIN</span></td></tr>
+<tr class="hl"><td>map3</td><td>r101（含唯一一次 B 档）/ r108 / r206 / r209 / r215 / r217</td><td class="num">3 / 各 1</td><td><span class="tag t-ok">全部 WIN</span></td></tr>
+<tr><td colspan="3"><b>合计 12 局触发脱困</b></td><td><b class="up">12 胜 / 0 非胜 = 100%</b></td></tr>
+</tbody>
+</table>
+
+<div class="okbox">
+<b>反向核验（更关键）：</b>6 个未决局全部是 <code>escape = 0</code> ——
+<pre style="margin:8px 0">r110  escape=0  BUILDER-HARD=0      r207  escape=0  BUILDER-HARD=0
+r111  escape=0  BUILDER-HARD=0      r208  escape=0  BUILDER-HARD=117
+r112  escape=0  BUILDER-HARD=8      r220  escape=0  BUILDER-HARD=85</pre>
+⇒ <b>剩余未决是另一种机制</b>（与 ②b 无关），脱困连触发机会都没有。
+</div>
+
+<h3>4.1 触发样例（日志原文）</h3>
+<pre>f=38807 PRIEST-ESCAPE A] d=25.8 侧移4格 →(59,65)
+f=39034 PRIEST-ESCAPE A] d=18.0 侧移4格 →(82,40)
+f=39047 PRIEST-ESCAPE A] d=16.8 侧移4格 →(73,66)
+f=39168 <span class="y">PRIEST-ESCAPE B] d=12.3 清障 moved=0 近敌=-1.0 侧移4格</span>   <span class="c">← 唯一一次 B 档；近敌=-1 ⇒ 无敌，清障安全</span>
+f=39335 PRIEST-ESCAPE A] d=15.4 侧移4格 →(63,77)
+f=39454 PRIEST-ESCAPE A] d=<span class="r">12.0</span> 侧移4格 →(82,33)   <span class="c">← 恰在感化射程边界，正是 n610 那种"差一点点"的死锁</span>
+f=39588 PRIEST-ESCAPE A] d=<span class="r">12.0</span> 侧移4格 →(82,33)
+f=40389 PRIEST-ESCAPE A] d=16.4 侧移4格 →(80,37)
+f=41426 PRIEST-ESCAPE A] d=17.5 侧移4格 →(82,40)</pre>
+
+<h2>5 剩余失败面（map2 6 败局）</h2>
+<table>
+<thead><tr><th>局</th><th class="num">Mil 峰值</th><th class="num">BUILDER-HARD</th><th>判读</th></tr></thead>
+<tbody>
+<tr><td>q106</td><td class="num">9</td><td class="num">0</td><td rowspan="6">全部落在<b>已知的瓶颈①（祭司孤身早死 / 军队未成型）</b>：<code>escape=0</code>、<code>Mil</code> 峰值 2~9，与本次改动无关。该方向已在 09-27 关闭（祭司保护 4 方案全证伪）。</td></tr>
+<tr><td>q110</td><td class="num">5</td><td class="num">0</td></tr>
+<tr><td>q120</td><td class="num">2</td><td class="num">33</td></tr>
+<tr><td>q204</td><td class="num">5</td><td class="num">0</td></tr>
+<tr><td>q206</td><td class="num">6</td><td class="num">46</td></tr>
+<tr><td>q212</td><td class="num">27</td><td class="num">0</td></tr>
+</tbody>
+</table>
+
+<h2>6 ⚠ 新发现：地图间差距已成显著（待查）</h2>
+
+<div class="badbox">
+<b>map2 83.3%（30/36） vs map3 52.8%（19/36）：p = 0.0106 —— 地图差距首次达到统计显著。</b><br>
+（此前 map3 一直是"唯一能复现胜路"的图，本轮之后<b>完全反转</b>。）
+</div>
+
+<h3>6.1 map3 卡死建筑类型与 map2 <b>不同</b></h3>
+<table>
+<thead><tr><th>建筑类型</th><th class="num">map3 卡死次数（r1+r2）</th><th>对照：map2</th></tr></thead>
+<tbody>
+<tr class="hl"><td><b>农场（type=4）</b></td><td class="num"><b>432</b></td><td>—</td></tr>
+<tr><td>房子（type=0）</td><td class="num">397</td><td><b>主导</b>（n201 单局房子 69 次）</td></tr>
+<tr><td>仓库（3）／市场（5）</td><td class="num">117 ／ 117</td><td>—</td></tr>
+<tr><td>谷仓（1）</td><td class="num">63</td><td>19（n201）</td></tr>
+</tbody>
+</table>
+
+<h3>6.2 map3 的建造者保护<b>未见效</b></h3>
+<table>
+<thead><tr><th>臂</th><th class="num">BUILDER-HARD / 局</th><th class="num">BH&gt;0 且 Mil&lt;15</th></tr></thead>
+<tbody>
+<tr><td>n3（无保护，scout40）</td><td class="num">24.8</td><td class="num">2 / 12</td></tr>
+<tr><td>n8（保护，scout45）</td><td class="num">38.2</td><td class="num">5 / 12</td></tr>
+<tr><td>r1+r2（保护＋脱困）</td><td class="num">31.3</td><td class="num">8 / 36</td></tr>
+</tbody>
+</table>
+<p class="sm">
+map2 的 BH 从 45.3/局 降到 12.5/局（−72%），而 map3 反而略升 ⇒
+<b>map3 疑似存在另一条"改派建造者"的路径</b>（GOLD-REBAL 之外），或农场建造本身有独立的卡死原因。
+<br>⚠ 但 n8 与 n3 之间有 <b>两个变量同时变化</b>（scout 40→45 ＋ 建造者保护）⇒ 需在 <code>4bf8f9a0</code> 上单独跑一次
+"去掉保护"的 map3 基线，才能干净归因。
+</p>
+
+<h3>6.3 map3 未决的两种不同形态</h3>
+<ul>
+  <li><b>军队未成型型</b>：r110 / r111 / r112 / r208 / r220 —— <code>MilMax</code> 仅 5~8，BH 多为 0 或高值 ⇒ 与"BH→Mil 卡低"同族，但 <b>脱困未触发</b>（祭司根本没进 ADVANCE 阶段）。</li>
+  <li><b>崩盘型</b>：r207 —— 终局 <code>Mil:2 E:3 Frm:1</code>（只剩 1 个村民）、经济资源见底、祭司 <code>dS=84.6</code> 从未接近武器厂 ⇒ 是"打崩了但没判负"的形态，与 ②b 完全不同。</li>
+</ul>
+
+<h2>7 下一步候选</h2>
+<table>
+<thead><tr><th style="width:170px">方向</th><th>内容</th><th style="width:210px">代价 / 风险</th></tr></thead>
+<tbody>
+<tr>
+  <td><b>① map3 专题（推荐）</b></td>
+  <td>㊀ 在 <code>4bf8f9a0</code> 上单独去掉建造者保护跑 map3 × 12，做干净 A/B；<br>
+      ㊁ 排查<b>农场建造者被谁改派</b>（map3 农场卡死 432 次 &gt; 房子 397，与 map2 相反）</td>
+  <td>中等：先 A/B 定位，再查改派路径</td>
+</tr>
+<tr>
+  <td><b>② 卡死自救活锁（瓶颈④）</b></td>
+  <td><code>issueMarch</code> 退让落点被进展判据记为进展 ⇒ <code>marchStuckTry</code> 清零、±1 格无限往复。修法=退让时置标志、该帧跳过刷新</td>
+  <td>小改动；与 ②b 同族（可复用本次的判据写法）</td>
+</tr>
+<tr>
+  <td><b>③ 黄金供给探针</b></td>
+  <td>只读探针确认"有金不造兵"是分配问题还是矿距问题（复合弓 20 金 ⇒ 黄金上限即复合弓上限）</td>
+  <td>只读，零风险</td>
+</tr>
+<tr>
+  <td><b>④ 瓶颈①（祭司早死）</b></td>
+  <td>map2 剩余 6 败局全在此（Mil 峰值 2~9）。⚠ 该方向已关闭 4 个方案，<b>不建议重开</b></td>
+  <td>高成本、低期望</td>
+</tr>
+</tbody>
+</table>
+
+<h2>8 附：代码状态与工程注意</h2>
+<div class="warnbox">
+<b>① 跑批期间用户自改了源码</b>（14:15 / 14:22，两次），内容是 <code>tryFlush</code> lambda 收口 + <code>[PROF-TRY-SLOW]</code> 剖析日志（行为中性）。
+本次验证<b>未回退</b>该改动，其独立备份为 <code>bak_20260927_usertryflush_UsrAI.cpp</code>。<br>
+<b>② 换行符变化</b>：该次自改把 <code>UsrAI.cpp</code> 由 CRLF 存成<b>纯 LF</b>（<code>UsrAI.h</code> 仍 CRLF）。
+<code>chk_src.py</code> 判定"统一 LF = 提交形态"、UTF-8、无三字元、行数符合 ⇒ 干净，无需处理。<br>
+<b>③ 数据可信性</b>：4 个跑批（q1/q2/r1/r2）全部基于 <code>release/newAOE.exe</code>（14:32:22 = <code>4bf8f9a0</code>），
+跑批后复核 exe 与源码 mtime/md5 均未变 ⇒ <b>无污染</b>。
+</div>
+
+<footer>
+  数据来源：<code>n2/n3/n4/n5/n6/n7/n8/q1/q2/r1/r2*.ait + *.jsonl</code>｜
+  统计脚本 <code>batchstat.py</code> / <code>pergame.py</code>｜跑批脚本 <code>q1r1_verify.sh</code> / <code>q2r2_verify.sh</code><br>
+  判据（项目铁律）：胜 = jsonl 任一行 <code>"win":true</code>；负 = ait 含 <code>DEFEAT:</code>；其余 = 打满 45000 帧 = 未决。
+</footer>
+
+</div>
+</body>
+</html>

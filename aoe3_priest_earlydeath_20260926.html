@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AoE3 祭司提前死亡 根因诊断</title>
+<style>
+  :root{ --bg:#0f1115; --card:#1a1d24; --ink:#e6e8ec; --mut:#9aa3b2; --red:#ff5a5a; --grn:#4ade80; --yel:#facc15; --blu:#60a5fa; --bd:#2a2f3a; }
+  body{ background:var(--bg); color:var(--ink); font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; margin:0; padding:28px; }
+  h1{ font-size:22px; margin:0 0 4px; } h2{ font-size:17px; margin:26px 0 10px; border-left:3px solid var(--blu); padding-left:10px; }
+  .sub{ color:var(--mut); font-size:13px; margin-bottom:18px; }
+  .card{ background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:16px 18px; margin:14px 0; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; margin:8px 0; }
+  th,td{ border:1px solid var(--bd); padding:7px 9px; text-align:left; }
+  th{ background:#222732; color:var(--blu); }
+  .tag{ display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; }
+  .t-red{ background:rgba(255,90,90,.15); color:var(--red); }
+  .t-grn{ background:rgba(74,222,128,.15); color:var(--grn); }
+  .t-yel{ background:rgba(250,204,21,.15); color:var(--yel); }
+  code{ background:#222732; padding:1px 6px; border-radius:4px; font-size:12.5px; color:#ffd479; }
+  .chain{ font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; background:#11141a; border:1px solid var(--bd); border-radius:8px; padding:14px 16px; color:#cdd6e4; }
+  .chain b{ color:var(--red); }
+  .k{ color:var(--yel); } .m{ color:var(--mut); }
+  ul{ margin:8px 0; padding-left:22px; } li{ margin:5px 0; }
+  .note{ color:var(--mut); font-size:12.5px; }
+  .pill{ font-size:12px; }
+</style>
+</head>
+<body>
+<h1>祭司有时会提前死亡 —— 根因诊断</h1>
+<div class="sub">AoE3 UsrAI.cpp · 诊断批次 o批(旧码6607) + g1批(当前码6423) · 2026-09-26</div>
+
+<div class="card">
+<h2 style="margin-top:4px">一、一句话结论</h2>
+<p>祭司「提前死亡」＝ <b style="color:var(--red)">防御期（军队成型前）主动前出到敌群感化，被集火秒杀</b>；此时军队未成型、<code>[PRIEST GUARD]</code> 无兵可派，保命网兜不住。根因在感化逻辑 <code>UsrAI.cpp</code> L1093-1131（「不用安全感化、感化无条件最高优先、即便在逃也优先转」），<b>当前码未变</b>。</p>
+</div>
+
+<h2>二、根因链</h2>
+<div class="chain">
+<span class="k">① 时机错配</span>：死亡帧 ≈10~11分，<b>全部早于复合弓首产中位 23253（≈15.5分）</b> ⇒ 军队成型前裸奔（Mil=0~1）。<br>
+<span class="k">② 触发</span>：敌方脚本部队（911xx，frame=0 预生成、常驻前线）在祭司活动区，4~9 个锁定祭司。<br>
+<span class="k">③ 致命动作</span>：祭司<b>主动发起感化</b>（→方阵兵/战车弓兵），<code>priestApproachMove</code> 把它带进敌群 12 格内。<br>
+<span class="k">④ 保命失效</span>：感化优先于 <code>canAct</code> 保命闸（L1031-1057）；hp&gt;0.60 不逃、被集火快速掉血。<br>
+<span class="k">⑤ 护驾空转</span>：<code>[PRIEST GUARD] LOCKED-ON cmds=0</code> —— 防御期 <code>info.armies</code> 无可派单位，不是护驾 bug，是没兵。<br>
+<span class="k">⑥ 为什么"有时"</span>：敌脚本推进随机，仅当祭司活动区恰有敌且它前出感化才触发；多数局祭司待后方不暴露。<span class="m">（因此实测早死率 4~12%，非 100%）</span>
+</div>
+
+<h2>三、铁证：四局零交叉，同剧本</h2>
+<table>
+<tr><th>局</th><th>码</th><th>死亡帧</th><th>≈分</th><th>死前 Mil</th><th>祭司动作</th><th>护驾 cmds</th><th>模式</th></tr>
+<tr><td>o111</td><td>旧6607</td><td>15003</td><td>10.0</td><td>0~1</td><td>感化方阵兵 91117</td><td>0</td><td class="tag t-red">早死</td></tr>
+<tr><td>o116</td><td>旧6607</td><td>15595</td><td>10.4</td><td>极弱</td><td>感化方阵兵</td><td>0</td><td class="tag t-red">早死</td></tr>
+<tr><td>o121</td><td>旧6607</td><td>16658</td><td>11.1</td><td>极弱</td><td>感化战车弓兵</td><td>0</td><td class="tag t-red">早死</td></tr>
+<tr><td><b>g112</b></td><td><b>当前6423</b></td><td><b>16382</b></td><td><b>10.9</b></td><td><b>[1,1]</b></td><td><b>感化方阵兵 91154（10次）</b></td><td><b>0</b></td><td class="tag t-red">早死</td></tr>
+</table>
+<p class="note">g112 逐帧：15698 起祭司反复"设置转换目标为方阵兵 91154"→ 战车弓兵91152/91130、复合弓兵91110、方阵兵91154 多次"开始向祭司攻击"→ <code>[PRIEST GUARD] LOCKED-ON SN=91154 cmds=0</code> 循环 → 16382 死亡。与 o 批同一剧本。</p>
+
+<h2>四、当前码 g1 批 24 局验证（你 17:29 自改版）</h2>
+<table>
+<tr><th>指标</th><th>o批(旧码6607)</th><th>g1批(当前码6423)</th><th>变化</th></tr>
+<tr><td>胜负</td><td>胜11/负10/未决3</td><td>胜16/负7/未决1</td><td class="tag t-grn">胜率 45.8%→66.7%</td></tr>
+<tr><td>祭司总死亡局</td><td>10/24 (41.7%)</td><td>7/24 (29.2%)</td><td class="tag t-grn">↓</td></tr>
+<tr><td><b>祭司早死局</b>（死亡帧&lt;首产中位23253）</td><td><b>3/24 (12.5%)</b></td><td><b>1/24 (4.2%)</b></td><td class="tag t-grn">↓ 但根因未除</td></tr>
+<tr><td>祭司晚期死（反攻期）</td><td>7</td><td>6</td><td>—</td></tr>
+</table>
+<p class="note">你 17:29 的自改（狮子防御 <code>lionHunterSN</code> + 护驾/猎狮去重）意外让祭司早死率从 12.5% 降到 4.2%——推测是狮子防御改变了敌方脚本推进节奏、使祭司活动区更安静。但 g112 证明<b>根因（祭司主动前出感化逻辑本身）仍在</b>，只是触发概率降低，并非根治。</p>
+
+<h2>五、修复候选（未动码，待拍板）</h2>
+<table>
+<tr><th>方案</th><th>做法</th><th>评价</th></tr>
+<tr><td><b>A（推荐）</b></td><td>加闸：防御期（军队成型前，以 <code>postBronze</code>/<code>Mil</code> 阈值/帧≤首产中位为判据）<b>禁祭司主动前出感化</b>，只待安全区；感化仅反攻期（有护卫）主动前出。</td><td class="tag t-grn">不违背「能感化直接感化」意图（只是推迟到安全时），改动小，直击根因。</td></tr>
+<tr><td>B</td><td>感化尊重保命（被集火即逃）。</td><td class="tag t-red">违背你「不用安全感化」明确要求，不推荐。</td></tr>
+<tr><td>C</td><td>增防御期护卫兵。</td><td class="tag t-red">不可行（兵未产）。</td></tr>
+</table>
+
+<h2>六、校验与提醒</h2>
+<ul>
+<li>铁证逐帧时间戳见上表 + g112 全轨迹，三局（o）+ 一并（g112）零交叉。</li>
+<li>当前码一致性：grep 确认 L1093-1131「不用安全感化」仍在；七项常量全对；build rc=0，exe 对应。</li>
+<li>⚠ <b>你 17:29 自改的 <code>UsrAI.cpp</code>＝<code>f424787</code>·6423 行、无备份</b>（较记忆 6607 少 184 行，主要狮子防御＋护驾/猎狮去重）。后续改动前请先 <code>cp</code> 归档。</li>
+<li>保留物：o批/f批/g1批数据全留；抱团闸备份 <code>cohesion_r10</code>/<code>cohesion_v2f1</code> 留档不启用。</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,119 @@
+# ============================================================================
+# oj_engine_fix_20260923_full.patch  —— 评测机运行期 SIGSEGV 完整修复（3 处，必须同改）
+#
+# 症状：Linux/gcc13 + Qt5.9.2 上，AI 线程在 UsrAI::processData 的第一行
+#       `info = getInfo();` 深拷贝 tagInfo 时 SIGSEGV：
+#         __memcpy_avx_unaligned_erms
+#           <- std::__copy_move            (stl_algobase.h:437)
+#           <- std::vector<tagBuilding>::operator=  (vector.tcc:250)
+#           <- tagInfo::operator=          (GlobalVariate.cpp)
+#           <- UsrAI::processData          (UsrAI.cpp:359)
+#       源 vector 报 len=6/cap=6，数据指针却落在已 unmap 的 malloc arena
+#       —— "头看着完整、块已被释放" = 典型的【内存被踩/释放后仍被引用】。
+#
+# 根因（两处独立缺陷，落在同一条"读快照"路径上）：
+#
+#  ① 快照发布无同步。tagGame 用裸指针 + 双缓冲发布。读侧 getInfo() 自带
+#     QMutexLocker，但写侧 update() 的锁被注释掉（注释原文：
+#     「之前是严格的帧同步，现在改成严格的非帧同步」），互斥责任被推给调用方
+#     MainWidget::gameDataUpdate 的 tryLock/release。写侧不加锁 ⇒ 读侧那把锁等于没有。
+#     并且 `Info = newinfo` 之后才对 Info 做 7 次 WLHHunYao(Info->xxx) 原地逐元素写
+#     ⇒ 已发布对象在被 AI 深拷贝的同时被写。
+#
+#  ② Buffer0/Buffer1 写死 [2]，而 NOWPLAYER 是【运行期】值
+#     (RuntimeConfig.h:54 -> config.json，MAXPLAYER=8)。Core.cpp::infoShare() 里
+#         currentBuff = (buff == 0) ? Buffer0 : Buffer1;
+#         for (i = 0; i < NOWPLAYER; i++) currentBuff[i].clear();
+#     currentBuff[i] 对 i >= 2 就越界：
+#         i=2 -> Buffer1[0]（另一个缓冲的 0 号槽 = AI 正在读的那个对象）
+#         i=3 -> Buffer1[1]
+#         i>=4 -> 越过 Buffer1 尾部，直接踩 Core.cpp 紧随其后的 `int buff` /
+#                 `tagInfo* currentBuff` 及其后的静态区
+#     ⇒ Info 指针或它指向的 vector 头被踩成"看似合法、实指已释放块"的值，
+#       正好解释 §症状 里那个自相矛盾的 len=6/cap=6 + unmapped 现象。
+#     对照：0.7g 与 0.7h 两棵源码树的 Core.cpp 都写死 [2]（本地 NOWPLAYER=2，
+#           所以本地怎么跑都不崩 —— 这是"本地复现不出来"的唯一原因）。
+#
+# 修法（3 处，缺一不可）：
+#   ① Core.cpp           Buffer0/Buffer1 [2] -> [8]        （对上 MAXPLAYER 的运行期上限）
+#   ② GlobalVariate.cpp  把 WLHHunYao 挪到 `Info = newinfo` 之前（发布后不再原地写）
+#   ③ GlobalVariate.h     QMutex Locker -> QMutex Locker{QMutex::Recursive}
+#      GlobalVariate.cpp  恢复 update() 的 QMutexLocker
+#      ★ ③ 的两半必须同改：只恢复锁而锁仍是非递归 QMutex，会在调用方（同线程）
+#        已持锁时自锁死（实测 rc=TIMEOUT/420s、AITextLog 冻在 frame 1）。
+#        QMutex(QMutex::Recursive) 在 Qt 5.9.2 即支持。
+#
+# 正确性：对"调用方已持锁"（MainWidget::gameDataUpdate）与"调用方未持锁"
+#         两种情形都成立 —— 递归锁允许同线程重复进入。
+#
+# 注意：请按【内容】匹配，不要按行号 —— 各版本行号不同（我们手上两棵树就差了 61 行）。
+# ============================================================================
+
+--- a/Core.cpp
++++ b/Core.cpp
+@@
+-tagInfo Buffer0[2];
+-tagInfo Buffer1[2];
++tagInfo Buffer0[8];   // ★ [2] -> [8]：NOWPLAYER 是运行期值(config.json, MAXPLAYER=8)，
++tagInfo Buffer1[8];   //   currentBuff[i] (i >= 2) 会越界踩隔壁缓冲/越界踩后面的静态区。
++                      //   本地 NOWPLAYER=2 时与 [2] 完全等价（no-op）。
+
+--- a/GlobalVariate.h
++++ b/GlobalVariate.h
+@@
+ {
+ private:
+     tagInfo* Info;
+-    QMutex Locker;
++    QMutex Locker{QMutex::Recursive};   // ★ 递归锁：update() 加锁后，调用方(同线程)已持锁也不会自锁死
+ public:
+     template<class T>
+     void WLHHunYao(vector<T>& v) {
+
+--- a/GlobalVariate.cpp
++++ b/GlobalVariate.cpp
+@@
+ void tagGame::update(tagInfo *newinfo) {
+     //控制ins_ret的大小小于100，若大于100，则优先删除旧值
+-   // QMutexLocker locker(&Locker);//之前是严格的帧同步，现在改成严格的非帧同步
++    QMutexLocker locker(&Locker);   // ★ 恢复写侧锁：与 getInfo() 的读侧互斥（配递归锁，同线程重入安全）
+     if (this->Info != NULL) {
+         while (Info->ins_ret.size() > 100) {
+             Info->ins_ret.erase(Info->ins_ret.begin());
+         }
+     }
+     if (this->Info != NULL)
+         newinfo->ins_ret = this->Info->ins_ret;
+-    Info = newinfo;
+     //对内部打乱
+     static const bool openHunYao = 1;
+-    //
+     if (openHunYao) {
+-        WLHHunYao(Info->buildings);
+-        WLHHunYao(Info->farmers);
+-        WLHHunYao(Info->armies);
+-        WLHHunYao(Info->enemy_buildings);
+-        WLHHunYao(Info->enemy_farmers);
+-        WLHHunYao(Info->enemy_armies);
+-        WLHHunYao(Info->resources);
++        // ★ 必须在【发布指针之前】打乱 newinfo：发布之后该对象就是 AI 线程立刻要
++        //   深拷贝的东西，再逐元素原地写它就是数据竞争。
++        WLHHunYao(newinfo->buildings);
++        WLHHunYao(newinfo->farmers);
++        WLHHunYao(newinfo->armies);
++        WLHHunYao(newinfo->enemy_buildings);
++        WLHHunYao(newinfo->enemy_farmers);
++        WLHHunYao(newinfo->enemy_armies);
++        WLHHunYao(newinfo->resources);
+     }
++    Info = newinfo;
+ }
+
+# ============================================================================
+# 验证建议（改完请两件事都做）：
+#   1) 现在提交文件里已带环境自证，ait 第 1 秒会打印：
+#        UsrAI打印：[ENV] engine=<版本> NOWPLAYER=<n> MAXPLAYER=<n> represent=<n>
+#      改引擎前后各跑一局，对比这一行 + 是否还崩。
+#   2) 用 NOWPLAYER=3 做回归：未改引擎时应在极早期崩（本地实测 rc=0xC0000005）；
+#      打完 ① 后应能跑满；打完 ①②③ 后应既跑满又不出现数据竞争。
+# ============================================================================

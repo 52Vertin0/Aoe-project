@@ -1,0 +1,22 @@
+=== 批次 pd：16 局 ===
+祭司死亡局数 = 15 / 16  (93.8%)
+分桶： {'scout(<5k)': 4, 'early(5k~21k)': 7, 'counter(>=21k)': 4, 'alive': 1}
+结局： {'VICTORY': 0, 'DEFEAT': 15, '?': 1}
+死亡局中 → 胜 0 / 负 15
+
+【死亡明细 frame | 分桶 | 结局 | 诊断(hp/nearE/mode)】
+  pd1.ait    f=  2013 scout(<5k)     DEFEAT   {}
+  pd10.ait   f=  1947 scout(<5k)     DEFEAT   {}
+  pd12.ait   f= 37015 counter(>=21k) DEFEAT   {}
+  pd13.ait   f=  2397 scout(<5k)     DEFEAT   {}
+  pd14.ait   f= 15105 early(5k~21k)  DEFEAT   {}
+  pd15.ait   f= 42153 counter(>=21k) DEFEAT   {}
+  pd16.ait   f=  1920 scout(<5k)     DEFEAT   {}
+  pd2.ait    f= 43467 counter(>=21k) DEFEAT   {}
+  pd3.ait    f= 23971 counter(>=21k) DEFEAT   {}
+  pd4.ait    f= 14830 early(5k~21k)  DEFEAT   {}
+  pd5.ait    f= 14940 early(5k~21k)  ?        {}
+  pd6.ait    f= 15356 early(5k~21k)  DEFEAT   {}
+  pd7.ait    f= 15331 early(5k~21k)  DEFEAT   {}
+  pd8.ait    f= 15227 early(5k~21k)  DEFEAT   {}
+  pd9.ait    f= 15751 early(5k~21k)  DEFEAT   {}

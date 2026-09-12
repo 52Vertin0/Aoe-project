@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>map 低胜率归因：军队分散 / 两波 / 祭司前出 — 96 局实测</title>
+<style>
+:root{
+  --bg:#f7f8fa; --card:#ffffff; --ink:#1c2028; --ink2:#4a5262; --ink3:#767f90;
+  --line:#e2e6ed; --line2:#eef1f6;
+  --ok:#1a7f4b; --okbg:#e8f5ee;
+  --bad:#c0392b; --badbg:#fdecea;
+  --warn:#b8860b; --warnbg:#fdf6e3;
+  --info:#1f5fa8; --infobg:#e9f1fa;
+  --accent:#2c5aa0;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+  font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:25px;margin:0 0 6px;letter-spacing:-.2px}
+.sub{color:var(--ink3);font-size:13px;margin-bottom:22px}
+h2{font-size:18px;margin:30px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+h3{font-size:15px;margin:20px 0 8px;color:var(--ink2)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line2);text-align:right}
+th:first-child,td:first-child{text-align:left}
+thead th{background:#f2f5f9;color:var(--ink2);font-weight:600;border-bottom:1px solid var(--line)}
+tbody tr:hover{background:#fafbfd}
+td.num{font-variant-numeric:tabular-nums}
+.verdict{border-radius:10px;padding:14px 18px;margin:12px 0;font-size:14.5px}
+.v-yes{background:var(--okbg);border-left:4px solid var(--ok)}
+.v-no{background:var(--badbg);border-left:4px solid var(--bad)}
+.v-mid{background:var(--warnbg);border-left:4px solid var(--warn)}
+.v-key{background:var(--infobg);border-left:4px solid var(--info)}
+.v b{display:block;margin-bottom:4px;font-size:15px}
+.tag{display:inline-block;padding:1px 8px;border-radius:4px;font-size:12px;font-weight:600;vertical-align:1px}
+.t-ok{background:var(--okbg);color:var(--ok)}
+.t-no{background:var(--badbg);color:var(--bad)}
+.t-mid{background:var(--warnbg);color:var(--warn)}
+code{background:#eef1f6;padding:1px 5px;border-radius:3px;font-size:12.5px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+ul{margin:6px 0;padding-left:22px}
+li{margin:3px 0}
+.small{font-size:12.5px;color:var(--ink3)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+.kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--line2);font-size:13.5px}
+.kv b{font-variant-numeric:tabular-nums}
+footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>map 低胜率归因：军队分散 / 被海分成两波 / 祭司走太靠前</h1>
+<div class="sub">96 局实测（sprd2，四图×24，ROT=0）· 只读空间探针 · AI = fixM <code>055e3668</code></div>
+
+<div class="card">
+<h3>结论速览</h3>
+<table>
+<thead><tr><th>假设</th><th>判决</th><th>关键数字</th></tr></thead>
+<tbody>
+<tr><td>① map 军队比其他图分散得多</td><td><span class="tag t-ok">成立 · 极强</span></td><td class="num">横向展宽 24.2 vs 10.5 格，z=+5.77，p&lt;0.0001</td></tr>
+<tr><td>② 被海分成左右两波</td><td><span class="tag t-mid">部分成立 · 罕见</span></td><td class="num">严格"两波"形态仅 4.5% 采样行；更常见是拉成 42 格长散线</td></tr>
+<tr><td>③ 分散导致被逐个击破而失败</td><td><span class="tag t-no">不成立</span></td><td class="num">map 内胜/负局横向展宽几乎相同（23.6 / 24.6 / 24.0）</td></tr>
+<tr><td>④ 祭司走太靠前 ⇒ 祭司死亡</td><td><span class="tag t-no">不成立</span></td><td class="num">死亡局与胜利局前出量相同（leadF +0.6 vs +1.0）；56% 胜局祭司比前锋还前</td></tr>
+<tr><td><b>★ 真正机制</b></td><td><span class="tag t-mid">抵达后被耗光</span></td><td class="num">推进都成功（prog峰 82~97%），但军队 26→4 崩塌</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>1. 探针可信度（先证明量具没问题）</h2>
+<div class="card">
+<div class="kv"><span>探针性质</span><b>只读。只统计军队坐标并打印，不改任何行为、不下发任何指令</b></div>
+<div class="kv"><span>胜率对照（带探针 vs 无探针）</span><b>51/84 = 60.7%　vs　fixM 59/96 = 61.5%　Δ=−0.8pp</b></div>
+<div class="kv"><span>编译</span><b>0 error / 12 warning，与基线持平</b></div>
+<p class="small">差值落在"同行为臂间"实测噪声带（1~4 局）内 ⇒ 行为未被扰动，读数可直接用于推断。</p>
+<h3>度量定义（单位＝格）</h3>
+<ul>
+<li><b>纵向</b>（沿 我方TC→敌目标 轴）：<code>span</code> = p90−p10 队形跨度；<code>gap</code> = 排序后相邻投影最大空档（纵向断层）</li>
+<li><b>横向</b>（垂直推进轴）★ 这才是"被海分成左右两股"的度量：<code>latSpan</code> = 横向展宽；<code>latGap</code> = 横向最大空档；<code>latL</code> = 空档左侧人数（latL/n≈0.5 ⇒ 人数相当的两股）</li>
+<li><b>祭司</b>：<code>lead</code> = 祭司−主力中位数；<code>leadF</code> = 祭司−前锋（&gt;0 ⇒ 祭司比最前的兵还靠前）</li>
+</ul>
+<p class="small">⚠ 首批探针只测了纵向投影，会完全漏掉"左右两股"——已补横向度量后重跑，本报告为<b>第二批（sprd2）</b>数据。</p>
+</div>
+
+<h2>2. 假设①：map 军队确实极度分散 <span class="tag t-ok">成立</span></h2>
+<div class="card">
+<table>
+<thead><tr><th>图</th><th>局</th><th>胜率</th><th>纵向 span</th><th>横向 latSpan</th><th>横向 latGap</th><th>在基地未参战 nH</th></tr></thead>
+<tbody>
+<tr><td><b>map</b></td><td class="num">18</td><td class="num">28%</td><td class="num"><b>42.0</b></td><td class="num"><b>24.2</b></td><td class="num"><b>11.8</b></td><td class="num">1</td></tr>
+<tr><td>map1</td><td class="num">22</td><td class="num">64%</td><td class="num">22.0</td><td class="num">9.8</td><td class="num">5.1</td><td class="num">1</td></tr>
+<tr><td>map2</td><td class="num">21</td><td class="num">76%</td><td class="num">25.5</td><td class="num">13.2</td><td class="num">4.8</td><td class="num">0</td></tr>
+<tr><td>map3</td><td class="num">23</td><td class="num">70%</td><td class="num">18.4</td><td class="num">10.1</td><td class="num">7.3</td><td class="num">0</td></tr>
+</tbody>
+</table>
+<p><b>Mann-Whitney（map vs 其余三图合计）</b></p>
+<table>
+<thead><tr><th>指标</th><th>map 中位</th><th>其余中位</th><th>z</th><th>p</th></tr></thead>
+<tbody>
+<tr><td>横向展宽 latSpan</td><td class="num">24.2</td><td class="num">10.5</td><td class="num">+5.77</td><td class="num">&lt;0.0001</td></tr>
+<tr><td>横向空档 latGap</td><td class="num">11.8</td><td class="num">5.2</td><td class="num">+4.86</td><td class="num">&lt;0.0001</td></tr>
+<tr><td>纵向跨度 span</td><td class="num">42.0</td><td class="num">21.5</td><td class="num">+4.99</td><td class="num">&lt;0.0001</td></tr>
+</tbody>
+</table>
+<div class="verdict v-yes"><b>你的观察在这一点上是准确的，而且是全批最强的信号之一</b>
+map 的队形横向铺开 24.2 格、纵向拉长 42 格，是其余图的 <b>2.3 倍</b>，三个指标 p 全部 &lt;0.0001。
+地形侧也吻合：map 有一条斜贯中部的长条水带（48,28）→（70,60），外加一块紧贴敌武器厂来向的水域（17~35, 54~71）。</div>
+<p class="small">补充：最短路几何分析显示基地→敌武器厂的最短走廊<b>无分叉</b>（绕行系数 1.12，连通分量恒为 1，即使容差 +30 格）⇒ 不存在"两条固定通路"。所以分散不是地形给了两条路，而是单位各自绕同一片海时选了不同侧、之后不再汇合。</p>
+</div>
+
+<h2>3. 假设②：严格"两波"形态其实罕见 <span class="tag t-mid">部分成立</span></h2>
+<div class="card">
+<p>判据：<code>latGap ≥ 12 格</code> 且 <code>0.25 ≤ latL/n ≤ 0.75</code>（空档两侧人数相当 ⇒ 真两股，而非"一个人掉队"）。</p>
+<table>
+<thead><tr><th>结局</th><th>局</th><th>采样行</th><th>两波行</th><th>占比</th><th>出现过两波的局</th></tr></thead>
+<tbody>
+<tr><td>胜</td><td class="num">51</td><td class="num">1901</td><td class="num">26</td><td class="num">1.4%</td><td class="num">7/51（14%）</td></tr>
+<tr><td>负 · 祭司死</td><td class="num">23</td><td class="num">431</td><td class="num">25</td><td class="num">5.8%</td><td class="num">5/23（22%）</td></tr>
+<tr><td>负 · 超时</td><td class="num">10</td><td class="num">590</td><td class="num">80</td><td class="num"><b>13.6%</b></td><td class="num"><b>8/10（80%）</b></td></tr>
+</tbody>
+</table>
+<div class="verdict v-mid"><b>"整齐的两股"很少见（全批 4.5% 采样行），但它与"超时"高度绑定</b>
+80% 的超时局出现过两波形态，胜局只有 14%。不过要注意方向问题——见第 5 节。</div>
+<p class="small">更准确的描述：map 上不是"分成两波"，而是<b>拉成一条 42 格长的散线</b>（span 42.0），中间还有 24 格的纵向断层（gap）。</p>
+</div>
+
+<h2>4. 假设③：分散并不导致失败 <span class="tag t-no">不成立</span></h2>
+<div class="card">
+<h3>4.1 map 内部：胜局和负局一样分散</h3>
+<table>
+<thead><tr><th>map 结局</th><th>局</th><th>纵向 span</th><th>横向 latSpan</th><th>横向 latGap</th></tr></thead>
+<tbody>
+<tr><td>胜</td><td class="num">5</td><td class="num">44.6</td><td class="num">23.6</td><td class="num">12.7</td></tr>
+<tr><td>负 · 祭司死</td><td class="num">6</td><td class="num">34.6</td><td class="num">24.6</td><td class="num">12.5</td></tr>
+<tr><td>负 · 超时</td><td class="num">7</td><td class="num">41.9</td><td class="num">24.0</td><td class="num">10.8</td></tr>
+</tbody>
+</table>
+<p class="small">三个结局的横向展宽是 23.6 / 24.6 / 24.0 —— <b>差异在噪声内，胜局甚至 span 最大</b>。</p>
+
+<h3>4.2 逐局看：最分散和最集中的都输了</h3>
+<p class="small">map 超时局中，latSpan 最高的一局（30.3）和最低的一局（4.6）<b>军队都只剩 3 个</b> ⇒ 分散度与结局无关。</p>
+
+<h3>4.3 时序：分散度从头到尾都不区分胜/祭死</h3>
+<table>
+<thead><tr><th>反攻起点+</th><th>胜 latSpan</th><th>祭司死 latSpan</th><th>超时 latSpan</th></tr></thead>
+<tbody>
+<tr><td>+1 分</td><td class="num">14.5</td><td class="num">14.8</td><td class="num">23.3</td></tr>
+<tr><td>+3 分</td><td class="num">9.6</td><td class="num">9.9</td><td class="num">19.9</td></tr>
+<tr><td>+6 分</td><td class="num">10.9</td><td class="num">11.4</td><td class="num">14.9</td></tr>
+<tr><td>+10 分</td><td class="num">10.8</td><td class="num">11.4</td><td class="num">13.7</td></tr>
+</tbody>
+</table>
+<div class="verdict v-no"><b>胜局与祭司死亡局在每个时间点的分散度都几乎重合（9.6/9.9、10.9/11.4、10.8/11.4）</b>
+分散度唯一能分开的是"超时"这一桶。而按军队数分层后，超时的高分散仍然只在"军队已被打光"的时间段出现 ⇒
+<b>分散更像是"推不动/被耗光"的症状，而不是原因。</b></div>
+</div>
+
+<h2>5. ★ 真正的机制：不是"散"，也不是"推不动"，是"抵达后被耗光"</h2>
+<div class="card">
+<h3>5.1 推进是成功的 —— 所有结局都推到了敌基地门口</h3>
+<table>
+<thead><tr><th>反攻起点+</th><th>胜 prog%</th><th>祭司死 prog%</th><th>超时 prog%</th><th>胜 n</th><th>祭司死 n</th><th>超时 n</th></tr></thead>
+<tbody>
+<tr><td>+3 分</td><td class="num">85.4</td><td class="num">82.2</td><td class="num">73.7</td><td class="num">19</td><td class="num">16</td><td class="num">13</td></tr>
+<tr><td>+6 分</td><td class="num">81.4</td><td class="num">77.7</td><td class="num">65.1</td><td class="num">21</td><td class="num">15</td><td class="num">6</td></tr>
+<tr><td>+10 分</td><td class="num">81.4</td><td class="num">77.7</td><td class="num">50.8</td><td class="num">21</td><td class="num">15</td><td class="num"><b>4</b></td></tr>
+</tbody>
+</table>
+<p class="small">prog = 主力沿推进轴的进度百分比（100% = 已抵敌目标）。</p>
+
+<h3>5.2 map 逐局：推进峰值 vs 残余军队</h3>
+<table>
+<thead><tr><th>结局</th><th>推进峰值</th><th>末时残余军队</th></tr></thead>
+<tbody>
+<tr><td>超时 ×7</td><td class="num">97.7 / 81.9 / 85.2 / 97.3 / 88.0 / 82.9 / 75.5 %</td><td class="num"><b>3 / 3 / 4 / 3 / 5 / 6 / 6</b></td></tr>
+<tr><td>祭司死 ×6</td><td class="num">86.7 / 82.8 / 86.3 / 78.0 / 83.6 / 82.3 %</td><td class="num">14 / 18 / 12 / 12 / 13 / 7</td></tr>
+<tr><td>胜 ×5</td><td class="num">87.6 / 84.2 / 85.2 / 84.9 / 90.5 %</td><td class="num">15 / 13 / 9 / 7 / 13</td></tr>
+</tbody>
+</table>
+<div class="verdict v-key"><b>map 上 18 局里有 17 局都把主力推进到了 75%~98% 的位置 —— 全都成功抵达敌基地附近。
+胜与负的唯一差别是"军队有没有撑住"：超时局残余 3~6 个兵，胜局残余 7~15 个兵。</b>
+所以 map 的失败形态是：<b>抵达了，然后在敌基地附近被持续消耗到打不动</b>，而不是"推不过去"、也不是"被分成两波各个击破"。<br>
+（这与 OJ 局 <code>debug_10859</code> 观察到的"42k 后 Frm 22→0、Mil 22→2 被打崩"是同一形态。）</div>
+<p class="small">⚠ 因果提醒：残余军队数是<b>结局时刻</b>的量，属"结果"而非"处理"。按记忆里的 fixN 铁律，不能据此直接去抬军队规模——那已被实验证否（强制 Mil 27→33，胜率反降 13.5pp）。</p>
+</div>
+
+<h2>6. 假设④：祭司走太靠前 —— 数据否掉 <span class="tag t-no">不成立</span></h2>
+<div class="card">
+<table>
+<thead><tr><th>决定性时刻的最后 1 桶</th><th>局</th><th>lead（祭司−主力）</th><th>leadF（祭司−前锋）</th><th>祭司比前锋还前的局</th></tr></thead>
+<tbody>
+<tr><td>祭司死亡前</td><td class="num">23</td><td class="num">+10.0</td><td class="num">+0.6</td><td class="num">50%</td></tr>
+<tr><td>感化成功前</td><td class="num">51</td><td class="num">+9.9</td><td class="num">+1.0</td><td class="num"><b>56%</b></td></tr>
+</tbody>
+</table>
+<div class="verdict v-no"><b>两条曲线完全重合，而且"祭司比最前的兵还靠前"在胜局里更常见（56% vs 50%）</b>
+祭司前出不是败因 —— 它甚至是胜利形态的一部分（祭司需要进入感化射程）。<br>
+祭司死亡局真正的差别是<b>军队数（11 vs 21）</b>：军队先被打光，祭司才暴露。因果方向与你假设的相反。</div>
+<p class="small">代码侧佐证：祭司推进（<code>managePriest</code>）与军队推进是<b>两条完全独立的链</b>，祭司目标是"停在感化射程内 1 格"，<b>没有任何跟随军队的约束</b>。这是设计使然，不是 bug。</p>
+</div>
+
+<h2>7. 一个必须排除的混杂：全体的"剂量反应"其实是 map 效应</h2>
+<div class="card">
+<table>
+<thead><tr><th>全体按 latSpan 三等分</th><th>局</th><th>胜率</th><th>其中 map 占比</th></tr></thead>
+<tbody>
+<tr><td>档1（latSpan≈9.0）</td><td class="num">28</td><td class="num">71.4%</td><td class="num">1/28</td></tr>
+<tr><td>档2（latSpan≈11.1）</td><td class="num">28</td><td class="num">71.4%</td><td class="num">0/28</td></tr>
+<tr><td>档3（latSpan≈19.9）</td><td class="num">28</td><td class="num">39.3%</td><td class="num"><b>17/28</b></td></tr>
+</tbody>
+</table>
+<p>表面上"越分散越输"（71%→39%），但<b>最高档 28 局里 17 局是 map</b> ⇒ 这个落差基本就是 map 效应本身，不是分散的效应。</p>
+<p><b>排除 map 后重做</b>（n=66）：72.7% / 81.8% / 54.5% —— 档次顺序已乱（档2 最高），且档3 里 14/22 是 map2（该批次 map2 表现偏差）⇒ <b>同样是图构成混杂，不是分散效应。</b></p>
+</div>
+
+<h2>8. 结论与建议</h2>
+<div class="card">
+<h3>对你三条假设的最终判决</h3>
+<ul>
+<li><b>军队集结分散</b> —— <span class="tag t-ok">成立</span>，且 map 是其余图的 2.3 倍（p&lt;0.0001）。观察准确。</li>
+<li><b>被海分成 2 波被逐个击破</b> —— <span class="tag t-no">机制不成立</span>。"整齐两股"只有 4.5% 采样行；且分散度在 map 内部完全不区分胜负。分散是地形后果，不是败因。</li>
+<li><b>祭司走太靠前</b> —— <span class="tag t-no">不成立</span>。胜局祭司同样前出（56%），死局是因为军队先被打光。</li>
+</ul>
+
+<h3>真正该打的靶子</h3>
+<div class="verdict v-key"><b>map 的失败 = 成功抵达敌基地附近后，军队在持续交战中被耗光（26 → 3~6）。</b>
+不是"走不到"，不是"走散了"，是<b>"到了但站不住"</b>。</div>
+<ul>
+<li><b>方向 A（推荐先做量化）</b>：量"抵达后的损耗速率"——反攻起点后每分钟军队损失数，按图分层。若 map 显著更高，就锁定了靶子。</li>
+<li><b>方向 B</b>：抵达后的交战选择——是否在敌基地射程内反复接战/脱战（打-拉循环），导致净损耗为负。</li>
+<li><b>方向 C（不推荐）</b>：强行让队形更集中。数据不支持，且"减少动作"型修法在本工程已多次被证为无出路（fixJ 静止局 2→6）。</li>
+</ul>
+<p class="small">⚠ 无论走哪条，按 fixN 的教训：<b>先做因果实验再动手</b>，别只看"某量大的局胜率高"。</p>
+
+<h3>本轮工程状态</h3>
+<div class="kv"><span>工作副本 <code>UsrAI.cpp</code></span><b>已回退到 fixM <code>055e3668</code>·7649</b></div>
+<div class="kv"><span>与 <code>_submit/</code></span><b>逐字节一致（md5 相同）</b></div>
+<div class="kv"><span>exe</span><b>已重编，0 error / 12 warning（基线口径）</b></div>
+<div class="kv"><span>探针版存档</span><b><code>UsrAI.cpp.bak_20261007_sprd2probe</code></b></div>
+<div class="kv"><span>分析脚本</span><b><code>_spread.py</code>（纵/横/祭司全字段）</b></div>
+</div>
+
+<footer>
+生成于 2026-10-07 · AI = fixM <code>055e3668</code> · 数据 = sprd2 批次（四图×24，ROT=0，84 局有效采样）<br>
+探针只读，胜率对照 60.7% vs 61.5%（Δ=−0.8pp，未扰动行为）。
+</footer>
+
+</div>
+</body>
+</html>

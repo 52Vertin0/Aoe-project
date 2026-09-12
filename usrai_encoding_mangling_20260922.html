@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>UsrAI.cpp 编译失败根因：行尾二次翻译 + 中文被吃成 '?'</title>
+<style>
+  :root{--ink:#1a1a1a;--sub:#5a5f66;--line:#e3e6ea;--bg:#fbfcfd;--warn:#b4232a;--ok:#1a7f45;--box:#f4f7fa;--accent:#1f4e79}
+  *{box-sizing:border-box}
+  body{margin:0;padding:34px 42px 60px;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:1080px}
+  h1{font-size:23px;margin:0 0 6px;line-height:1.4}
+  .sub{color:var(--sub);font-size:13px;margin-bottom:26px}
+  h2{font-size:17px;margin:32px 0 10px;padding-left:10px;border-left:4px solid var(--accent)}
+  h3{font-size:14px;margin:20px 0 6px;color:var(--accent)}
+  p{margin:8px 0}
+  code{background:#eef2f6;padding:1px 5px;border-radius:3px;font-family:Consolas,"Courier New",monospace;font-size:13px}
+  pre{background:#1e2430;color:#e6edf3;padding:12px 14px;border-radius:6px;overflow-x:auto;
+      font-family:Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.6;margin:10px 0}
+  pre .c{color:#7d8b9a}
+  pre .r{color:#ff7b72}
+  pre .g{color:#7ee787}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+  th{background:#eef2f6;font-weight:600}
+  td.n{text-align:center;white-space:nowrap;font-family:Consolas,monospace}
+  .ok{color:var(--ok);font-weight:600}
+  .bad{color:var(--warn);font-weight:600}
+  .box{background:var(--box);border:1px solid var(--line);border-left:4px solid var(--accent);
+       border-radius:5px;padding:12px 16px;margin:14px 0}
+  .box.warn{border-left-color:var(--warn);background:#fdf4f4}
+  ul{margin:8px 0 8px 4px;padding-left:20px} li{margin:4px 0}
+  .k{font-weight:600}
+  .foot{margin-top:34px;padding-top:12px;border-top:1px solid var(--line);color:var(--sub);font-size:12.5px}
+</style>
+</head>
+<body>
+
+<h1>UsrAI.cpp 编译失败根因报告</h1>
+<div class="sub">2026-09-22 · AoE3 3.0.7g · 触发：一份 <code>error: expected ')' before '?' token</code> + 约 60 条 <code>-Wtrigraphs</code> 警告的编译日志</div>
+
+<div class="box">
+<b>一句话结论：</b>你贴的日志里那份 <code>UsrAI.cpp</code> <b>不是仓库里的源文件</b>，而是它被某个"读→写"步骤
+<b>重新编码过一遍</b>的产物，同时挨了两刀：<br>
+① <b>行尾被二次翻译成 <code>\r\r\n</code></b>（每行被 GCC 当两行，行号变成 <code>2N−1</code>）——第 39 行
+<code>#define FARM_WOOD_NEED(...) \</code> 的续行符被 <code>\r</code> 切断，第 40 行的宏体掉到<b>文件作用域</b> ⇒ 报错；<br>
+② <b>中文被有损替换成 <code>?</code></b>（连成 <code>??=</code>/<code>??(</code> 就成了三元字）⇒ 那约 60 条警告。<br>
+仓库里的 <code>UsrAI.cpp</code>（<code>5b4183b2</code> / 6342 行）<b>本身是干净的</b>：<code>rc=0 / errors=0 / trigraph=0</code>。
+</div>
+
+<h2>1 定位：行号是 <code>2N−1</code></h2>
+<p>日志里的行号与仓库文件之间是严格的两倍关系（每个 <code>\r</code> 被当成一次换行）。用<b>英文日志标签</b>做锚点，逐个命中：</p>
+<table>
+<tr><th>日志里写的</th><th>日志内容（节选）</th><th>对应仓库行</th><th>仓库内容</th></tr>
+<tr><td class="n">79</td><td><code>((gazelleStockBuilt) ? BUILD_FARM_WOOD : …)</code></td><td class="n">40</td><td><code>#define FARM_WOOD_NEED</code> 的<b>续行</b>（第 39 行以 <code>\</code> 结尾）</td></tr>
+<tr><td class="n">761</td><td><code>[DIRTY-SNAP f=%1]</code></td><td class="n">381</td><td><code>[DIRTY-SNAP f=%1]</code></td></tr>
+<tr><td class="n">1973</td><td><code>Priest FLEE: …-&gt;…</code></td><td class="n">987</td><td><code>Priest FLEE: 卡死-&gt;本帧静默</code></td></tr>
+<tr><td class="n">3387</td><td><code>[GAZELLE-STOCK f=%1] 群中心块(%2,%3)</code></td><td class="n">1694</td><td>同</td></tr>
+<tr><td class="n">3705</td><td><code>[GATE f=%1] needStock=%2 …</code></td><td class="n">1853</td><td>同</td></tr>
+<tr><td class="n">3793</td><td><code>[STOCK-ORD f=%1] 第二轮仓库 …</code></td><td class="n">1897</td><td>同</td></tr>
+<tr><td class="n">6715</td><td><code>[ARMOR f=%1] 研发 %2%3 …</code></td><td class="n">3358</td><td>同</td></tr>
+</table>
+
+<h3>指纹级确认：16 条 <code>-Wwrite-strings</code> 警告逐条同序命中</h3>
+<p><code>write-strings</code> 警告的位置只取决于<b>调用点在文件里的精确位置</b>，是很好的指纹。仓库源 16 条折算到日志口径后，与日志里的 15 条比对：</p>
+<pre>仓库 16 条 → 折算(2N−1)：811, 1027, 1049, 1145, 1177, 1189, 1201, 1247, 1281,
+                        1961, 1973, 8295, 10165, 10261, 10283, 11321
+日志 15 条              ：      1027, 1049, 1145, 1177, 1189, 1201, 1247, 1281,
+                        1961, 1973, 8295, 10165, 10261, 10283, 11321
+                          ⇒ 14/14 逐条同序命中（<span class="c">首条 811 是日志开头被截，非真实差异</span>）</pre>
+
+<h2>2 复现：把干净源做成这个样子，错误一字不差</h2>
+<p>控制实验（<code>_mangle_run*.py</code>，同一套 g++ 参数）：</p>
+<table>
+<tr><th>实验</th><th>做法</th><th>rc</th><th>errors</th><th>trigraph</th><th>报出的错</th></tr>
+<tr><td>A 干净源</td><td>原样</td><td class="n">0</td><td class="n ok">0</td><td class="n">0</td><td>—</td></tr>
+<tr><td>B <code>\r\r\n</code></td><td>把 <code>\r\n</code> 变成 <code>\r\r\n</code></td><td class="n">1</td><td class="n bad">1</td><td class="n">0</td><td><code>79:26: expected ')' before '?' token</code></td></tr>
+<tr><td>C <code>\n\n</code></td><td>每行后插一个空行</td><td class="n">1</td><td class="n bad">1</td><td class="n">0</td><td>同上（<code>79:26</code>）</td></tr>
+<tr><td><b>D</b> <code>\r\r\n</code>+中文→<code>?</code></td><td>逐字节替换 + 双 CR</td><td class="n">1</td><td class="n bad">1</td><td class="n bad">73</td><td><b><code>79:26: expected ')' before '?' token</code></b></td></tr>
+<tr><td><b>E</b> 逐字符替换 + <code>\r\r\n</code></td><td>同上，按字符替换</td><td class="n">1</td><td class="n bad">1</td><td class="n bad">58</td><td><b><code>79:26: …</code></b></td></tr>
+<tr><td colspan="6" style="color:#5a5f66">你的日志报的是 <code>79:25</code>：行号、错误文案、trigraph 的<b>行</b>分布全部一致（差 1 列 = 编译器版本 5.3 vs 你那边更新的 GCC 在列号/插入符上的差异），
+三元字警告里 <code>1973:62</code> 与 E/D 完全同列。中文变 <code>?</code> 的具体路径落在"逐字符 ~ 逐字节"之间（58 / 60 / 73），<b>不影响结论，也不影响修法</b>。</td></tr>
+</table>
+
+<h3>为什么一行行尾能炸出 <code>expected ')'</code></h3>
+<pre>仓库（正常 CRLF）：
+ 39 | #define FARM_WOOD_NEED(gazelleStockBuilt) \      <span class="c">← \ 告诉预处理「下一行还是本宏」</span>
+ 40 |     ((gazelleStockBuilt) ? BUILD_FARM_WOOD : (…))
+
+被写成 \r\r\n 之后：
+ 39 | #define FARM_WOOD_NEED(gazelleStockBuilt) \ + CR   <span class="c">← \ 吞掉第一个 CR 后，宏定义在此结束</span>
+    |  + CR         <span class="c">← 紧跟的这个 CR 又是一次换行（空行）</span>
+ 40 |     ((gazelleStockBuilt) ? …)                    <span class="c">← 宏体掉到文件作用域</span>
+     ⇒ 文件作用域看到 `((gazelleStockBuilt)`：GCC 按「带括号的声明符」解析，
+       括号里的名字不是类型、接着又来一个 `?`  ⇒ <span class="r">error: expected ')' before '?' token</span></pre>
+<p>同理，<code>\n\n</code>（每行插空行）也会把宏体与宏定义拆开，错误完全一样。区别只在表现形式，判据都是<b>行号翻倍</b>。</p>
+
+<h2>3 元凶：<code>write_text()</code> 的二次换行翻译</h2>
+<p><code>D:\deepseek\optimize_new_aoe_20260921\apply_safe_slim.py</code> 末尾：</p>
+<pre><span class="c"># 写 CRLF + UTF-8 no BOM</span>
+out_cpp.write_text(cpp.replace("\n", "\r\n"), encoding="utf-8")   <span class="r">← 这里</span>
+out_h.write_text(h.replace("\n", "\r\n"), encoding="utf-8")</pre>
+<ul>
+<li><code>read_text(encoding="utf-8")</code> 默认 <code>newline=None</code> ⇒ 读进来时 <code>\r\n</code> 已归一成 <code>\n</code>（没问题）。</li>
+<li>手工 <code>.replace("\n","\r\n")</code> 拼出 CRLF（也没问题）。</li>
+<li><b><code>write_text()</code> 默认又是 <code>newline=None</code> ⇒ 写出时把每个 <code>\n</code> 再翻成 <code>\r\n</code></b> ⇒ 已有的 <code>\r\n</code> 变成 <code>\r\r\n</code>。<span class="bad">就是这一步。</span></li>
+</ul>
+<div class="box warn">
+<b>修正（2026-09-22 23:35）：这条只修了一半。</b>同目录 <code>apply_safe_slim2.py:65</code> 与 <code>apply_l2_count.py:41</code> / <code>apply_l2_nearest.py:70</code> 确实都已改成
+<br><code>with out.open("w", encoding="utf-8", <b>newline=""</b>) as f: f.write(cpp.replace("\n","\r\n"))</code>
+<br>但<b>第 1 版 <code>apply_safe_slim.py:67-68</code> 原封未动</b> —— 任何仍调它的流程会再次产出 <code>\r\r\n</code>。<b>本轮已把它一并修掉</b>（写、读两处都显式 <code>newline=""</code>）。
+<br><b>它为什么能溜到编译才炸：</b>紧随其后的自检 <code>read_text(encoding="utf-8")</code> 也默认 <code>newline=None</code>，
+universal-newline 把 <code>\r\r\n</code> 归一成 <code>\n</code> ⇒ 打印出来的 <code>count("\r\n")</code> 完全正常，<b>自检形同虚设</b>。
+<br><b>修复实证</b>（同内容、两种写法、看落盘字节）：旧 <code>write_text</code> ⇒ <code>\r\r\n=199</code>；新 <code>open(newline="")</code> ⇒ <code>\r\r\n=0 / \r\n=199</code>。
+<br><b>规则固定：任何"手工拼 CRLF"的写法，写文件时必须带 <code>newline=""</code>；更省事的做法是全程 <code>read_bytes()/write_bytes()</code>。</b>
+</div>
+
+<h3>3.1 环节确证（2026-09-22 23:59）：损伤发生在「网站提交」那一步</h3>
+<p>用户确认：那份日志是<b>通过网站提交、在评测机上编译</b>产生的。这解释了本机为什么全盘扫不到坏副本 ——
+坏掉的是<b>提交到网站之后、落到评测机磁盘上的那一份</b>。</p>
+<p>服务端收下文本后几乎一定会做一次「补 CR」，两种最常见实现都踩同一个坑：</p>
+<table>
+<tr><th>服务端行为</th><th>提交 CRLF 源（现行做法）</th><th>提交 LF 源</th></tr>
+<tr><td>A. <code>content.replace("\n","\r\n")</code> 后落盘</td><td class="bad"><code>\r\r\n</code> × 6342</td><td class="ok">正确 CRLF</td></tr>
+<tr><td>B. Windows text-mode <code>open("w")</code>（每个 <code>\n</code> 前补 CR）</td><td class="bad"><code>\r\r\n</code> × 6342</td><td class="ok">正确 CRLF</td></tr>
+<tr><td>C. <code>unix2dos</code>（LF → CRLF）</td><td>视实现而定</td><td class="ok">正确 CRLF</td></tr>
+<tr><td>D. 原样二进制保存</td><td class="ok">原样 CRLF</td><td class="ok">纯 LF（GCC 一视同仁）</td></tr>
+</table>
+<div class="box ok"><b>⇒ 提交纯 LF 源，四种服务端行为全部免疫。</b></div>
+
+<p><b>唯一致命点只有一处续行。</b>全文件 6342 行里，行尾反斜杠（<code>\</code> ＋ 换行）只有 <b>1 处</b> ——
+第 39 行 <code>#define FARM_WOOD_NEED(gazelleStockBuilt) \</code>；<code>UsrAI.h</code> 里 <b>0 处</b>。
+<code>\r\r\n</code> 的其余后果（行号 2N−1）对编译<b>无害</b>，唯独切断这一条续行才会炸出
+<code>error: expected ')' before '?' token</code>（报在"79 行"＝真实第 40 行，正是宏体那行）。</p>
+
+<h3>3.2 三臂实测（本机 <code>g++ -fsyntax-only -Wall -Wextra</code>）</h3>
+<table>
+<tr><th>臂</th><th>内容</th><th>errors / warnings</th></tr>
+<tr><td>仓库源</td><td>CRLF（现行）</td><td class="ok">0 / 17</td></tr>
+<tr><td><b>提交版</b></td><td><b>纯 LF</b>（内容零改动，只换行尾）</td><td class="ok"><b>0 / 17</b></td></tr>
+<tr><td>理论双保险</td><td>单行宏 ＋ <code>\r\r\n</code>（模拟最坏情况）</td><td class="ok"><b>0 / 17</b></td></tr>
+</table>
+<p>第三行是<b>反证</b>：只要把第 39 行那条宏改成单行，即使行尾被搞成 <code>\r\r\n</code> 也照样
+<code>errors = 0</code> ⇒ 证明「致命点就是这一处续行」，其余损伤全不致命。</p>
+
+<h3>3.3 操作</h3>
+<pre><span class="c">$ python mk_submit.py</span>
+源（仓库，可含 CRLF）
+  C:\new-aoe3.0.7g\UsrAI.cpp    6342 行  CRLF=6342  \r\r\n=0  续行 1 处(第39行)  [.] 干净
+生成提交版（纯 LF）-> C:\new-aoe3.0.7g\_submit
+  _submit\UsrAI.cpp            6342 行  纯LF=6342  \r\r\n=0              [.] 干净
+  _submit\UsrAI.h               370 行  纯LF=370   \r\r\n=0              [.] 干净
+==> 全部干净。把 _submit 下的两个文件提交到网站即可。</pre>
+<p>以后每次改完源码，先跑 <code>python mk_submit.py</code> 再提交。若网站仍报怪错，把<b>网站传回来的那份</b>
+用 <code>chk_src.py</code> / <code>chk_src.sh</code> 体检，即可判定是「提交前就已损坏」还是「提交后才被改坏」。
+注意：LF 版只解决<b>行尾</b>；若服务端还会吃掉中文（<code>?</code>），那属于下面 §4 的损伤，
+<b>不影响编译成败</b>（只是 warning），但会让 ait 日志的中文标签全废。</p>
+
+<h2>4 第二个损伤：中文被吃成 <code>?</code></h2>
+<p>日志里约 60 条 <code>trigraph ??= / ??( / ??) / ??- / ??/ / ??&lt;</code> 警告，只可能来自<b>真实的 <code>??X</code> 字节</b>。
+仓库源的 118 个 <code>?</code> 全部在 <code>a ? b : c</code> 与格式串 <code>%1</code> 里，<b>零处</b> <code>??X</code>。⇒ 那份副本的中文被替换成了 <code>?</code>（UTF-8 的中文被逐字符/逐字节吃掉），
+两个 <code>?</code> 恰好挨到 <code>= ( ) - /</code> 就构成三元字。</p>
+<table>
+<tr><th>影响</th><th>说明</th></tr>
+<tr><td>不影响编译成败</td><td>三元字在 C++11 起默认不翻译（所以才只是 warning），字符串里的 <code>?</code> 照原样保留。</td></tr>
+<tr><td class="bad">但会毁掉日志可读性</td><td>所有 <code>DebugText("…中文…")</code> 的标签会变成 <code>?</code>。我们的观测口径大量依赖 <code>[TAG]</code>（ASCII，能活）+ 中文短语（会死），
+一旦这种副本进了实机，ait 日志的中文判据全部失效。</td></tr>
+</table>
+<p><b>当前核验（逐字节）</b>：<code>D:\deepseek\optimize_new_aoe_20260921\</code> 下 <code>UsrAI_pre/slim/opt/opt2.cpp</code>、<code>baseline/</code>、<code>slim/</code> —— <b>全部纯 UTF-8 + 统一 CRLF + 孤立 LF=0 + 三元字=0</b>，且四个臂都 <code>rc=0 / errors=0 / write-strings=16</code>（与基线同形）。所以那个 <code>?</code> 化发生在<b>已被覆盖的中间态</b>，现在的链路不自带该损伤。</p>
+
+<h2>5 防复发：<code>chk_src.py</code></h2>
+<p>新加的字节级体检器（<code>C:\new-aoe3.0.7g\chk_src.py</code>），一条命令判定一个源文件能不能进编译：</p>
+<pre><span class="c">$ python chk_src.py UsrAI.cpp UsrAI.h --expect-lines 6342</span>
+字节 : 463208   行(\n) : 6342
+行尾 : CRLF=6342  孤立LF=0  孤立CR=0  \r\r\n=0
+编码 : UTF-8
+三元字: 0 处
+判定 : <span class="g">✓ 干净（UTF-8 / 统一 CRLF / 无三元字 / 行数符合）</span></pre>
+<p>检查项：<code>\r\r\n</code>（双 CR）、孤立 LF/CR、<code>??X</code> 三元字（并列出首次出现的行）、是否合法 UTF-8、是否带 BOM、行数快照。用在两处最划算：<b>① 任何"读→写"脚本产出文件之后；② 编译报怪错之前先跑一遍</b>。</p>
+
+<h3>5.1 新增 <code>--scan</code>：一条命令回答"我手上哪份是干净源"</h3>
+<pre><span class="c">$ python chk_src.py --scan C:\ D:\ --maxdepth 6</span>
+扫描根 : C:/..., D:/...
+匹配   : 48 个文件（UsrAI*.cpp/UsrAI*.h, 深度&lt;=6）
+  <span class="g">[.] C:\new-aoe3.0.7g\UsrAI.cpp                     OK  (6342 行, CRLF=6342)</span>
+  <span class="g">[.] D:\deepseek\optimize_new_aoe_20260921\deliver\UsrAI.cpp   OK  (6315 行, CRLF=6315)</span>
+  ...
+  <span class="r">[X] C:\new-aoe3.0.7g\_mangle\UsrAI_qmark.cpp      \r\r\n / 三元字</span>
+        - \r\r\n x6342 —— 每行会被 GCC 当两行（行号 2N-1），且断掉 \ 续行
+汇总   : 48 个文件，1 个有损伤</pre>
+<p><b>2026-09-22 23:30 实测结论</b>：48 个副本里唯一被判"有损伤"的是 <code>C:\new-aoe3.0.7g\_mangle\UsrAI_qmark.cpp</code>，
+<b>而那是我们为做复现实验故意造出来的坏样本</b>（<code>\r\r\n</code>x6342 ＋ <code>??X</code>x1239）。
+换句话说 —— <b>你那份日志的坏文件，在本机磁盘上根本不存在</b>；它产生在别处（某条读→写链路，或另一台机器）。</p>
+
+<h3>5.2 副本清单：哪份是什么</h3>
+<table>
+<tr><th>路径</th><th>版本 / 行数</th><th>性质</th></tr>
+<tr><td><code>C:\new-aoe3.0.7g\UsrAI.cpp</code><br><code>C:\new-aoe3.0.7g\UsrAI.h</code></td>
+    <td><code>5b4183b2</code> / 6342<br><code>79eee345</code> / 370</td>
+    <td class="ok"><b>★ 唯一权威源 —— 编辑 / 编译 / 提交都用它</b>（mtime 09-22 19:21）</td></tr>
+<tr><td><code>C:\new-aoe3.0.7h\</code></td><td><code>3bd4d179</code> / 6462</td><td>镜像树（更新的引擎），源码停在 09-21 22:44</td></tr>
+<tr><td><code>…\optimize_new_aoe_20260921\baseline\</code>、<code>…\UsrAI_pre.cpp</code></td><td><code>5b4183b2</code> / 6342</td><td>= 权威源的副本</td></tr>
+<tr><td><code>…\slim\</code> / <code>…\opt\</code> / <code>…\opt2\</code> / <code>…\deliver\</code></td>
+    <td><code>cdb078b6</code> / 6331<br><code>bff994d2</code> / 6319<br><code>c86ba0da</code> / 6315</td>
+    <td>精简流水线三臂（<code>deliver</code> = opt2），全部干净可编译</td></tr>
+<tr><td><code>C:\Users\ZhuanZ\WorkBuddy\2026-07-29-18-11-46\UsrAI.cpp</code></td><td><code>77a58c87</code> / 4770</td><td>09-13 的旧快照（LF 行尾）</td></tr>
+<tr><td><code>aoe_project\</code>、<code>aoe_workspace\</code>、<code>new-aoe3.0.7a~f\</code>、<code>D:\new-aoe3.0.7a\</code>、<code>D:\deepseek\newAOE\</code></td>
+    <td>—</td><td>历史版本 / 早期工程</td></tr>
+</table>
+<p><b>回写口</b> <code>deliver\apply_to_project.ps1</code> 用 <code>Copy-Item</code>（二进制复制、<b>不转行尾</b>）⇒ 安全；
+但它会把仓库源换成 opt2（<code>c86ba0da</code> / 6315），<b>跑之前想清楚</b>。
+日志末行那条 <code>cp: cannot stat 'newAOE'</code> 是<b>编译失败（error）的下游副产物</b>，不是独立问题。</p>
+
+<h2>6 处置清单</h2>
+<table>
+<tr><th>项</th><th>状态</th></tr>
+<tr><td>仓库 <code>C:\new-aoe3.0.7g\UsrAI.cpp</code></td><td class="ok">未受影响（<code>5b4183b2</code> / 6342 行 / 纯 UTF-8 CRLF），本会话未改动</td></tr>
+<tr><td>基线编译</td><td class="ok">rc=0 / errors=0 / warnings=16（write-strings），与既定基线一致</td></tr>
+<tr><td><code>apply_safe_slim.py</code> 的二次翻译</td><td class="ok"><b>本轮已修</b>（v1 的写/读都补 <code>newline=""</code>）；v1/v2 同族脚本现已全部合规</td></tr>
+<tr><td>优化流水线四个臂</td><td class="ok">baseline / slim / opt / opt2 全部可编译（0 error）</td></tr>
+<tr><td>中文游标化（<code>?</code>）</td><td>未复现于当前产物；只需在产出后用 <code>chk_src.py</code> 兜住</td></tr>
+</table>
+
+<div class="foot">
+证据脚本：<code>_mangle_test.py</code>（造变体）、<code>_mangle_run.py</code> / <code>_run2</code> / <code>_run3</code> / <code>_run4</code>（对照编译 + 逐条比对）、<code>_ws_list.py</code>（write-strings 指纹）。<br>
+检查器：<code>chk_src.py</code>。报告生成于 2026-09-22。
+</div>
+
+</body>
+</html>

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AoE3 UsrAI · fixK 三臂判决（fixI / fixJ / fixK）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --sub:#5b6470; --line:#e3e6ea;
+    --ok:#0b8a4b; --warn:#c26a00; --bad:#c0392b; --accent:#1f5fd0; --mono:#f0f2f5;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--sub);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:18.5px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15.5px;margin:22px 0 8px;color:var(--ink)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+  th{background:#eef1f5;font-weight:600;font-size:13px;color:#39414c}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .mono{font-family:Consolas,"SF Mono",Menlo,monospace;font-size:13px;background:var(--mono);
+        padding:2px 6px;border-radius:4px}
+  pre{background:#22262b;color:#e6e9ed;padding:14px 16px;border-radius:8px;overflow-x:auto;
+      font:13px/1.6 Consolas,"SF Mono",Menlo,monospace;margin:10px 0}
+  .tag{display:inline-block;padding:1px 8px;border-radius:11px;font-size:12px;font-weight:600;color:#fff}
+  .t-ok{background:var(--ok)} .t-warn{background:var(--warn)} .t-bad{background:var(--bad)} .t-neu{background:#7b848f}
+  .verdict{background:linear-gradient(180deg,#ffffff,#f2f7ff);border:1px solid #cfe0fa;border-left:5px solid var(--accent)}
+  .lead{font-size:15.5px}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin:14px 0}
+  .kpi div{background:#fff;border:1px solid var(--line);border-radius:9px;padding:12px 14px}
+  .kpi b{display:block;font-size:23px;line-height:1.25;font-variant-numeric:tabular-nums}
+  .kpi span{font-size:12.5px;color:var(--sub)}
+  .good{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--sub)}
+  ul{margin:8px 0;padding-left:22px} li{margin:4px 0}
+  .bar{height:20px;background:#e8ebef;border-radius:4px;overflow:hidden;position:relative;min-width:120px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  .bar span{position:absolute;right:7px;top:0;font-size:12px;line-height:20px;color:#333}
+  footer{margin-top:44px;color:var(--sub);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>fixK 三臂判决 — 落点可达性分级退化</h1>
+<div class="sub">
+  工程 <span class="mono">C:\new-aoe3.0.7g</span> ｜ 每臂 96 局（四图 × 24，<span class="mono">ROT=0</span>）｜
+  fixK 源码 <span class="mono">5ac4bc4c·7622</span> ／ exe <span class="mono">e82db13c</span>
+</div>
+
+<div class="card verdict">
+<h2 style="margin-top:0;border:none;padding:0">一句话结论</h2>
+<p class="lead" style="margin:6px 0 0">
+  <b>fixK 达成全部设计目标、无退化证据，建议保留。</b>
+  它消灭了「整届反攻期只能侧移」这一活锁形态（1&nbsp;→&nbsp;<b>0</b> 局）与静止局（回到 1 局），
+  6 个必输的活锁局从「100% 超时」变为「2 胜 2 死 2 超时」。
+  但 <b>胜率收益不可判读</b> —— 同配置下 <span class="mono">fixI↔fixJ</span> 结局一致率仅 <b>39%</b>，
+  噪声远大于本轮观测到的任何胜率差（含 <span class="mono">map</span> 的 −17pp）。
+</p>
+</div>
+
+<h2>1 · 三臂总览</h2>
+<table>
+<thead><tr><th>臂</th><th>说明</th><th class="n">胜率</th><th class="n">祭死</th><th class="n">超时</th><th class="n">静止局</th><th class="n">机制触发</th></tr></thead>
+<tbody>
+<tr><td><b>fixI</b></td><td>基线（反攻期不主动追敌）<br><span class="dim mono">2887e006</span></td>
+    <td class="n">45/96 <b>46.9%</b></td><td class="n">39</td><td class="n">12</td><td class="n">2</td><td class="n">—</td></tr>
+<tr><td><b>fixJ</b> <span class="tag t-bad">已回退</span></td><td>脱困总预算断路器（方案 B）</td>
+    <td class="n">44/96 45.8%</td><td class="n">39</td><td class="n">13</td><td class="n" style="color:#c0392b"><b>6</b> ↑</td><td class="n">GIVEUP 7 局</td></tr>
+<tr><td><b>fixK</b> <span class="tag t-ok">当前</span></td><td>落点可达性分级退化（同轴回退 4 级）</td>
+    <td class="n">49/96 <b>51.0%</b></td><td class="n">37</td><td class="n">10</td><td class="n" style="color:#0b8a4b"><b>1</b> ↓</td><td class="n">DEGRADE 42 局 / 325 次</td></tr>
+</tbody>
+</table>
+
+<h3>分图胜率</h3>
+<table>
+<thead><tr><th>地图</th><th class="n">fixI</th><th class="n">fixJ</th><th class="n">fixK</th><th class="n">I→K</th><th>判读</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">map</span></td><td class="n">7/24 · 29%</td><td class="n">6/24 · 25%</td><td class="n">3/24 · 12%</td><td class="n bad">−17pp</td><td><span class="tag t-neu">噪声内</span></td></tr>
+<tr><td><span class="mono">map1</span></td><td class="n">12/24 · 50%</td><td class="n">13/24 · 54%</td><td class="n">16/24 · 67%</td><td class="n good">+17pp</td><td><span class="tag t-neu">噪声内</span></td></tr>
+<tr><td><span class="mono">map2</span></td><td class="n">12/24 · 50%</td><td class="n">13/24 · 54%</td><td class="n">16/24 · 67%</td><td class="n good">+17pp</td><td><span class="tag t-neu">噪声内</span></td></tr>
+<tr><td><span class="mono">map3</span></td><td class="n">14/24 · 58%</td><td class="n">12/24 · 50%</td><td class="n">14/24 · 58%</td><td class="n">±0</td><td><span class="tag t-neu">持平</span></td></tr>
+</tbody>
+</table>
+<p class="dim" style="font-size:13.5px;margin:6px 0 0">
+  <b>关键</b>：<span class="mono">map</span> 的 −17pp 与 <span class="mono">map1/map2</span> 的 +17pp 幅度完全相同、方向相反 ⇒ 典型随机翻转，
+  不是机制效应。下一节给出直接证据。
+</p>
+
+<h2>2 · 为什么胜率不可判读（本次最硬的证据）</h2>
+<div class="card">
+<p style="margin-top:0">
+  <span class="mono">fixJ</span> 相对 <span class="mono">fixI</span> 的行为改动<b>极窄</b> —— 仅在脱困累计 ≥16 时取消侧移，
+  96 局里只触发 <b>7 局</b>。理论上其余 <b>89 局</b>的反攻段行为应逐位相同。实测结局一致率：
+</p>
+<table>
+<thead><tr><th>对比</th><th class="n">一致局数</th><th class="n">一致率</th><th>行为差异面</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">fixI ↔ fixJ</span></td><td class="n">37/96</td><td class="n bad"><b>39%</b></td><td>仅 7 局（GIVEUP）</td></tr>
+<tr><td><span class="mono">fixI ↔ fixK</span></td><td class="n">39/96</td><td class="n">41%</td><td>42 局（落点不可达）</td></tr>
+<tr><td><span class="mono">fixJ ↔ fixK</span></td><td class="n">46/96</td><td class="n">48%</td><td>—</td></tr>
+</tbody>
+</table>
+<p style="margin-bottom:0">
+  <b>⇒ 逐局结局近乎掷硬币</b>（<span class="mono">map1</span> 上 I↔J 更低至 <b>17%</b>＝4/24）。
+  在这样的一致率下，任何单臂 24 局的胜率差都<b>不可作判读</b>，包括 <span class="mono">map</span> 的 7→3。
+  <br><span class="dim">（成因：构建非位可复现 + 祭司寻路一次随机分叉即决定整局，见 <span class="mono">detail_state.md</span> §3.2）</span>
+</p>
+<h3>2.1 直接噪声测量：同源码同 exe 跑两遍 <span class="mono">map</span></h3>
+<table>
+<thead><tr><th>批次</th><th class="n">胜</th><th class="n">祭死</th><th class="n">超时</th><th class="n">逐局一致率</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">fixK_</span>（批次 1）</td><td class="n">3/24 · <b>12%</b></td><td class="n">16</td><td class="n">5</td><td class="n" rowspan="2" style="vertical-align:middle;font-size:19px"><b>50%</b><br><span class="dim" style="font-size:12.5px">12/24</span></td></tr>
+<tr><td><span class="mono">fixK2_</span>（批次 2）</td><td class="n">4/24 · <b>17%</b></td><td class="n">16</td><td class="n">4</td></tr>
+</tbody>
+</table>
+<p style="margin-bottom:0">
+  <span class="mono">map_r0_2</span> T→W、<span class="mono">map_r0_6</span> P→W、<span class="mono">map_r0_8</span> P→W、
+  <span class="mono">map_r0_9</span> W→T、<span class="mono">map_r0_13</span> T→W、<span class="mono">map_r0_17</span> W→T …
+  <b>同一份二进制、同一份配置，逐局胜负半数是反的。</b>
+  因此 <span class="mono">fixI</span> 的 29%／<span class="mono">fixJ</span> 的 25%／<span class="mono">fixK</span> 的 12~17%
+  <b>同属一个分布</b>（全距 17pp ＝ 已知噪声带）。
+  <br><span class="dim">要判读 29%→17%（12pp）的差异，需每臂约 <b>190 局</b>（α=0.05, power=0.8）—— 24 局/臂在数学上不够。</span>
+</p>
+</div>
+
+<h2>3 · fixK 的机制证据（这些才是判据）</h2>
+
+<h3>3.1 设计目标逐条命中</h3>
+<table>
+<thead><tr><th>指标</th><th class="n">fixI</th><th class="n">fixJ</th><th class="n">fixK</th><th></th></tr></thead>
+<tbody>
+<tr><td>「整届反攻期纯侧移」形态<br><span class="dim" style="font-size:12.5px">adv=0 且 escA+B&gt;0</span></td>
+    <td class="n">1</td><td class="n">3</td><td class="n"><b>0</b></td><td><span class="tag t-ok">达成</span></td></tr>
+<tr><td>静止局<br><span class="dim" style="font-size:12.5px">pm 五列全 0 且坐标冻结</span></td>
+    <td class="n">2</td><td class="n">6</td><td class="n"><b>1</b></td><td><span class="tag t-ok">达成</span></td></tr>
+<tr><td>6 个活锁局 脱困次数 <span class="mono">escA+B</span></td>
+    <td class="n">30~62</td><td class="n">0</td><td class="n"><b>0~1</b></td><td><span class="tag t-ok">达成</span></td></tr>
+<tr><td>6 个活锁局 结局</td>
+    <td class="n">T×6<br><span class="dim" style="font-size:12px">必输</span></td><td class="n">W2 P3 T1</td><td class="n"><b>W2 P2 T2</b></td><td><span class="tag t-ok">达成</span></td></tr>
+<tr><td>护栏：<span class="mono">Mil</span> 首 &gt;4 中位帧</td>
+    <td class="n">14102</td><td class="n">14250</td><td class="n">14250</td><td><span class="tag t-ok">持平</span></td></tr>
+<tr><td>护栏：<span class="mono">mil_max</span> 中位</td>
+    <td class="n">27</td><td class="n">27</td><td class="n">27</td><td><span class="tag t-ok">持平</span></td></tr>
+</tbody>
+</table>
+
+<h3>3.2 <span class="mono">dS</span> 真进展 — fixK 的立论根</h3>
+<p style="margin-top:0">退化落点是否真的把祭司<b>推近</b>武器厂（而非原地打转）？两条实测轨迹：</p>
+<pre>[fixK_map_r0_19]  结局 = <b>W（胜）</b>            dS 单位 = 格
+  f=34503  91.6  ←退化前
+  f=38401  26.5
+  f=38701  20.2
+  f=39002  18.2
+  f=39302  15.5
+  f=41704  11.0
+  f=42302   2.2  ←进入 12 格射程 → 感化成功
+
+[fixK_map3_r0_24] 结局 = T（超时，仍差 7.4 格）
+  f=34504  64.6
+  f=36002  25.1
+  f=40202  22.6
+  f=41402  19.8
+  f=42903  19.4  ←末</pre>
+<p class="dim" style="font-size:13.5px">
+  两条都是<b>单调下降</b>（对比 fixJ 的「坐标逐桶冻结」）⇒ 同轴回退产生的是真进展，不属「脱困充数」。
+</p>
+
+<h2>4 · 方案 B（fixJ）为何失败 — 以及它挖出的真病根</h2>
+<div class="card">
+<p style="margin-top:0"><b>B 的假设</b>：活锁 = 脱困动作不产生进展 ⇒ 给脱困设总预算，超限后永久改直冲。</p>
+<p><b>实测</b>：机制完全生效（GIVEUP 触发 7 局、闸泄漏 0），但 7 局<b>全部</b>出现四重指纹：</p>
+<pre>祭司 HumanMove 条数 = 0          ← 整段反攻期一条都没有
+pr@ 坐标逐桶冻结                  (58.9,22.5) / (42.0,46.4) … 一字不变
+[BEAT] pm 五列全 0                pm f0 ca0 h0 cnt0 o0
+[LC-DBG] dS 恒定到局末            37.5 / 25.9 / 48.3 …</pre>
+<p style="margin-bottom:0">
+  <b>⇒ 真病根不是「脱困不产生进展」，而是「理想推进落点 <span class="mono">isPassableAt</span> 恒假」</b>：
+  一条 <span class="mono">HumanMove</span> 都发不出去。侧移之所以是唯一发得出的令，正因为它相对当前挪 4 格、几乎总可达。
+  <b>取消侧移 ＝ 取消唯一的令 ⇒ 祭司反而彻底静止</b>（静止局 2→6）。
+  <br><b>教训（已入铁律）</b>：「减少动作」型修法在活锁上没有出路 —— 打转与静止在 <span class="mono">dS</span> 上等价。正解是<b>让落点可达</b>。
+</p>
+</div>
+
+<h2>5 · fixK 改动（纯新增 26 行 / 0 删除）</h2>
+<pre>// :5387 — 理想落点不可达时，沿「祭司 → 理想落点」连线同轴回退取最近可达点
+if (!isPassableAt(tx, ty, forestGrid)) {
+    const double advOx = priest->DR, advOy = priest->UR;
+    for (int k = 1; k &lt;= 4; k++) {
+        const double fracD = 1.0 - 0.2 * k;       // 0.8 / 0.6 / 0.4 / 0.2（从最远开始试）
+        const double advCx = advOx + (tx - advOx) * fracD;
+        const double advCy = advOy + (ty - advOy) * fracD;
+        if (isPassableAt(advCx, advCy, forestGrid)) {
+            tx = advCx; ty = advCy;
+            DebugText(QString("[PRIEST-ADV-DEGRADE ...]"));
+            break;
+        }
+    }
+}</pre>
+<ul>
+  <li><b>同轴</b> ⇒ <span class="mono">dS</span> 减小 = 真进展，刷新卡死计时，逐步逼近</li>
+  <li>四级全不可达 ⇒ 保持原落点、本帧不发令 ⇒ <b>仍由侧移档兜底</b>（不会陷入 fixJ 那种静止）</li>
+  <li>落点可达时行为<b>逐位不变</b> ⇒ 对现有胜局零影响</li>
+</ul>
+<p>
+  <span class="mono">syn.py</span> <b>0 err / 16 warn</b>（与基线一致）｜
+  <span class="mono">build</span> rc=0 ｜ 时间戳链 <span class="mono">.cpp &lt; .o &lt; exe</span> ✓ ｜
+  新串互斥 <span class="mono">ADV-DEGRADE</span>=1、旧串 <span class="mono">GIVEUP</span>=0（B 已彻底清除）✓
+</p>
+
+<h2>6 · 结论与下一步</h2>
+<div class="card" style="border-left:5px solid var(--ok)">
+<ul style="margin:0">
+  <li><b>保留 fixK</b>：机制严格改进（超时＝必输，故 T→W/P 是单向收益），改动面窄、护栏持平、无退化证据。</li>
+  <li><b>不主张胜率收益</b>：+4pp 落在混沌噪声内。
+    直接测量：同源码同 exe 跑 <span class="mono">map</span> 两批次得 12% / 17%、逐局一致率 50%；
+    判读 12pp 级差异需 <b>≈190 局/臂</b>。</li>
+  <li><b>下一步候选</b>（按 ROI）：
+    <ol style="margin:6px 0 0 0">
+      <li><b>A：<span class="mono">EARLY_CLUBMAN_TARGET 4 → 8~10</span></b> — 直击 C1 前期崩盘桶（18 局零胜，map 崩盘率 29%）。⚠ 该常量为你 09-08 亲定，需拍板。</li>
+      <li><b>C：反攻期推进段独立冷却</b> — 修 12 局「擦着 12 格边界掠过」（<span class="mono">ca</span> 令 40~343 条而 ADVANCE 仅 1~18 次）。改动面大。</li>
+    </ol>
+  </li>
+</ul>
+</div>
+
+<footer>
+  数据源：<span class="mono">fixI_*.ait / fixJ_*.ait / fixK_*.ait</span>（各 96 局）｜
+  分析脚本 <span class="mono">_fixK.py</span>｜
+  败因四桶与漏斗 → <span class="mono">detail_state.md</span> §AO ｜
+  生成于 2026-10-06 夜
+</footer>
+
+</div>
+</body>
+</html>

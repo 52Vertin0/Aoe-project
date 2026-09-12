@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>祭司早死修复 · 方案A 落地验证</title>
+<style>
+  :root{ --bg:#0f1115; --card:#1a1d24; --ink:#e6e8ec; --mut:#9aa3b2; --red:#ff5a5a; --grn:#4ade80; --yel:#facc15; --blu:#60a5fa; --bd:#2a2f3a; }
+  body{ background:var(--bg); color:var(--ink); font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; margin:0; padding:28px; }
+  h1{ font-size:21px; margin:0 0 4px; } h2{ font-size:16px; margin:24px 0 10px; border-left:3px solid var(--blu); padding-left:10px; }
+  .sub{ color:var(--mut); font-size:13px; margin-bottom:18px; }
+  .card{ background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:16px 18px; margin:14px 0; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; margin:8px 0; }
+  th,td{ border:1px solid var(--bd); padding:7px 9px; text-align:left; }
+  th{ background:#222732; color:var(--blu); }
+  code{ background:#222732; padding:1px 6px; border-radius:4px; font-size:12.5px; color:#ffd479; }
+  pre{ background:#11141a; border:1px solid var(--bd); border-radius:8px; padding:14px 16px; font-size:12.5px; color:#cdd6e4; overflow-x:auto; }
+  .tag{ display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; }
+  .t-red{ background:rgba(255,90,90,.15); color:var(--red); }
+  .t-grn{ background:rgba(74,222,128,.15); color:var(--grn); }
+  .note{ color:var(--mut); font-size:12.5px; }
+  .pill{ font-size:12px; }
+</style>
+</head>
+<body>
+<h1>祭司早死修复 · 方案A 落地验证</h1>
+<div class="sub">AoE3 UsrAI.cpp · 当前码 6423→6441 行 · 2026-09-26 21:2x</div>
+
+<div class="card">
+<h2 style="margin-top:4px">一、改了什么</h2>
+<p>在 <code>managePriest</code> 内新增「护卫量」判据，拦截<b>防御期（军队未成型、无护卫）祭司的主动前出感化</b>（根因动作 <code>priestApproachMove</code>），但保留：① 反攻期（<code>inCounter</code>，必有大军）前出；② 敌已贴到 ≤12 格时原地被动感化（贴身转走攻击者＝保命）。</p>
+<pre>// L700-703：护卫量判据（新增）
+int armyGuard = 0;
+for (auto &a : info.armies) if (a.SN != priestSN) armyGuard++;
+const int PRIEST_GUARD_MIN = 3;
+bool canPriestAdvanceConvert = inCounter || (armyGuard >= PRIEST_GUARD_MIN);
+
+// L1138-1145：感化前出分支（改）
+} else {
+    if (!canPriestAdvanceConvert) {           // 防御期裸奔(army&lt;3) ⇒ 禁前出
+        if (frame % 50 == 0)
+            DebugText("[PRIEST-NOADV f=%1] 防御期无护卫(army=%2) 禁前出感化 目标%3距%4格 待命");
+        return;                                // 不靠近、不感化，待命
+    }
+    double stopDist = 12.0;
+    priestApproachMove(convDR, convUR, stopDist); return;
+}</pre>
+<p class="note">校验：<code>syn.py</code> 0 error；<code>build.py</code> rc=0；七项常量（WAVE1_TIME=5000 / MAX_FARMS=10 / MAX_HOUSES=12 / MAX_STOCK=4 / MAX_TOWERS=3 / PRIEST_TOWERS_CLEAR_MAX=2 / WOOD_CAP_STOP=400）全部正确。</p>
+</div>
+
+<h2>二、3 局行为验证（h1 批，已通过）</h2>
+<table>
+<tr><th>局</th><th>结果</th><th>关键证据</th></tr>
+<tr><td>h101</td><td class="tag t-grn">胜</td><td>末行 <code>VICTORY! Siege Workshop converted</code> —— 祭司在反攻期成功感化投石武器厂，<b>证明反攻期感化功能未被误伤</b>。</td></tr>
+<tr><td>h102</td><td class="tag t-red">负</td><td>触发 8 次 <code>[PRIEST-NOADV]</code>，<b>全部在 army=0/1（裸奔）时</b>（24350~24700帧，远早于反攻期 34379 帧）；目标 91152 从 22.6→12.6 格逼近，原本会触发 g112 同款"前出被集火"，现被拦。祭司存活到反攻期 36450 才死（正常损耗）。</td></tr>
+<tr><td>h103</td><td class="tag t-grn">胜</td><td>祭司存活，无异常。</td></tr>
+</table>
+<p class="note">判定口径：同 §2。三局<b>零防御期早死</b>；NOADV 无一落在反攻期（army≥3 或 inCounter 时放行）。</p>
+
+<h2>三、结论</h2>
+<ul>
+<li>方案A 精确生效：只拦「防御期裸奔（army&lt;3）主动前出」，对反攻期感化零误伤。</li>
+<li>根因动作 <code>priestApproachMove</code> 在防御期裸奔场景被禁用，祭司改为待命，等敌自行进入 12 格再被动感化（贴身保命）。</li>
+<li>未改变你「能感化直接感化」的意图——反攻期 / 有护卫时仍主动前出，仅推迟到安全时。</li>
+</ul>
+
+<h2>四、量化（进行中）</h2>
+<p>已启动 <b>h2 批 24 局</b>（task <code>53eDGG</code>，约 37 分钟）定量确认早死率从 4.2%（g1 批）→ 0。跑完补充本表。</p>
+<table>
+<tr><th>指标</th><th>g1批(改前,当前码)</th><th>h2批(方案A)</th></tr>
+<tr><td>祭司早死率</td><td>1/24 = 4.2%</td><td class="t-grn">跑批中…</td></tr>
+<tr><td>总死亡局率</td><td>7/24 = 29.2%</td><td>跑批中…</td></tr>
+<tr><td>胜率</td><td>16/7/1 = 66.7%</td><td>跑批中…</td></tr>
+</table>
+</body>
+</html>

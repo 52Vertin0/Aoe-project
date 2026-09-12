@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>[BEAT] 逐帧行为心跳：让 OJ 与本地可以按帧对拍（2026-10-05）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1c1f24; --sub:#5b6470; --line:#e2e6ec;
+    --red:#c0392b; --redbg:#fdf0ee; --grn:#1e7e34; --grnbg:#eef8f0;
+    --blu:#1c5fb0; --blubg:#eef4fc; --amb:#9a6700; --ambbg:#fdf6e3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+       font:14px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1100px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px;letter-spacing:.2px}
+  .meta{color:var(--sub);font-size:12.5px;margin-bottom:22px}
+  h2{font-size:16.5px;margin:30px 0 10px;padding-left:10px;border-left:3px solid var(--blu)}
+  h3{font-size:14px;margin:18px 0 8px;color:var(--sub)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin:12px 0}
+  .verdict{border-left:4px solid var(--red);background:var(--redbg)}
+  .ok{border-left:4px solid var(--grn);background:var(--grnbg)}
+  .info{border-left:4px solid var(--blu);background:var(--blubg)}
+  .warn{border-left:4px solid var(--amb);background:var(--ambbg)}
+  code{background:#eef1f5;padding:1px 5px;border-radius:3px;font-family:Consolas,Menlo,monospace;font-size:12.5px}
+  pre{background:#1e2229;color:#e6e9ee;padding:12px 14px;border-radius:6px;overflow-x:auto;
+      font-family:Consolas,Menlo,monospace;font-size:12px;line-height:1.62;margin:10px 0;white-space:pre}
+  pre .r{color:#ff8a7a} pre .g{color:#7ee08a} pre .y{color:#ffd479} pre .d{color:#8b95a3} pre .c{color:#6fb3d9}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12.5px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#f0f3f7;font-weight:600}
+  td.n{text-align:right;font-family:Consolas,Menlo,monospace}
+  .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11.5px;font-weight:600}
+  .p-red{background:#f8d7d3;color:#8c2417}
+  .p-grn{background:#d6efdb;color:#155724}
+  .p-blu{background:#d6e6fa;color:#134a8e}
+  .p-amb{background:#fbeec2;color:#7a5200}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:4px 0}
+  ol{margin:8px 0 8px 22px;padding:0}
+  .foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);color:var(--sub);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>[BEAT] 逐帧行为心跳 —— 让「OJ 上 AI 的行为」与「本地跑」可以按帧对拍</h1>
+<div class="meta">UsrAI.cpp <code>d95a69ad</code> · 7474 行 ｜ 引擎 <code>v3.0.7g</code> 本地 / <code>v3.0.7h</code> OJ ｜ 基线：<code>map.njust</code> <code>-rotate 0</code> × 3 局 ｜ 2026-10-05</div>
+
+<div class="card ok">
+  <b>一句话：</b>加了一条每 6 秒一行的 <code>[BEAT]</code> 帧摘要（AI 每帧**看到的输入** + **发出的指令**），
+  并写了一个对拍器 <code>_beat_diff.py</code>。关键设计点是<b>按 150 帧分桶采样</b>——
+  实测只有这个口径能做到 OJ↔本地 <b>100% 对齐</b>；按帧号对齐最多只有 3.3%~48%。
+  同时标定了噪声底线：<b>同机同二进制跑两局，结构性差异本来就有 23%（前 9 分钟）/ 76%（全程）</b>，
+  所以判据不能用"差异率高低"，只能用「阶段机时间戳 Δ」＋「前半程结构性差异率」。
+</div>
+
+<h2>一、加了什么</h2>
+
+<div class="card info">
+<h3>1.1 <code>[BEAT]</code> 行（每 150 帧一行 + 状态跃迁额外一行）</h3>
+<pre>00:00:041 | 449 | black | 0 |  UsrAI打印：<span class="c">[BEAT f=44850 b=299]</span> st=ATK Frm=22 Idle=0 Walk=1 Work=18 Atk=0 Mil=6 | Fd=0 Wd=0 St=0 Gd=0 | a=7 hop=0 arch=5 oth=1 pr=(sn91168 st1 hp100/100 ccd0) | nEB=6 nEA=4 nMy=6 bbox=(x13.9..84.6,y7.1..86.4) pr@=(13.9,84.6) | ins=12 drop=0 adopt=12 objMv=0 gObj=1357(上帧)</pre>
+<table>
+<tr><th>字段</th><th>含义</th><th>为什么它重要</th></tr>
+<tr><td><code>f</code> / <code>b</code></td><td>真实帧号 / 采样桶号(=f/150)</td><td><b>对拍按 <code>b</code>，不按 <code>f</code></b>（见 §二）</td></tr>
+<tr><td><code>st</code></td><td>阶段（<code>INIT/ECO/UPG/PREP/W1/W2/W3/ATK/WIN/LOSE</code>），带 <code>*</code> = 本行是跃迁行</td><td>「何时进入反攻 ATK」是最强的单一判据</td></tr>
+<tr><td><code>Frm Idle Walk Work Atk</code></td><td>村民数 / 各状态分布（口径与 ECO 行完全一致）</td><td>经济是否真的在转</td></tr>
+<tr><td><code>Mil</code> / <code>a hop arch oth</code></td><td>军事总数 / 部队数 / 方阵兵·复合弓兵·其它</td><td><b>近战是否被饿死</b>就是看 <code>hop</code> 与 <code>a</code></td></tr>
+<tr><td><code>pr=(sn.. st.. hp../.. ccd..)</code></td><td>祭司 SN / 状态 / 血量 / 转换冷却</td><td>祭司一死立刻判负；<code>ccd</code> 非 0 = 正在读条</td></tr>
+<tr><td><code>nEB nEA</code></td><td>已探明敌建筑数 / 可见敌军数</td><td><code>nEB</code> 长期 0 ⇒ 部队根本没出发</td></tr>
+<tr><td><code>bbox=(x..y..) pr@=(..)</code></td><td>我方（军队+村民）包围盒 / 祭司坐标，单位=格</td><td><b>一眼看出部队在家还是在敌区</b></td></tr>
+<tr><td><code>ins drop adopt objMv gObj</code></td><td>上一帧提交的指令数 / 丢弃数 / 改用当前指针数 / obj 被更新数 / 引擎对象表规模</td><td>延续 6121/6204 的指令层自证（<code>drop</code> 必须恒 0）</td></tr>
+</table>
+<p><b>开关</b>：<code>UsrAI.cpp</code> 顶部 <code>#define BEAT_PERIOD 150</code>，改成 <code>0</code> 即整体静音（只留状态跃迁行）。</p>
+</div>
+
+<div class="card info">
+<h3>1.2 配套两个文件（都不进提交件）</h3>
+<ul>
+<li><code>_beat_run.sh</code> —— 本地跑批：<code>N=3 bash _beat_run.sh</code> ⇒ 产出 <code>beat_1..3.ait</code>（各局 AIText.log 全文，含 <code>[BEAT]</code>）。</li>
+<li><code>_beat_diff.py</code> —— 对拍器：<code>python _beat_diff.py &lt;基线&gt; &lt;待比&gt; --label=本地,提交XXXX</code>。</li>
+</ul>
+</div>
+
+<h2>二、采样口径试了三版 —— 这是本次最有价值的一条方法论</h2>
+
+<div class="card verdict">
+<table>
+<tr><th>采样写法</th><th>两局对齐率</th><th>为什么不行</th></tr>
+<tr><td><code>frame - last &gt;= 150</code>（距上次满 150 帧）</td><td class="n"><span class="pill p-red">3.3%</span></td><td>各局首帧偏移不同 ⇒ 采样帧集合**完全错开**</td></tr>
+<tr><td><code>frame % 150 == 0</code>（绝对帧网格）</td><td class="n"><span class="pill p-amb">48%</span></td><td><b>AI 并非每帧都被调用</b> —— 实测 frame 会跳号（…300, <b>600</b>, 750, 900…，450 被跳过），
+    哪些网格点被命中各局不同</td></tr>
+<tr><td><b><code>frame / 150</code> 分桶，每桶首次进入打一行</b></td><td class="n"><span class="pill p-grn">100%</span></td><td>AI 一定穿过每个桶 ⇒ 每局恰好 ⌈末帧/150⌉ 个采样点，<code>b</code> 是两侧精确相等的维度</td></tr>
+</table>
+<p>⇒ <b>通用教训：给"两台机器/两次运行的行为"做逐点对比时，采样点必须由「输入的下标区间」决定，
+不能由「真实时钟/帧号」决定。</b>只要采样点会漂，再精确的对比都建立在流沙上。</p>
+</div>
+
+<div class="card warn">
+<h3>顺带踩到的两个坑</h3>
+<ul>
+<li>日志里的 <code>[BEAT]</code> 一行里如果 <code>msg.startswith('[BEAT')</code> 判断，会因行首可能带空格 + <code>UsrAI打印：</code> 前缀而<b>恒 0</b> —— 用 <code>re.search</code>。</li>
+<li>状态名是 <code>W1/W2/W3</code>，解析正则写成 <code>[A-Z]+</code> 会把 <code>W</code> 后面的数字丢掉 ⇒ <b>41 行静默解析失败</b>（用 <code>[A-Z][A-Z0-9]*</code>）。</li>
+</ul>
+</div>
+
+<h2>三、噪声底线标定（否则判据一定是错的）</h2>
+
+<div class="card info">
+<p>先拿<b>同机、同二进制、同图同朝向</b>跑两局互相对拍，量出"完全同环境"长什么样：</p>
+<pre><span class="d">文件 A = beat_1.ait（304 采样行）   B = beat_2.ait（304 采样行）</span>
+<span class="c">【1】状态跃迁</span>
+  A: INIT@f12 → ECO@f14 → PREP@f5002 → W1@f5005 → ... → W3@f21001 → <span class="g">ATK@f33001</span>
+  B: INIT@f12 → ECO@f14 → PREP@f5003 → W1@f5006 → ... → W3@f21001 → <span class="g">ATK@f33003</span>
+  Δ:  INIT +0   ECO +0   W1 <span class="g">+1</span>   W3 <span class="g">+0</span>   ATK <span class="g">+2</span>      ← <span class="g">阶段机是确定性的</span>
+  Δ:  UPG -4433  W2 +1430  PREP -1361                  ← <span class="y">这三个阶段次序会抖（同一波次的不同小分支）</span>
+
+<span class="c">【5】结构性差异</span>
+  共同桶 300，有差异 <span class="r">232（77.3%）</span>
+  前 9 分钟（b≤90）差 25/91 = <span class="y">27.5%</span>
+</pre>
+<p><b>⇒ 结论：差异率高是常态，不是证据。</b>后期战场（追击/遭遇/塔血）随机性极大，
+两局跑出来的部队数量、敌建筑探明数完全不同。<b>能用的判据只有两条：</b></p>
+<ol>
+<li><b>(a) 确定性阶段时间戳</b>：<code>INIT/ECO/W1/W3/ATK</code> 的 Δ —— 同环境应 ≤20 帧（实测 2 帧）。</li>
+<li><b>(b) 前半程（b≤90，前 9 分钟）结构性差异率</b> —— 噪声底线 23%，判据取 ≤35%。</li>
+</ol>
+<p>对拍器已把这两条内置成机器判据，并会在输出里<b>打印噪声底线</b>，避免下次又误读 77%。</p>
+</div>
+
+<h2>四、怎么用（拿到 OJ 日志后两条命令）</h2>
+
+<div class="card ok">
+<pre><span class="d"># ① 本地跑基线（每局约 90 秒；产出 beat_1..3.ait）</span>
+cd /c/new-aoe3.0.7g
+MAP=map.njust ROT=0 N=3 bash _beat_run.sh
+
+<span class="d"># ② 把 OJ 下载回来的 debug_&lt;提交号&gt;_*.log 与本地基线对拍</span>
+python _beat_diff.py beat_1.ait \
+    "/c/Users/ZhuanZ/Downloads/debug_&lt;提交号&gt;_....log" \
+    --label=本地,提交&lt;提交号&gt;
+
+<span class="d"># 想看含抖动量（Idle/Walk/Work/Atk/nMy）的全部字段：加 --all</span>
+</pre>
+<p><b>先自检</b>：新提交若忘记带插桩，对拍器会直接说
+「其中一侧没有 <code>[BEAT]</code> 行 —— 无法对拍」，不会给出假结论（已用 6263 那份旧日志验证过）。</p>
+</div>
+
+<h2>五、本轮本地基线（3 局，新二进制）</h2>
+
+<div class="card">
+<table>
+<tr><th>跑局</th><th>采样行</th><th>末帧</th><th>结局</th><th>关键观测</th></tr>
+<tr><td><code>beat_1.ait</code></td><td class="n">304</td><td class="n">44850</td><td><span class="pill p-red">超时</span></td>
+    <td>ATK@f33001；nEB 到 f36000 才 &gt;0</td></tr>
+<tr><td><code>beat_2.ait</code></td><td class="n">304</td><td class="n">44851</td><td><span class="pill p-red">超时</span></td>
+    <td>ATK@f33003；与 beat_1 阶段机 Δ≤2 帧</td></tr>
+<tr><td><code>beat_3.ait</code></td><td class="n">113</td><td class="n">15961</td><td><span class="pill p-red">祭司死</span></td>
+    <td>10.6 分阵亡，工程早退</td></tr>
+</table>
+<p>⇒ 本批 3 局 0 胜。与记忆里的铁律一致：<b>单批 &lt;24 局不得对胜负下结论</b>；
+这批的用途是"建立对拍基准"，不是评胜负。</p>
+</div>
+
+<h2>六、开销与风险</h2>
+
+<div class="card warn">
+<ul>
+<li><b>日志量</b>：300 行/局 × ≈250 B ≈ <b>75 KB</b>；对照 OJ 那份 debug 日志是 783 KB（占 ~10%）。</li>
+<li><b>CPU</b>：每 150 帧做一次 ≈30 个单位的遍历 + <code>countAllMilitary()</code>，相对整帧逻辑可忽略。</li>
+<li><b>不改判据</b>：全部字段只读，不写任何 AI 状态；不引用任何引擎新增符号（提交安全）。</li>
+<li><b>可一键关闭</b>：<code>#define BEAT_PERIOD 0</code>。</li>
+<li>⚠ 提交件必须 <b><code>.cpp</code> ＋ <code>.h</code> 成对</b>（<code>.h</code> 这轮没变，但它与 <code>.cpp</code> 是同批产物）。</li>
+</ul>
+</div>
+
+<div class="card ok">
+<table>
+<tr><th>文件</th><th>md5</th><th>行数</th><th>字节</th><th>行尾</th></tr>
+<tr><td><code>_submit/UsrAI.cpp</code></td><td><code>d95a69ad</code></td><td class="n">7474</td><td class="n">529333</td><td><span class="pill p-grn">纯 LF</span></td></tr>
+<tr><td><code>_submit/UsrAI.h</code></td><td><code>18cf1d82</code></td><td class="n">508</td><td class="n">39599</td><td><span class="pill p-grn">纯 LF</span></td></tr>
+</table>
+<p><code>syn.py</code>：<code>errors = 0 ; warnings = 16</code>（与基线一致）。回退锚点：
+<code>UsrAI.cpp.bak_20261005_pre_beat</code>（= 上一版 <code>9432212b</code>，已带 10-05 近战预算修复但不带 <code>[BEAT]</code>）。</p>
+</div>
+
+<div class="foot">
+数据：<code>C:\new-aoe3.0.7g\beat_1..3.ait</code> · 脚本 <code>_beat_run.sh</code> / <code>_beat_diff.py</code> · 2026-10-05
+</div>
+
+</div>
+</body>
+</html>

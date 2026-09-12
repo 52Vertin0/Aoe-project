@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>反攻期祭司「离太远、很少感化」根因归因</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#fff; --line:#e3e6ea; --ink:#1f2329; --dim:#6b7280;
+    --ok:#0f7b3f; --okbg:#e8f6ee; --warn:#b45309; --warnbg:#fef4e6;
+    --bad:#b91c1c; --badbg:#fdeaea; --accent:#1d4ed8; --accentbg:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:36px 24px 72px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:26px}
+  h2{font-size:18px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15px;margin:22px 0 8px;color:#374151}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f3f5f8;font-weight:600;color:#374151}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  code,pre{font-family:"Cascadia Mono",Consolas,"Courier New",monospace}
+  code{background:#f1f3f6;padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:#1e2228;color:#e6e9ee;padding:14px 16px;border-radius:9px;
+      overflow-x:auto;font-size:13px;line-height:1.55}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12.5px;font-weight:600}
+  .t-ok{background:var(--okbg);color:var(--ok)}
+  .t-warn{background:var(--warnbg);color:var(--warn)}
+  .t-bad{background:var(--badbg);color:var(--bad)}
+  .t-info{background:var(--accentbg);color:var(--accent)}
+  .note{background:var(--accentbg);border-left:4px solid var(--accent);
+        padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+  .warnbox{background:var(--warnbg);border-left:4px solid var(--warn);
+        padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+  .badbox{background:var(--badbg);border-left:4px solid var(--bad);
+        padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .big{font-size:22px;font-weight:700;color:var(--bad)}
+  .mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:13px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 18px;font-size:14px}
+  .kv div:nth-child(odd){color:var(--dim)}
+  hr{border:0;border-top:1px dashed var(--line);margin:26px 0}
+  .bar{display:inline-block;height:11px;background:var(--accent);border-radius:2px;vertical-align:middle}
+  .bar.bad{background:var(--bad)}
+  .bar.warn{background:var(--warn)}
+  .bar.grey{background:#c3c8cf}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>反攻期祭司「离太远、很少帮忙感化敌军」—— 根因归因</h1>
+<div class="sub">2026-10-08 ｜ 工作目录 <code>C:\new-aoe3.0.7g</code> ｜ 源 <code>UsrAI.cpp</code> md5 <code>e5e77387</code>（7 631 行）｜ <b>本轮未改动任何源码</b></div>
+
+<div class="card">
+  <div class="kv">
+    <div>你的观察</div><div>反攻期祭司离太远，很少帮忙感化敌军</div>
+    <div>数据结论</div><div><span class="tag t-bad">成立</span> 反攻期祭司只有 <b>22.6%</b> 的时间落在 12 格感化射程内（反攻前也是约 22%，等价于「反攻期没变好」）</div>
+    <div>根因</div><div><span class="tag t-bad">一行常量错位</span> 追敌落点 <code>stopDist = 12.0</code> <b>正好压在</b>引擎感化射程 <code>DIS_PRIEST = 12</code> 边界上 ⇒ 零余量</div>
+    <div>铁证</div><div>「距最近敌」直方图在 <b>12.0 格出现唯一尖峰</b>（单档最高，13.20%），与 <code>stopDist=12.0</code> 逐位吻合</div>
+    <div>同文件对照</div><div>同一份文件里另外 <b>3 处</b>同类停位全写 <code>RANGE - 1.0</code>（留 1 格余量），<b>唯独追敌路径留 0 格</b></div>
+  </div>
+</div>
+
+<h2>1 · 先说三条被数据否掉的直觉</h2>
+<table>
+  <tr><th>直觉</th><th>实测</th><th>判定</th></tr>
+  <tr>
+    <td>祭司掉队 / 孤军深入</td>
+    <td>反攻期祭司 <b>100%</b> 的采样桶都在我军包围盒 <code>bbox</code> 内</td>
+    <td><span class="tag t-bad">否</span></td>
+  </tr>
+  <tr>
+    <td>祭司在反攻期被禁止追敌（10-08 新加的抑制 <code>:1811</code>）</td>
+    <td>「靠近感化目标」移动令反攻期仍有 <b>4 248 条</b>（占反攻期移动令 35.3%）；原因是那段抑制只在 <code>enemySiegeSN != -1</code> 时生效，而反攻期 <b>73% 的时间武器厂还没被发现</b></td>
+    <td><span class="tag t-warn">部分</span></td>
+  </tr>
+  <tr>
+    <td>祭司站桩不动</td>
+    <td>祭司相邻采样桶位移中位 <b>2.5 格</b>／6 秒（正常行军），只有超时局才退化为 37~52% 零位移</td>
+    <td><span class="tag t-bad">否</span>（超时局除外）</td>
+  </tr>
+</table>
+
+<h2>2 · 「离太远」到底有多远：反攻期距最近敌的分布</h2>
+<p>口径：<code>Priest st=</code> 诊断行的 <code>nearE</code>（到最近敌【军事单位 + 箭塔】的距离，格）。反攻起点 = <code>min(人口闸帧, ALL WAVES DEFEATED 帧)</code>，缺则 33 000。样本 = <code>club8n</code>（map 单图 @48 局，现行版）反攻期 3 880 个采样点。</p>
+
+<table>
+  <tr><th>距最近敌</th><th class="num">占反攻期</th><th>形态</th><th>能否感化</th></tr>
+  <tr><td><b>≤ 12 格</b></td><td class="num"><b>22.63%</b></td><td><span class="bar" style="width:113px"></span></td><td><span class="tag t-ok">可以</span></td></tr>
+  <tr><td>12 ~ 13 格</td><td class="num"><b>7.68%</b></td><td><span class="bar bad" style="width:38px"></span></td><td><span class="tag t-bad">差一点点</span></td></tr>
+  <tr><td>13 ~ 18 格</td><td class="num">18.43%</td><td><span class="bar warn" style="width:92px"></span></td><td><span class="tag t-bad">差</span></td></tr>
+  <tr><td>18 ~ 30 格</td><td class="num">12.78%</td><td><span class="bar grey" style="width:64px"></span></td><td><span class="tag t-bad">差</span></td></tr>
+  <tr><td>&gt; 30 格</td><td class="num">17.63%</td><td><span class="bar grey" style="width:88px"></span></td><td><span class="tag t-bad">差</span></td></tr>
+  <tr><td>视野内根本没有敌</td><td class="num">20.85%</td><td><span class="bar grey" style="width:104px"></span></td><td><span class="tag t-info">等待/转移</span></td></tr>
+</table>
+
+<div class="note">
+<b>读法：</b>「视野内无敌」（20.9%）+「&gt;30 格」（17.6%）+「18~30 格」（12.8%）≈ <b>51%</b> 属于「整支军队还没跟敌人遭遇」——这部分与祭司站位无关。
+真正值得动手术的是 <b>12~18 格这 26.1%</b>：人已经看到、军队也在打，祭司却停在射程外面。
+</div>
+
+<h2>3 · 铁证：停位在 12.0 格出现尖峰</h2>
+<p>把「距最近敌」按 1 格分档（仅统计 ≤30 格样本，n = 2 387）：</p>
+<pre>
+ 1- 2格   0.08%
+ 2- 3格   0.21%
+ 3- 4格   0.17%
+ 4- 5格   0.46%
+ 5- 6格   1.30%  ##
+ 6- 7格   3.23%  ######
+ 7- 8格   2.51%  #####
+ 8- 9格   4.82%  #########
+ 9-10格   6.45%  ############
+10-11格   6.49%  ############
+11-12格   9.43%  ##################
+<b>12-13格  13.20%  ##########################   ← 唯一尖峰，精确落在 12.0 格</b>
+13-14格   6.58%  #############
+14-15格   6.87%  #############
+15-16格   6.45%  ############
+16-17格   6.62%  #############
+17-18格   3.98%  #######
+18-19格   3.18%  ######
+19-20格   5.11%  ##########
+</pre>
+<p>随机分布不会在 12.0 这个整数上堆出尖峰。<b>唯一能产生这个峰值的机制就是「落点公式的常数 = 12.0」。</b></p>
+
+<h2>4 · 根因链（每层带行号）</h2>
+
+<h3>① 追敌落点 = 12.0 格，而发感化的判定 = ≤ 12.0 格 ⇒ 零余量</h3>
+<pre>
+UsrAI.cpp:1803   double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
+                 ...
+UsrAI.cpp:1525   double bx = pDR + ux * (len - stopDist * BL);   // 落点 = 距目标 stopDist 格
+                 ...
+UsrAI.cpp:1782   if (cdist <= 12 * BL) {                          // ≤12 才发感化令
+</pre>
+<p>落点与判定阈值<b>指向同一个数</b>：祭司被要求停在「恰好等于射程上限」的位置，请求发令的门槛也正好是这个上限。任何一点正向误差（引擎寻路的到位判定误差、目标在移动、<code>calDistance</code> 与引擎 <code>countdistance</code> 的口径差）都会把它推到门槛外面。</p>
+
+<h3>② 常量真值回代：<code>DIS_PRIEST</code> 确实是 12，注释没说谎</h3>
+<table>
+  <tr><th>来源</th><th>值</th></tr>
+  <tr><td><code>config.json:409</code></td><td class="mono">"DIS_PRIEST": 12</td></tr>
+  <tr><td><code>Army.cpp:793</code>（祭司初始化）</td><td class="mono">dis_Attack = DIS_PRIEST;</td></tr>
+  <tr><td><code>Army.cpp:385</code>（射程换算）</td><td class="mono">dis = (dis + disAdd) * BLOCKSIDELENGTH;</td></tr>
+  <tr><td><code>Core_List.cpp:1732</code>（引擎的射程判定）</td><td class="mono">countdistance(...) &lt;= blooder-&gt;getDis_attack()</td></tr>
+</table>
+<p>⇒ 引擎判据是 <code>≤ 12 格</code>（含边界）。<b>所以「停在 12.0」理论上是达标的，实践中不达标</b> —— 这正是 12~13 格那一档存在的理由。</p>
+
+<h3>③ 同文件同类实现对照：另外 3 处全都留了 1 格余量</h3>
+<table>
+  <tr><th>用途</th><th>行号</th><th>停位</th><th>余量</th></tr>
+  <tr><td><b>追敌感化</b>（priestApproachMove）</td><td class="mono">:1803</td><td class="mono">stopDist = 12.0</td><td><span class="tag t-bad">0 格</span></td></tr>
+  <tr><td>推进武器厂</td><td class="mono">:5307</td><td class="mono">PRIEST_CONVERT_SIEGE_RANGE - 1.0 = 11.0</td><td><span class="tag t-ok">1 格</span></td></tr>
+  <tr><td>脱困断路器回推落点</td><td class="mono">:5300</td><td class="mono">同上 = 11.0</td><td><span class="tag t-ok">1 格</span></td></tr>
+  <tr><td>无友军时直推目标</td><td class="mono">:5403</td><td class="mono">同上 = 11.0</td><td><span class="tag t-ok">1 格</span></td></tr>
+</table>
+<div class="warnbox">
+写这份代码的人<b>自己知道要留余量</b>（另外三条路径都写了 <code>- 1.0</code>），唯独追敌路径写成了裸 <code>12.0</code>。
+这是本项目的老毛病「同一语义写多遍、值不一致」（铁律 21/26）在本轮的又一次命中。
+</div>
+
+<h3>④ 第二层：落点被占时的「侧移」会把距离进一步推远</h3>
+<pre>
+UsrAI.cpp:1527   const double OFF[6] = {0.0, 3.0, -3.0, 6.0, -6.0, 9.0};
+UsrAI.cpp:1530   double cx = bx - uy * OFF[o] * BL;   // 垂直于「祭司-敌人」连线方向偏移
+</pre>
+<p>侧移是<b>垂直于连线</b>平移，不改变「沿连线方向」的位置 ⇒ 落点到敌人的距离变成
+<span class="mono">√(12² + off²)</span>：</p>
+<table>
+  <tr><th>侧移 off</th><th class="num">落点实际距敌</th><th>能否感化</th></tr>
+  <tr><td>0</td><td class="num">12.0</td><td><span class="tag t-warn">边界</span></td></tr>
+  <tr><td>±3</td><td class="num">12.4</td><td><span class="tag t-bad">否</span></td></tr>
+  <tr><td>±6</td><td class="num">13.4</td><td><span class="tag t-bad">否</span></td></tr>
+  <tr><td>±9</td><td class="num">15.0</td><td><span class="tag t-bad">否</span></td></tr>
+</table>
+<p>实测 <b>13~18 格占 18.43%</b> —— 与「侧移 3~9 格后的落点分布」量级吻合。
+即：<b>为了绕开挡路的友军而横移，代价是把自己挤出感化射程。</b></p>
+
+<h2>5 · 次要机制（同向叠加，但不是主因）</h2>
+
+<h3>反攻期 73% 的时间武器厂还没被发现</h3>
+<p><code>[LC-DBG]</code> 的 <code>siegeSN</code> 在反攻期 <b>72.9%</b>（club8n）/ <b>79.5%</b>（wbase）的采样点为 <code>-1</code>。这段时间祭司没有明确目标，在「找敌人顺便感化」；而 <code>:1811</code> 那条「反攻期 + 已发现武器厂 ⇒ 不主动追敌」的抑制此时<b>不生效</b>（只在剩下 27% 的时间里生效）。</p>
+
+<h3>整军在路上 —— 反攻期约 80% 时间离武器厂 ≥ 28 格</h3>
+<table>
+  <tr><th>距敌方武器厂</th><th class="num">占反攻期</th><th class="num">可见敌军队数中位</th><th class="num">我军数中位</th></tr>
+  <tr><td>≤ 12 格（感化射程内）</td><td class="num">4.2%</td><td class="num">0</td><td class="num">10</td></tr>
+  <tr><td>12 ~ 28 格</td><td class="num">15.9%</td><td class="num">0 ~ 2</td><td class="num">10 ~ 12</td></tr>
+  <tr><td>28 ~ 50 格</td><td class="num">30.0%</td><td class="num">13</td><td class="num">16</td></tr>
+  <tr><td>≥ 50 格</td><td class="num">49.8%</td><td class="num">1.5</td><td class="num">23</td></tr>
+</table>
+<p>⇒ 反攻期有一半时间祭司（连同整支军队）离敌基地 50 格以上 —— 这段「行军期」内不可能有感化机会，属结构性问题（与祭司站位无关）。</p>
+
+<h3>移动令被三头争夺、节流严重</h3>
+<table>
+  <tr><th>反攻期移动令来源</th><th class="num">条数</th><th class="num">占比</th></tr>
+  <tr><td><code>cnt</code> 推进/后撤（manageCounterAttack）</td><td class="num">5 564</td><td class="num">46.3%</td></tr>
+  <tr><td><code>ca</code> 靠近感化目标（priestApproachMove）</td><td class="num">4 248</td><td class="num">35.3%</td></tr>
+  <tr><td><code>f</code> 逃跑（priestFlee）</td><td class="num">2 116</td><td class="num">17.6%</td></tr>
+  <tr><td><code>h</code> 趋近治疗 / <code>o</code> 其它</td><td class="num">102</td><td class="num">0.9%</td></tr>
+</table>
+<p>三者<b>共用同一个 <code>priestMoveCooldown</code></b>（20 / 30 / 150 帧），实测该冷却在反攻期
+<b>84.7% ~ 96.3%</b> 的采样点都 &gt; 0 ⇒ 祭司「想动也要排队」。这与 10-08 修 <code>priestMoveCooldown</code> 垄断时观察到的形态同源。</p>
+
+<h3>顺带发现：选目标用的是「血量最高」而不是「最近」</h3>
+<p><code>findConvertTarget</code>（<code>:1465</code> <code>pickByBlood</code>）四档各档内<b>取血量最高者</b>（同血才取近）。
+方阵兵档排第一且血最厚 ⇒ 祭司可能跨十几格去追一个更肉的敌人，途中被消耗。属次要嫌疑，本轮未量化。</p>
+
+<h2>6 · 修法候选</h2>
+<table>
+  <tr><th>方案</th><th>改动</th><th>预期</th><th>风险</th></tr>
+  <tr>
+    <td><b>A（推荐）</b><br>追敌停位留余量</td>
+    <td class="mono">:1803<br>stopDist = 12.0 → 9.0<br>（或 12.0 - 3.0，与另三处口径统一）</td>
+    <td>直接把 12~13 格那档（7.7 pp）拉进射程；可感化窗口 22.6% → ~30~33%</td>
+    <td><span class="tag t-warn">中</span> 祭司多深入 3 格。敌方远程射程同为 12 格 ⇒ 12 格時已在射程内，承伤增量有限；但引导期（~333 帧）静止时更危险</td>
+  </tr>
+  <tr>
+    <td><b>B</b><br>侧移后投影回半径圆</td>
+    <td class="mono">:1530-1531<br>侧移完把落点重新投影回「以敌为心、半径 stopDist」的圆上</td>
+    <td>消掉 13~18 格里因横移被推远的那部分（估 5~8 pp）</td>
+    <td><span class="tag t-ok">低</span> 纯几何修正，不改变「离敌多远」的语义</td>
+  </tr>
+  <tr>
+    <td><b>C</b><br>放宽 <code>:1811</code> 抑制</td>
+    <td class="mono">:1811<br>已发现武器厂且祭司距目标 &gt;12 格时，仍允许追敌感化</td>
+    <td>只在 27% 的时间里生效，收益小</td>
+    <td><span class="tag t-bad">高</span> 会重新引入 <code>priestMoveCooldown</code> 垄断、饿死推进段（10-08 刚修好），<b>不建议</b></td>
+  </tr>
+  <tr>
+    <td><b>D</b><br>A + B 一起</td>
+    <td>两处几何修正</td>
+    <td>合计预期窗口 22.6% → 35%+</td>
+    <td><span class="tag t-warn">中</span> 两个变量同时动，验收时无法分离归因</td>
+  </tr>
+</table>
+
+<div class="badbox">
+<b>本轮未改动任何源码。</b> A / B 属行为改动，按本项目铁律 81 必须 <b>≥ 24 局/臂</b> 同并行度 A/B 才可下结论，
+且主判据应取<b>机制量</b>（反攻期「≤12 格」采样占比、反攻期感化敌军令条数），胜负率只作次级端点。
+</div>
+
+<h2>7 · 溯源</h2>
+<div class="card">
+  <div class="kv">
+    <div>源码</div><div class="mono">UsrAI.cpp md5 e5e77387e54c8fae074db6ce6b6d42ad（7 631 行）｜UsrAI.h e39b5d4552b118fe9c7745e978d6d0d2（未改动）</div>
+    <div>数据</div><div class="mono">club8n_map_r0_1..48.ait（map 单图 48 局，PAR=8）｜wbase_map_r0_1..48.ait（对照臂）</div>
+    <div>新增脚本</div><div class="mono">_priest_far.py（反攻期感化次数与距离）｜_priest_pos.py（空间位置解剖）｜_priest_path.py（移动令来源分解）｜_priest_nearE.py（距最近敌分档）｜_priest_land.py（令→到位）</div>
+    <div>复现</div><div class="mono">python _priest_far.py club8n wbase<br>python _priest_nearE.py club8n wbase<br>python _priest_path.py club8n wbase</div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

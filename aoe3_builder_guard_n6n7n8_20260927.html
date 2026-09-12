@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AOE3 AI · 建造者保护验证报告 (n6/n7/n8) · 2026-09-27</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1b1f24; --ink2:#4b5563; --ink3:#6b7280;
+    --line:#e3e6ea; --line2:#eef0f3;
+    --ok:#0f7a3d; --okbg:#e8f5ec;
+    --bad:#b3261e; --badbg:#fdeceb;
+    --warn:#8a5a00; --warnbg:#fdf4e3;
+    --blue:#1a56b3; --bluebg:#eaf0fb;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.68 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--ink3);font-size:13.5px;margin-bottom:26px}
+  .sub code{font-family:var(--mono);font-size:12.5px;background:var(--line2);padding:2px 6px;border-radius:4px}
+  h2{font-size:19px;margin:38px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--ink);letter-spacing:-.2px}
+  h3{font-size:15.5px;margin:22px 0 8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}
+  .kpi>div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .kpi .lab{font-size:12px;color:var(--ink3);letter-spacing:.4px;text-transform:uppercase}
+  .kpi .val{font-size:24px;font-weight:650;margin-top:4px;letter-spacing:-.5px}
+  .kpi .note{font-size:12px;color:var(--ink3);margin-top:2px}
+  .up{color:var(--ok)} .down{color:var(--bad)} .flat{color:var(--ink3)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px;background:var(--card)}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line2);text-align:left}
+  th{background:#f0f2f5;font-weight:600;font-size:12.5px;color:var(--ink2);
+     border-bottom:1px solid var(--line);white-space:nowrap}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr.hl td{background:var(--okbg)}
+  tr.hl2 td{background:var(--bluebg)}
+  tr.warnrow td{background:var(--warnbg)}
+  code{font-family:var(--mono);font-size:12.5px}
+  pre{background:#1e2228;color:#dfe4ea;padding:14px 16px;border-radius:8px;overflow-x:auto;
+      font-family:var(--mono);font-size:12.3px;line-height:1.58;margin:12px 0}
+  pre .k{color:#7fd1ff} pre .g{color:#8ee08b} pre .r{color:#ff9b92} pre .y{color:#ffd479}
+  pre .c{color:#7c8794}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;
+       vertical-align:middle;line-height:1.7}
+  .t-ok{background:var(--okbg);color:var(--ok)} .t-bad{background:var(--badbg);color:var(--bad)}
+  .t-warn{background:var(--warnbg);color:var(--warn)} .t-info{background:var(--bluebg);color:var(--blue)}
+  ul{margin:8px 0;padding-left:22px} li{margin:5px 0}
+  .muted{color:var(--ink3)} .sm{font-size:12.5px}
+  .quote{border-left:3px solid var(--blue);background:var(--bluebg);padding:10px 14px;margin:12px 0;
+         border-radius:0 8px 8px 0;font-size:13.5px}
+  .warnbox{border-left:3px solid var(--warn);background:var(--warnbg);padding:10px 14px;margin:12px 0;
+           border-radius:0 8px 8px 0;font-size:13.5px}
+  .badbox{border-left:3px solid var(--bad);background:var(--badbg);padding:10px 14px;margin:12px 0;
+          border-radius:0 8px 8px 0;font-size:13.5px}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0;font-size:13px}
+  .flow span{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+  .flow i{color:var(--ink3);font-style:normal}
+  footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>建造者保护：验证报告</h1>
+<div class="sub">
+  AOE3 UsrAI · 2026-09-27 ｜ 变更版本 <code>3a624749</code> · 6601 行 ｜ 备份 <code>bak_20260927_builder_guard_UsrAI.cpp</code><br>
+  跑批：n6 / n7（map2 × 12）＋ n8（map3 × 12），全部基于 <code>release/newAOE.exe</code>（mtime 13:51:41 = <code>3a624749</code>）
+</div>
+
+<h2>1 结论摘要</h2>
+
+<div class="kpi">
+  <div>
+    <div class="lab">map2 胜率</div>
+    <div class="val up">75.0%</div>
+    <div class="note">18/24（n6+n7）<br>修复前 58.3%（21/36）</div>
+  </div>
+  <div>
+    <div class="lab">BUILDER-HARD</div>
+    <div class="val up">−72%</div>
+    <div class="note">45.3/局 → 12.5/局</div>
+  </div>
+  <div>
+    <div class="lab">目标失败模式</div>
+    <div class="val up">8.3%</div>
+    <div class="note">36.1% → 8.3%<br>（BH&gt;0 且 Mil&lt;15）</div>
+  </div>
+  <div>
+    <div class="lab">显著性（胜率）</div>
+    <div class="val flat">p=0.270</div>
+    <div class="note">方向一致 · 未达显著</div>
+  </div>
+</div>
+
+<div class="quote">
+<b>判定：采纳。</b>该修复的<b>目标机制量已达成</b>（BH 总量降 72%、BH=0 的局由 4/36 升到 15/24、Mil 峰值均 18.0→24.2），且
+<b>「建造者卡死 → Mil 卡低 → 未决」这一失败模式在 map2 由 36.1% 降到 8.3%</b>。
+胜率方向一致、<b>两批（n6 / n7）完全复现 9胜2负1未决</b>，但 n=24 仍不足以达统计显著（p=0.270）——需要更大样本才能把胜率结论钉死。
+</div>
+
+<h2>2 改动内容</h2>
+
+<p>在 <code>assignIdleSimple()</code> 内<b>两处「把人挪岗」路径</b>各补一行保护（这是本批唯一变量）：</p>
+
+<table>
+<thead><tr><th style="width:90px">位置</th><th>代码</th><th>说明</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>L3058</code></td>
+  <td><code>if (buildingFarmerType.count(f.SN)) continue;</code></td>
+  <td>GOLD-REBAL 段（按帧把食物工转采金）</td>
+</tr>
+<tr>
+  <td><code>L3098</code></td>
+  <td><code>if (buildingFarmerType.count(f.SN)) continue;</code></td>
+  <td>「资源达上限回撤」段（woodStop / stoneStop / goldRich / foodStop 挪岗）</td>
+</tr>
+</tbody>
+</table>
+
+<h3>根因链（已在 09-27 钉死）</h3>
+<div class="flow">
+  <span>建造者被派去工地（WALKING）</span><i>→</i>
+  <span><code>WorkObjectSN</code> 仍保留旧采集目标</span><i>→</i>
+  <span>被 GOLD-REBAL 判成「食物工」抢去采金</span><i>→</i>
+  <span>房子 <code>percent</code> 恒 0，从未施工</span><i>→</i>
+  <span><code>BUILDER_HARD_TIMEOUT</code>(1800) 超时作废</span><i>→</i>
+  <span>人口卡顶 → Mil 卡低</span><i>→</i>
+  <span>从未前出感化武器厂 → 打满 45000 帧 = 未决</span>
+</div>
+
+<p class="sm muted">
+该函数内共 <b>8 处</b>存在同类保护（猎象整队 / <code>manageHunting</code> / <code>findIdleFarmer</code>×2 /
+<code>findAnyFarmer</code> / <code>detectStuckGatherers</code> / 本次新增的 2 处），改动即与之对齐（铁律 26：同语义只写一遍）。
+</p>
+
+<h2>3 验证数据</h2>
+
+<table>
+<thead>
+<tr>
+  <th>批次</th><th>地图</th><th class="num">N</th>
+  <th class="num">胜</th><th class="num">负</th><th class="num">未决</th>
+  <th class="num">胜率</th><th class="num">BH 总</th><th class="num">BH/局</th>
+  <th class="num">BH=0 局</th><th class="num">Mil 峰值均</th>
+  <th class="num">BH&gt;0 且 Mil&lt;15</th>
+</tr>
+</thead>
+<tbody>
+<tr class="hl2"><td>n2</td><td>map2</td><td class="num">12</td><td class="num">6</td><td class="num">2</td><td class="num">4</td><td class="num">50.0%</td><td class="num">592</td><td class="num">49.3</td><td class="num">3</td><td class="num">17.3</td><td class="num">5/12</td></tr>
+<tr class="hl2"><td>n4</td><td>map2</td><td class="num">12</td><td class="num">8</td><td class="num">2</td><td class="num">2</td><td class="num">66.7%</td><td class="num">462</td><td class="num">38.5</td><td class="num">1</td><td class="num">16.8</td><td class="num">5/12</td></tr>
+<tr class="hl2"><td>n5</td><td>map2</td><td class="num">12</td><td class="num">7</td><td class="num">4</td><td class="num">1</td><td class="num">58.3%</td><td class="num">575</td><td class="num">47.9</td><td class="num">1</td><td class="num">20.0</td><td class="num">3/12</td></tr>
+<tr class="hl"><td><b>n6</b></td><td>map2</td><td class="num">12</td><td class="num"><b>9</b></td><td class="num">2</td><td class="num">1</td><td class="num"><b>75.0%</b></td><td class="num"><b>147</b></td><td class="num"><b>12.3</b></td><td class="num"><b>7</b></td><td class="num"><b>23.2</b></td><td class="num"><b>1/12</b></td></tr>
+<tr class="hl"><td><b>n7</b></td><td>map2</td><td class="num">12</td><td class="num"><b>9</b></td><td class="num">2</td><td class="num">1</td><td class="num"><b>75.0%</b></td><td class="num"><b>152</b></td><td class="num"><b>12.7</b></td><td class="num"><b>8</b></td><td class="num"><b>25.2</b></td><td class="num"><b>1/12</b></td></tr>
+<tr class="warnrow"><td>n3</td><td>map3</td><td class="num">12</td><td class="num">7</td><td class="num">4</td><td class="num">1</td><td class="num">58.3%</td><td class="num">298</td><td class="num">24.8</td><td class="num">7</td><td class="num">21.8</td><td class="num">2/12</td></tr>
+<tr class="warnrow"><td>n8</td><td>map3</td><td class="num">12</td><td class="num">7</td><td class="num">4</td><td class="num">1</td><td class="num">58.3%</td><td class="num">459</td><td class="num">38.3</td><td class="num">6</td><td class="num">19.6</td><td class="num">5/12</td></tr>
+</tbody>
+</table>
+
+<p class="sm"><span class="tag t-info">蓝底</span> = 修复前（scout 半径扫描批次）&nbsp;
+<span class="tag t-ok">绿底</span> = 修复后（本批）&nbsp;
+<span class="tag t-warn">黄底</span> = map3，存在混杂变量，见 §3.3</p>
+
+<h3>3.1 合并对比（map2）</h3>
+<table>
+<thead><tr><th>指标</th><th class="num">修复前 n2+n4+n5（36 局）</th><th class="num">修复后 n6+n7（24 局）</th><th class="num">变化</th></tr></thead>
+<tbody>
+<tr><td>胜率</td><td class="num">58.3%（21/36）</td><td class="num"><b>75.0%（18/24）</b></td><td class="num up">+16.7 pp</td></tr>
+<tr><td>BUILDER-HARD 总量</td><td class="num">1629</td><td class="num"><b>299</b></td><td class="num up">−72%</td></tr>
+<tr><td>BUILDER-HARD = 0 的局</td><td class="num">4 / 36（11%）</td><td class="num"><b>15 / 24（63%）</b></td><td class="num up">×5.7</td></tr>
+<tr><td>Mil 峰值均值</td><td class="num">18.0</td><td class="num"><b>24.2</b></td><td class="num up">+34%</td></tr>
+<tr><td>BH&gt;0 且 Mil&lt;15（目标失败模式）</td><td class="num">13 / 36（36.1%）</td><td class="num"><b>2 / 24（8.3%）</b></td><td class="num up">−77%</td></tr>
+</tbody>
+</table>
+
+<h3>3.2 显著性（Fisher 精确检验，双侧）</h3>
+<table>
+<thead><tr><th>比较</th><th class="num">p</th><th>判读</th></tr></thead>
+<tbody>
+<tr><td>n6+n7 (18/24) vs n2+n4+n5 (21/36)</td><td class="num">0.270</td><td>方向一致，<b>未达显著</b>（n 不足）</td></tr>
+<tr><td>n7 (9/12) vs n5 (7/12)</td><td class="num">0.667</td><td>单批不足</td></tr>
+<tr><td>n8 (7/12) vs n3 (7/12)</td><td class="num">1.000</td><td>map3 胜负完全相同</td></tr>
+</tbody>
+</table>
+
+<div class="warnbox">
+<b>⚠ 为什么胜率提升没达显著，却仍判"采纳"？</b><br>
+因为这个修复的<b>作用面窄</b>：它只消除「建造者卡死」这一条失败链，无法影响"祭司孤身早死"那类败局（见 §5，占 map2 剩余全部 3 个败局）。
+所以<b>可预期的上限</b>恰好就是把 36.1% 的失败模式压到 8.3% —— 这个目标已经达成；胜率是它的间接后果，在 n=24 下信噪比不够。
+</div>
+
+<h3>3.3 ⚠ map3 回归：存在混杂变量，结论不成立</h3>
+<div class="badbox">
+n8 与 n3 的胜负<b>完全相同</b>（7胜 / 4负 / 1未决），但 BH 反升（298 → 459）、失败模式反升（2/12 → 5/12）。<br><br>
+<b>但两次跑批的代码不同：</b>
+<ul>
+  <li>n3 跑于 <b>13:05</b> ⇒ 当时源码是 <code>bak_20260927_scout40_UsrAI.cpp</code>（<b>SCOUT_MAX_DIST = 40</b>，<b>无</b>建造者保护）</li>
+  <li>n8 跑于 <b>14:11</b> ⇒ <code>3a624749</code>（<b>SCOUT_MAX_DIST = 45</b>，<b>有</b>建造者保护）</li>
+</ul>
+<b>两个变量同时变化（scout 40→45 ＋ 建造者保护），无法归因。</b>
+要得到干净结论，必须在 <code>3a624749</code> 上单独跑一次「去掉建造者保护」的 map3 基线。
+</div>
+
+<h3>3.4 map3 的失败模式与 map2 不同</h3>
+<table>
+<thead><tr><th>局</th><th>判据</th><th class="num">帧</th><th class="num">BH</th><th class="num">Mil 峰值</th><th>备注</th></tr></thead>
+<tbody>
+<tr><td>n803</td><td><code>DEFEAT: Town Center destroyed</code></td><td class="num">24680</td><td class="num">59</td><td class="num">6</td><td>祭司存活（hp=0.34）—— map3 独有「基地被拆」败法</td></tr>
+<tr><td>n805</td><td>未决</td><td class="num">45000</td><td class="num">68</td><td class="num">7</td><td>仍是「BH → Mil 卡低」形态</td></tr>
+</tbody>
+</table>
+
+<h2>4 ★ 新失败模式钉死：全军压单点 ⇒ 祭司被友军裹死</h2>
+
+<p>n6 唯一的未决局 <b>n610</b>（map2，Mil 峰值 27，<b>BH = 0</b> ⇒ 与建造者<u>无关</u>的另一种未决）被完整定位。
+它在末段 <b>4500 帧（3 分钟）内所有可观测量完全冻结</b>。</p>
+
+<h3>证据 1 · 状态行（27 个兵永远在路上，无一攻击）</h3>
+<pre><span class="c">[44630]</span> ATK | Fd:380 Wd:632 St:50 Gd:288 | Frm:22 <span class="y">Idle:0</span>(Carry:0) Walk:17 Work:5 <span class="r">Atk:0</span> | Mil:27 E:0
+<span class="c">[44780]</span> ATK | ... | Frm:22 <span class="y">Idle:0</span> Walk:20 Work:2 <span class="r">Atk:0</span> | Mil:27 E:0
+<span class="c">[44930]</span> ATK | ... | Frm:22 <span class="y">Idle:0</span> Walk:18 Work:4 <span class="r">Atk:0</span> | Mil:27 E:0</pre>
+
+<h3>证据 2 · 祭司状态行（敌人全灭，最近友军 0.4 格）</h3>
+<pre>Priest st=1 hp=0.21 <span class="k">nearE=27950849718.9</span>(无敌哨兵) mode=1 | ally=27 wound25=3 <span class="r">nearAlly=0.4BL</span> cd=14</pre>
+<p class="sm muted"><code>nearE</code> 为哨兵值 ⇒ 视野内<b>已无敌兵</b>；而最近友军距祭司仅 <b>0.4 格</b> —— 祭司被自家军队包成肉团。</p>
+
+<h3>证据 3 · LC-DBG 全时间线（<code>hp</code> = 祭司<b>自身</b>血量比例）</h3>
+<pre>f=38701  siegeSN=11421 mem=(91,24) dS=23.7 hp=0.53 ccd=0 st=1 mvcd=29 gT=2 seen=3
+f=39001  siegeSN=11421 mem=(91,24) dS=10.5 hp=0.53 ccd=0 <span class="y">st=2</span> mvcd=59 gT=2 seen=3   <span class="c">← 施法中</span>
+f=39300  siegeSN=11421 mem=(91,24) dS=<span class="g">5.6</span>  hp=<span class="r">0.21</span> ccd=0 st=1 mvcd=59 gT=2 seen=3   <span class="c">← 已进 12 格射程，但被打残</span>
+f=39600  siegeSN=11421 mem=(91,24) dS=14.6 hp=0.21 ccd=0 st=1 mvcd=8  gT=2 seen=3   <span class="c">← 后撤</span>
+f=40201  siegeSN=11421 mem=(91,24) dS=16.7 hp=0.21 ccd=0 st=1 mvcd=2  gT=1 seen=2
+f=40400  siegeSN=11421 mem=(91,24) dS=16.x hp=0.21 ... <span class="y">nearE → 哨兵（最后一个敌人被友军杀掉）</span>
+f=40501  siegeSN=11421 mem=(91,24) dS=<span class="r">12.4</span> hp=0.21 ccd=0 st=1 mvcd=14 gT=0 seen=1  <span class="c">← 起冻结</span>
+f=45000  siegeSN=11421 mem=(91,24) dS=<span class="r">12.4</span> hp=0.21 ccd=0 st=1 mvcd=14 gT=0 seen=1  <span class="c">← 4500 帧后，一字节未变</span></pre>
+<p class="sm">祭司<b>只需再走 0.4 格</b>（12.4 → ≤ 12.0）就能起手感化，但零位移。<code>mvcd=14</code> 看似冻结实为假象——祭司状态行显示 <code>cd</code> 在 4/14/24 三值循环，而 LC-DBG 每 300 帧采样恰好撞在同一相位。</p>
+
+<h3>证据 4 · 指令流（27 个兵被反复推向<b>同一个坐标</b>）</h3>
+<pre><span class="c"># 4500 帧内全部士兵移动令的目标点分布</span>
+   3133  <span class="r">(3262, 914.681)</span>          <span class="c">← 27 个兵全挤这一点；距武器厂记忆点 (3291.49,894.427) 恰好 1 格</span>
+     44  (3291.49, 894.427)
+      1  <span class="y">(3232.51, 934.935)</span>         <span class="c">← 唯一的退让落点，与集合点差恰好 1 格</span>
+
+<span class="c"># 祭司推进令（每 30 帧一条，d 恒为 12.4）</span>
+&gt;&gt; Priest ADVANCE to Siege f=44624 d=12.4 nearT=-1.0 towers=0 enemy_cleared
+&gt;&gt; Priest ADVANCE to Siege f=44654 d=12.4 nearT=-1.0 towers=0 enemy_cleared
+   ... (一直持续到 f=44984)</pre>
+<p class="sm">退让落点只出现 <b>1 次</b> ⇒ <code>issueMarch</code> 的卡死自救<b>几乎没触发</b>。
+所以<b>不是</b>「退让活锁」（瓶颈④），而是<b>全军挤在单一集合点彼此堵死</b>。</p>
+
+<h3>为什么这一卡死直接等于判负</h3>
+<div class="badbox">
+<b>胜因被唯一化，且不允许绕过：</b>
+<ul>
+  <li><code>#define ARMY_IGNORE_SIEGE_WORKSHOP true</code>（L99）</li>
+  <li>L239 注释原文：<i>「⚠ 绝不把武器厂当目标：exam 胜条件<b>唯一</b> = 祭司感化敌方武器厂，农民拆了它 = 自毁胜因」</i>（L4190 同源语义）</li>
+  <li><code>PRIEST_CONVERT_SIEGE_RANGE 12.0</code> 是<b>引擎硬口径</b>（<code>DIS_PRIEST=12</code>，注释：须 ≤ 此值才能感化）—— <b>不能放宽</b></li>
+</ul>
+⇒ 军队与农民被明令不得碰武器厂；祭司的感化射程又由引擎锁死。<b>祭司一旦物理卡死 = 必未决。</b>
+</div>
+
+<div class="flow">
+  <span>敌军全灭</span><i>→</i>
+  <span>27 个兵被反复推向同一集结点（距武器厂 1 格）</span><i>→</i>
+  <span>全员 WALKING、永不抵达（拥堵死锁）</span><i>→</i>
+  <span>祭司被这支队伍裹住、<code>nearAlly=0.4BL</code>、物理卡死</span><i>→</i>
+  <span>差 0.4 格进不了感化射程</span><i>→</i>
+  <span>打满 45000 帧 = 未决</span>
+</div>
+
+<h2>5 map2 剩余 3 个败局：全部是「祭司孤身早死」</h2>
+
+<table>
+<thead><tr><th>局</th><th>判据</th><th class="num">死亡帧</th><th class="num">Mil 峰值</th><th>死时祭司状态</th></tr></thead>
+<tbody>
+<tr><td>n607</td><td><code>DEFEAT: Priest killed</code></td><td class="num">14945</td><td class="num"><b>1</b></td><td><code>hp=0.22 nearE=0.9 ally=0</code></td></tr>
+<tr><td>n608</td><td><code>DEFEAT: Priest killed</code></td><td class="num">17123</td><td class="num">5</td><td><code>hp=0.04 nearE=2.8 ally=0</code></td></tr>
+<tr><td>n702</td><td><code>DEFEAT: Priest killed</code></td><td class="num">24371</td><td class="num">4</td><td><code>hp=0.17 nearE=0.8 ally=2（距 22.4 格）</code></td></tr>
+</tbody>
+</table>
+
+<p class="sm">
+共同特征：<b><code>ally=0</code>（身旁无兵）＋ 敌人贴到 0.9~2.8 格 ＋ Mil 峰值仅 1~5</b>，三局死亡帧均在反攻（f=33001）<b>之前</b>。
+属已关闭的<b>瓶颈①（祭司早死）</b>方向 —— 与本次建造者保护<b>无因果关系</b>。
+</p>
+
+<h2>6 下一步候选</h2>
+
+<table>
+<thead><tr><th style="width:150px">方向</th><th>内容</th><th style="width:230px">代价 / 风险</th></tr></thead>
+<tbody>
+<tr>
+  <td><b>① 修 ②b 拥堵</b></td>
+  <td>给推进落点按 SN 做<b>确定性散开</b>（环上取点），避免 27 人同点；或祭司零位移时换<b>侧向落点</b>重试；或卡死时把贴脸友军<b>挪开 4~6 格</b>（此阶段无敌，无风险）</td>
+  <td>中等改动；证据完整，可直接动手</td>
+</tr>
+<tr>
+  <td><b>② map3 干净对照</b></td>
+  <td>在 <code>3a624749</code> 上跑一次「去掉建造者保护」的 map3 × 12，才能判定该修复在 map3 是中性还是有害</td>
+  <td>低成本（1 次跑批）；但需暂时改源码</td>
+</tr>
+<tr>
+  <td><b>③ 卡死自救活锁</b></td>
+  <td>瓶颈④：退让落点被进展判据记为进展 ⇒ <code>marchStuckTry</code> 清零。修法=退让时置标志、该帧跳过刷新</td>
+  <td>小改动；与 ① 同族，可合并</td>
+</tr>
+<tr>
+  <td><b>④ 黄金供给</b></td>
+  <td>先做<b>只读探针</b>确认是「分配」而非「矿距」（复合弓 20 金 ⇒ 黄金上限即复合弓上限）</td>
+  <td>只读，零风险</td>
+</tr>
+</tbody>
+</table>
+
+<footer>
+  数据来源：<code>n2/n3/n4/n5/n6/n7/n8*.ait + *.jsonl</code>（共 84 局）｜统计脚本 <code>batchstat.py</code> / <code>pergame.py</code>｜
+  跑批脚本 <code>n6_verify.sh</code> / <code>n7n8_verify.sh</code><br>
+  判据（项目铁律）：胜 = jsonl 任一行 <code>"win":true</code>；负 = ait 含 <code>DEFEAT:</code>；其余 = 打满 45000 帧 = 未决。
+</footer>
+
+</div>
+</body>
+</html>

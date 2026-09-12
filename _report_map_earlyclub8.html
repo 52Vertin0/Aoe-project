@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>map 胜率专项 · 杠杆一 EARLY_CLUBMAN_TARGET 4→8</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#f5f6f8;color:#1f2329;margin:0;padding:28px;}
+  h1{font-size:20px;margin:0 0 4px;}
+  .sub{color:#6b7280;font-size:13px;margin-bottom:18px;}
+  .card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+  h2{font-size:15px;margin:0 0 12px;color:#374151;border-left:3px solid #3b82f6;padding-left:8px;}
+  table{border-collapse:collapse;width:100%;font-size:13px;}
+  th,td{border:1px solid #e5e7eb;padding:7px 10px;text-align:center;}
+  th{background:#f3f4f6;font-weight:600;color:#374151;}
+  tr:nth-child(even) td{background:#fafafa;}
+  .win-good{color:#dc2626;font-weight:600;}
+  .win-bad{color:#16a34a;font-weight:600;}
+  .note{background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:12px 14px;font-size:13px;color:#7c2d12;line-height:1.6;}
+  .ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;border-radius:8px;padding:12px 14px;font-size:13px;line-height:1.6;}
+  code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px;}
+  .big{font-size:26px;font-weight:700;}
+  .delta-up{color:#dc2626;font-weight:600;}
+</style>
+</head>
+<body>
+<h1>map 胜率专项 · 杠杆一：EARLY_CLUBMAN_TARGET 4→8</h1>
+<div class="sub">TAG=earlyclub8 · map.njust 单图 48 局（rot=0, PAR=8, TMO=420）· 对比基线 current(24局) · 胜率口径 = 祭司转换敌攻城武器厂 · 生成于 2026-10-07</div>
+
+<div class="card">
+  <h2>一、本次改了什么（唯一改动）</h2>
+  <table>
+    <tr><th>项</th><th>内容</th></tr>
+    <tr><td>改动点</td><td><code>UsrAI.cpp</code> 行 240 <code>#define EARLY_CLUBMAN_TARGET 8</code>（原 4）；使用点行 4228 <code>if (nClubNow &lt; EARLY_CLUBMAN_TARGET)</code>（前期棍棒兵过渡块最前）</td></tr>
+    <tr><td>依据</td><td>用户拍板：map 42% 败局是「前期军队崩盘」（早期仅≈6兵，W2波次一冲就破，祭司反攻前早死）。最高 ROI 改法 = 抬高前期棍棒兵目标数，直击 C1 桶。</td></tr>
+    <tr><td>校验</td><td><code>syn.py</code> 0 err / 16 warn（口径不变）；<code>build.py</code> rc=0</td></tr>
+    <tr><td>源码 md5</td><td>改前锚点 <code>ffcb941a</code>（备份 <code>bak_20261007_earlyclub8_UsrAI.cpp</code>）→ 改后 <code>0fb49fcf</code>（7448 行，仅一处 #define）；<code>.h</code> <code>8bc1f3c8</code> 未动</td></tr>
+    <tr><td>跑局</td><td><code>MAPS="map.njust" ROT=0 N=48 PAR=8 TAG=earlyclub8 TMO=420 bash _quad_run.sh</code> → <code>earlyclub8_map_r0_*.ait</code>（48 个）</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>二、current 基线：map 24 局败因两桶（<code>_map_diag.py</code>）</h2>
+  <table>
+    <tr><th>败因桶</th><th>局数</th><th>占比</th><th>特征</th></tr>
+    <tr><td>前期崩盘（C1）</td><td>9/24</td><td class="win-bad">38%</td><td>早期≈6兵被 W2 冲垮，祭司反攻前早死</td></tr>
+    <tr><td>反攻期祭死（C3）</td><td>8/24</td><td>33%</td><td>满编军队仍护不住感化中的祭司</td></tr>
+    <tr><td>超时（C4）</td><td>4/24</td><td>17%</td><td>推到敌基地但被耗光</td></tr>
+    <tr style="font-weight:600;background:#eef2ff;"><td>胜</td><td>2/24</td><td>8.3%</td><td>全 Mil=27 且有起手</td></tr>
+  </table>
+  <p style="font-size:12px;color:#6b7280;margin:10px 0 0;">结论：map 最难，约 42% 败局是「前期军队崩盘」——正是 EARLY_CLUBMAN_TARGET 抬高的靶子。</p>
+</div>
+
+<div class="card">
+  <h2>三、对比：current(24局) vs earlyclub8(48局)</h2>
+  <table>
+    <tr><th>指标</th><th>current</th><th>earlyclub8</th><th>判读</th></tr>
+    <tr><td>胜率</td><td class="win-bad">8.3% (2/24)</td><td class="delta-up">16.7% (8/48)</td><td>翻倍</td></tr>
+    <tr><td>前期崩盘桶</td><td>38%</td><td class="delta-up">8%</td><td>★ 机制量稳健命中（早期兵 6→27）</td></tr>
+    <tr><td>反攻期祭死桶</td><td>33%</td><td>48%</td><td>失败形态转移 → 新主导败因</td></tr>
+    <tr><td>Mil峰中位（祭死局）</td><td>6</td><td class="delta-up">27</td><td>前期军队确实拉满</td></tr>
+    <tr style="font-weight:600;background:#eef2ff;"><td>双尾 Fisher p</td><td colspan="2">0.479</td><td>单批不显著</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>四、判读结论</h2>
+  <div class="ok">
+    <p style="margin:0 0 8px;"><b>1. 机制桶稳健命中目标。</b> 前期崩盘桶从 38% 骤降到 8%、祭死局 Mil 峰中位 6→27，证明 <code>EARLY_CLUBMAN_TARGET 4→8</code> 确实把早期军队顶上去了，前期崩盘这一最大败因桶被显著压缩。</p>
+    <p style="margin:0 0 8px;"><b>2. 胜率翻倍（8.3%→16.7%）但单批不可下结论。</b> Fisher p=0.479（&gt;0.05 不显著）。n=48 臂带 ≈±14pp，Δ=8.4pp 落在噪声带内；按项目铁律需 ~180 局/臂（≈4×）才能把胜负判读门槛（≥15pp）压到 80% power。</p>
+    <p style="margin:0;"><b>3. 失败形态已转移。</b> 前期崩盘被压下去后，<b>反攻期祭死升为新主导桶（48%）</b>——满编军队仍护不住「在敌区站桩感化约14秒」的祭司。下一刀应瞄这里。</p>
+  </div>
+  <div class="note" style="margin-top:12px;">
+    <b>祭死探针（<code>_map_death.py</code>）补充：</b> 胜局与祭死局祭司都「远离军队」（设计如此——祭司 solo 冲敌基地感化，lead/leadF 重合），所以死因不是「走太靠前」，而是 <b>感化时被集火、无法有效撤离/自愈</b>（§3.7 结构性死锁：感化射程12 与远程威胁射程≈12 重叠 ⇒ 一进12格就触发逃跑但落点仍受敌火力覆盖；祭司不能自愈、反攻期不治友军）。
+  </div>
+</div>
+
+<div class="card">
+  <h2>五、下一杠杆（待用户拍板）</h2>
+  <div class="note">
+    <b>目标：反攻期祭司存活（减少感化集火死）</b>，针对 earlyclub8 新主导的 48% 反攻期祭死桶。<br>
+    候选（§3.7）：A 起手期免疫逃跑（推荐）｜B <code>PRIEST_COUNTER_FLEE_HP 0.6→0.35</code>｜C 逃跑落点限幅。<br>
+    仍须先按 <b>fixN 铁律做因果实验</b>，不可只看「祭死多的局败率高」。
+  </div>
+</div>
+
+<div class="card">
+  <h2>六、环境与可复现</h2>
+  <ul style="font-size:13px;line-height:1.7;margin:0;padding-left:18px;color:#374151;">
+    <li>源码：<code>UsrAI.cpp</code> <code>0fb49fcf</code>（= earlyclub8），改前锚点 <code>ffcb941a</code>；<code>.h</code> <code>8bc1f3c8</code> 未变。</li>
+    <li>备份：<code>bak_20261007_earlyclub8_UsrAI.cpp</code>（<code>ffcb941a</code>，改前）。</li>
+    <li>脚本：<code>_map_diag.py</code>（归因两桶）｜<code>_map_cmp.py</code>（含修正后 Fisher，log 空间超几何双尾）｜<code>_map_death.py</code>（祭死探针）。</li>
+    <li>产物：<code>earlyclub8_map_r0_*.ait</code>（48 个）；基线 <code>current_map_r0_*.ait</code>（24 个，仍在磁盘）。</li>
+  </ul>
+</div>
+</body>
+</html>

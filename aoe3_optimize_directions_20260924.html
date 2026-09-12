@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AoE3 UsrAI 优化方向 — 2026-09-24</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --line:#e3e6ec; --line2:#eef1f5;
+    --tx:#1c1f26; --tx2:#4a5262; --tx3:#7b8494;
+    --red:#c62828; --redbg:#fdecec; --redln:#f5c6c6;
+    --grn:#1b7f4b; --grnbg:#eaf7ef; --grnln:#c2e6d1;
+    --amb:#a86a00; --ambbg:#fff6e5; --ambln:#f0d9a8;
+    --blu:#1f5fa8; --blubg:#eef4fc; --bluln:#c9dcf3;
+    --vio:#6b3fa0; --viobg:#f4eefc; --violn:#ddcdf3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 26px 80px;}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--tx3);font-size:13px;margin-bottom:26px}
+  h2{font-size:19px;margin:38px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  h4{font-size:14px;margin:16px 0 6px;color:var(--tx2)}
+  p{margin:9px 0}
+  code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:13px;
+       font-family:"Cascadia Mono",Consolas,monospace;color:#2a3040}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:14px 0}
+  .box{border-left:4px solid;border-radius:8px;padding:12px 16px;margin:14px 0}
+  .box.red{background:var(--redbg);border-color:var(--red)}
+  .box.grn{background:var(--grnbg);border-color:var(--grn)}
+  .box.amb{background:var(--ambbg);border-color:var(--amb)}
+  .box.blu{background:var(--blubg);border-color:var(--blu)}
+  .box.vio{background:var(--viobg);border-color:var(--vio)}
+  .box .t{font-weight:700;margin-bottom:4px}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px;
+        background:var(--panel);border-radius:8px;overflow:hidden;
+        box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  th,td{border-bottom:1px solid var(--line2);padding:7px 10px;text-align:left;
+        vertical-align:top}
+  th{background:#f1f3f7;font-weight:600;color:var(--tx2);font-size:12.5px;
+     letter-spacing:.3px}
+  tr:last-child td{border-bottom:none}
+  td.num{font-family:"Cascadia Mono",Consolas,monospace;white-space:nowrap}
+  .w{color:var(--grn);font-weight:700}
+  .l{color:var(--red);font-weight:700}
+  .u{color:var(--amb);font-weight:700}
+  .tag{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:20px;
+       font-weight:700;letter-spacing:.2px;vertical-align:2px}
+  .tag.p0{background:var(--redbg);color:var(--red);border:1px solid var(--redln)}
+  .tag.p1{background:var(--ambbg);color:var(--amb);border:1px solid var(--ambln)}
+  .tag.p2{background:var(--blubg);color:var(--blu);border:1px solid var(--bluln)}
+  .tag.p3{background:#f0f1f5;color:var(--tx2);border:1px solid var(--line)}
+  .tag.no{background:#f0f1f5;color:var(--tx3);border:1px solid var(--line)}
+  pre{background:#1e2229;color:#d7dce5;border-radius:8px;padding:12px 14px;
+      overflow-x:auto;font-size:12.5px;line-height:1.6;
+      font-family:"Cascadia Mono",Consolas,monospace;margin:10px 0}
+  pre .c{color:#7f8b9e}
+  pre .hl{color:#ff9a8b;font-weight:700}
+  pre .g{color:#8bd99c;font-weight:700}
+  ul,ol{margin:8px 0 8px 4px;padding-left:22px}
+  li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:118px 1fr;gap:4px 12px;font-size:13.5px;
+      margin:8px 0}
+  .kv b{color:var(--tx2);font-weight:600}
+  hr{border:none;border-top:1px solid var(--line);margin:30px 0}
+  .small{font-size:12.5px;color:var(--tx3)}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0;
+        font-size:13px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+        padding:7px 12px}
+  .step.bad{border-color:var(--redln);background:var(--redbg)}
+  .step.good{border-color:var(--grnln);background:var(--grnbg)}
+  .arw{color:var(--tx3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>AoE3 UsrAI 优化方向</h1>
+<div class="sub">基于「群内快速升级/造兵打法」逐条对照现行代码（<code>UsrAI.cpp</code> 2710f75b / 6622 行）　·　2026-09-24</div>
+
+<div class="box grn">
+  <div class="t">一句话结论</div>
+  挖到了 <b>8/8 负局完全同形的死因</b>：祭司在反攻期主动前出去感化<b>战车弓兵/战车/阔剑兵</b>，起手后 <b>54~535 帧（2~21 秒）</b>内被打死；而 <b>3/3 胜局</b>的祭司最后感化目标都是<b>攻城武器厂</b>。<br>
+  根因不是新 bug，是<b>两套互斥逻辑打架</b>：<code>managePriest()</code> 的「能感化直接感化（无任何门槛）」每帧先跑并 <code>return</code>，把 <code>manageCounterAttack()</code> 里「祭司保持在大队后方 <code>PRIEST_SAFE_BEHIND</code> 格」的安全设计<b>永久屏蔽</b>。
+</div>
+
+<h2>一、证据：12 局逐局祭司死因表</h2>
+
+<p>口径：取每局日志中<b>最后一条</b>「设置转换目标为 X」行与祭司死亡行配对。<span class="small">脚本 <code>_priest_death.py</code></span></p>
+
+<table>
+<tr>
+  <th>局</th><th>祭司最后感化目标</th><th>起手帧</th><th>死亡帧</th><th>间隔</th><th>结局</th>
+</tr>
+<tr><td>cur1</td><td>战车弓兵</td><td class="num">37113</td><td class="num">37648</td><td class="num">535 帧</td><td class="l">负</td></tr>
+<tr><td>cur2</td><td>战车弓兵</td><td class="num">39806</td><td class="num">39894</td><td class="num">88 帧</td><td class="l">负</td></tr>
+<tr><td>cur3</td><td>战车弓兵</td><td class="num">38606</td><td class="num">38740</td><td class="num">134 帧</td><td class="l">负</td></tr>
+<tr><td>cur5</td><td>战车</td><td class="num">39037</td><td class="num">39256</td><td class="num">219 帧</td><td class="l">负</td></tr>
+<tr><td>cur7</td><td>战车弓兵</td><td class="num">37405</td><td class="num">37459</td><td class="num">54 帧</td><td class="l">负</td></tr>
+<tr><td>cur8</td><td>阔剑兵</td><td class="num">37166</td><td class="num">37304</td><td class="num">138 帧</td><td class="l">负</td></tr>
+<tr><td>cur9</td><td>战车弓兵</td><td class="num">37364</td><td class="num">37454</td><td class="num">90 帧</td><td class="l">负</td></tr>
+<tr><td>cur12</td><td>战车弓兵</td><td class="num">38312</td><td class="num">38489</td><td class="num">177 帧</td><td class="l">负</td></tr>
+<tr style="background:#fcfcfd"><td>cur4</td><td><b>攻城武器厂</b></td><td class="num">38837</td><td class="num">—</td><td>—</td><td class="w">胜</td></tr>
+<tr style="background:#fcfcfd"><td>cur11</td><td><b>攻城武器厂</b></td><td class="num">42701</td><td class="num">—</td><td>—</td><td class="w">胜</td></tr>
+<tr style="background:#fcfcfd"><td>cur6</td><td><b>攻城武器厂</b></td><td class="num">44069</td><td class="num">—</td><td>—</td><td class="w">胜*</td></tr>
+<tr><td>cur10</td><td>战车弓兵</td><td class="num">39669</td><td class="num">—</td><td>—</td><td class="u">未决（侥幸活）</td></tr>
+</table>
+
+<div class="box amb">
+  <div class="t">★ 这张表的判别力</div>
+  <b>6/8 负局的最后感化目标是「战车弓兵」</b>，另 2 局是「战车」「阔剑兵」。<b>3 个胜局的最后目标清一色是「攻城武器厂」</b>。
+  信号完全分离，没有一例交叉 —— 这不是统计噪声，是确定性因果。
+  <span class="small">*cur6 的 AIText 无 VICTORY 行，以 <code>jsonl</code> 的 <code>win:true</code> 判定为胜（判胜口径见 2026-09-23 修正）。</span>
+</div>
+
+<h2>二、根因解剖：谁在每一帧说话</h2>
+
+<h3>2.1 调用顺序决定谁能生效</h3>
+
+<p><code>processData()</code> 每帧的调用链（<code>UsrAI.cpp:525</code>）：</p>
+
+<div class="flow">
+  <span class="step">0 <code>handleBuildResults()</code></span><span class="arw">→</span>
+  <span class="step">1 <code>checkDefeat()</code></span><span class="arw">→</span>
+  <span class="step bad">3 <code>managePriest()</code></span><span class="arw">→</span>
+  <span class="step">5 <code>updateState()</code></span><span class="arw">→</span>
+  <span class="step">7 <code>manageEconomy()</code></span><span class="arw">→</span>
+  <span class="step">8 <code>manageMilitary()</code></span><span class="arw">→</span>
+  <span class="step bad">9 <code>manageCounterAttack()</code></span>
+</div>
+
+<p><b>第 3 步在第 9 步之前，而第 3 步里的感化档命中就 <code>return</code>。</b>这不是"优先级"，是"垄断"。</p>
+
+<h3>2.2 第 3 步干了什么（<code>UsrAI.cpp:1249-1274</code>）</h3>
+
+<pre><span class="c">// 感化检测(无安全门槛)：冷却好+视野内有可感化敌(≤20格)即可，直接感化/靠近感化。</span>
+<span class="c">//   ★ 用户要求"不用安全感化，能感化直接感化"：感化绝对优先，不再要求逃出敌射程、</span>
+<span class="c">//   不再看血量——冷却好了就转(贴身敌≤3时转走攻击者本身往往就是最好的保命)。</span>
+int safeConv = -1;
+if (priest->ConvertCooldown &lt;= 0 &amp;&amp; nearestE &lt;= PRIEST_CONVERT_RANGE * BL) {
+    int t = findConvertTarget(pDR, pUR, PRIEST_CONVERT_RANGE * BL);
+    if (t &gt;= 0) safeConv = t;
+}
+...
+if (convSN &gt;= 0) {
+    if (priestMoveCooldown &gt; 0) { <span class="c">/* 节流闸 */</span> ... <span class="hl">return;</span> }
+    priestMode = 0;
+    double cdist = calDistance(pDR, pUR, convDR, convUR);
+    if (cdist &lt;= 12 * BL) { HumanAction(priestSN, convSN); ... <span class="hl">return;</span> }
+    else { priestApproachMove(convDR, convUR, 12.0); <span class="hl">return;</span> }   <span class="c">// ← 主动前出</span>
+}</pre>
+
+<p>三个要点：</p>
+<ul>
+  <li><b>无位置门槛</b>：不看祭司当前在哪、前方有没有己方军队。</li>
+  <li><b>无兵力门槛</b>：不要求目标附近有我方保护兵力。</li>
+  <li><b>会主动前出</b>：<code>cdist &gt; 12 格</code> 时调 <code>priestApproachMove()</code> 走过去 —— 搜索半径是 <code>PRIEST_CONVERT_RANGE</code>，<b>实测值 <code>28.0</code> 格</b>，意味着祭司愿意为够一个目标<b>主动前进最多 28 格</b>。</li>
+</ul>
+
+<h3>2.3 它挑的目标是什么（<code>UsrAI.cpp:967-995</code>）</h3>
+
+<pre>auto findConvertTarget = [&amp;](double dr, double ur, double range) -&gt; int {
+<span class="c">// ★ 转化优先级：① 方阵兵 → ② 其余近战 → ③ 远程军队 → ④ 投石车 → 兜底：最近敌方村民</span>
+...
+if ((t = pickByBlood(0)) &gt;= 0) return t;   <span class="c">// 0) 方阵兵</span>
+if ((t = pickByBlood(1)) &gt;= 0) return t;   <span class="c">// 1) 其余近战</span>
+if ((t = pickByBlood(2)) &gt;= 0) return t;   <span class="hl">// 2) 远程军队 ← 战车弓兵 / 复合弓兵 / 弓兵</span>
+if ((t = pickByBlood(3)) &gt;= 0) return t;   <span class="c">// 3) 投石车</span></pre>
+
+<div class="box red">
+  <div class="t">致命的射程算术</div>
+  <b>祭司感化距离 = 12 格</b>（<code>DIS_PRIEST=12</code>）；<b>战车弓兵射程 = 7 格</b>。<br>
+  祭司要够到一辆战车弓兵，必须走进 12 格 —— 而 12 &gt; 7，意味着它<b>必然同时进入对方射程</b>。若旁边还有敌方复合弓兵（射程 7）护卫，那就是走进一片交叉火力。<br>
+  实测 cur2：起手（f=39806）→ 敌复合弓兵/战车弓兵<b>同帧</b>锁定祭司（f=39836，30 帧后）→ 祭司死亡（f=39894，<b>共 88 帧 = 3.5 秒</b>）。
+</div>
+
+<h3>2.4 三个常量在数值上直接打架</h3>
+
+<table>
+<tr><th>常量</th><th>值</th><th>语义</th><th>定义处</th></tr>
+<tr><td><code>PRIEST_CONVERT_RANGE</code></td><td class="num">28.0 格</td><td>感化目标的<b>搜索半径</b>（够不着就主动走过去）</td><td class="num">UsrAI.cpp:304</td></tr>
+<tr><td><code>PRIEST_MIN_DIST_TARGET</code></td><td class="num">18.0 格</td><td>祭司与反攻目标的最小<b>安全</b>距离</td><td class="num">UsrAI.cpp:344</td></tr>
+<tr><td><code>PRIEST_SAFE_BEHIND</code></td><td class="num">8.0 格</td><td>祭司应位于大队<b>身后</b>的距离</td><td class="num">UsrAI.cpp:308</td></tr>
+</table>
+
+<div class="box red">
+  <div class="t">28 &gt; 18：安全区被搜索半径整个吞掉</div>
+  「保持 ≥18 格才算安全」是第 9 步的意图；「28 格内都能搜到并主动走过去」是第 3 步的实现。<br>
+  <b>28 &gt; 18 ⇒ 祭司站在被判定为"安全"的位置（25 格）时，依然能搜到一个 28 格外的战车弓兵，然后主动前出 13 格 —— 一举跨进安全区以内，还顺带进了对方 7 格射程。</b>
+  <br><br>
+  另注：<code>managePriest()</code> L1246 的注释写的是「视野内有可感化敌(<b>≤20</b>格)」，与常量的 28.0 不符 —— 属陈旧注释。这条是 2026-09-23 那轮注释审计的漏网之鱼，因为它<b>在讨论逻辑时一直被当作事实引用</b>（本轮就是差点采信它）。
+</div>
+
+<h3>2.5 第 9 步里的安全设计，从未执行过</h3>
+
+<p><code>manageCounterAttack()</code> 里写得很细（<code>UsrAI.cpp:4540 / 4594</code>）：</p>
+
+<pre><span class="c">// ★ 2026-09-12（用户需求"祭司反攻不要太靠前，尽量在安全距离"）：…新：冲进</span>
+<span class="c">// PRIEST_MIN_DIST_TARGET 格内即本帧强制后撤到大队后方安全距离；只有已在安全范围才允许【被动】感化（不主动前出）。</span>
+bool priestTooClose = (pDist &lt; PRIEST_MIN_DIST_TARGET * BL);
+...
+<span class="c">// ★ 祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格，</span>
+<span class="c">// 且与反攻目标保持 ≥ PRIEST_MIN_DIST_TARGET 格。上方感化段保留但改为【被动】。</span></pre>
+
+<p>这段的意图与需求完全正确 —— <b>但它躺在第 9 步里，而祭司在第 3 步就已经被支配了</b>。只要第 3 步的 <code>safeConv &gt;= 0</code> 成立（反攻期敌方军队遍地，几乎恒成立），第 9 步的祭司分支连一行都跑不到。</p>
+
+<div class="box vio">
+  <div class="t">根因一句话</div>
+  <b>「无门槛感化」与「安全距离」是同一个祭司的两套控制器，谁先 <code>return</code> 谁说话。</b>
+  现行代码里前者每帧先说话，所以后者是死代码 —— 这也解释了为什么 2026-09-12 那次"祭司反攻不要太靠前"的改动<b>看起来生效了但实际上没有收益</b>。
+</div>
+
+<h2>三、优化方向（按 收益 ÷ 成本 排序）</h2>
+
+<h3><span class="tag p0">P0</span> 反攻期禁止祭司感化「远程兵」 <span class="small">成本 ≈ 6 行　收益 高　风险 低</span></h3>
+
+<div class="kv">
+  <b>证据</b><span>6/8 负局的最后感化目标是战车弓兵；胜局无一例外都是武器厂。</span>
+  <b>改法</b><span>给 <code>findConvertTarget</code> 增加一个"是否允许远程档"的开关（默认 true 保持既有行为）；<code>managePriest()</code> 在 <code>state == COUNTERATTACK</code> 时传 <code>false</code>，即第③档「远程军队」整档跳过，落到第④档投石车/兜底村民。<br>更保守的变体：只排除「战车弓兵 / 复合弓兵 / 弓兵 / 投石兵」这几个<b>射程 ≥ 4 格</b>的兵种，保留投石车（走得慢，攻略也说"可以最后处理"）。</span>
+  <b>为什么有效</b><span>直接砍掉"祭司主动走进敌方远程火力网"这个动作本身，不依赖任何后续补偿逻辑。</span>
+  <b>风险</b><span>低。副作用 = 反攻期祭司对敌方远程兵的压制力下降；但攻略明确指出祭司的活是"转变方阵兵"和"最后感化武器厂"，远程兵本不该由祭司处理。</span>
+  <b>验证</b><span>跑 12 局，看两点：① <code>_priest_death.py</code> 里负局的最后感化目标不再出现远程兵；② 祭司死亡帧从 37xxx 推迟或消失。中位死亡帧后移即可判定方向正确。</span>
+</div>
+
+<h4>P0 的落地骨架（可直接实现）</h4>
+
+<pre><span class="c">// ① findConvertTarget 尾部增一个开关参数，默认值保证既有 3 处调用点行为逐字不变</span>
+auto findConvertTarget = [&amp;](double dr, double ur, double range,
+                             <span class="g">bool allowRanged = true</span>) -&gt; int {
+    int t;
+    if ((t = pickByBlood(0)) &gt;= 0) return t;   <span class="c">// 方阵兵 —— 永远允许</span>
+    if ((t = pickByBlood(1)) &gt;= 0) return t;   <span class="c">// 其余近战 —— 永远允许</span>
+    if (<span class="g">allowRanged &amp;&amp;</span> (t = pickByBlood(2)) &gt;= 0) return t;   <span class="hl">// 远程军队 ← 反攻期关掉</span>
+    if ((t = pickByBlood(3)) &gt;= 0) return t;   <span class="c">// 投石车：射程 10 &lt; 感化距离 12 ⇒ 够得着且不被还手，保留</span>
+    <span class="c">/* 兜底：最近敌方村民 —— 保留 */</span>
+};
+
+<span class="c">// ② 调用点（managePriest 的感化检测处，UsrAI.cpp:1250）</span>
+bool allowRanged = <span class="g">(state != COUNTERATTACK)</span>;   <span class="c">// 仅反攻期生效，前两波行为不变</span>
+int t = findConvertTarget(pDR, pUR, PRIEST_CONVERT_RANGE * BL, allowRanged);</pre>
+
+<p class="small">为什么保留投石车档：投石车射程 10 格 &lt; 祭司感化距离 12 格 ⇒ 祭司能在对方够不着的 12 格边界上感化它，<b>是安全的</b>（且攻略也说"投石车走得慢、不构成直接威胁，可以最后处理或转来自己用"）。要排除的是射程 7 格的战车弓兵/复合弓兵这一档。</p>
+
+
+<h3><span class="tag p0">P0b</span> 给祭司前出加「兵力门槛」 <span class="small">成本 ≈ 15 行　收益 高　风险 中</span></h3>
+
+<div class="kv">
+  <b>攻略原文</b><span>「祭司抵达集结区域（为了安全可以放在集结区域离敌人最远的一格），<b>周边有足够兵力，就可以进攻了</b>。」</span>
+  <b>改法</b><span>在 <code>managePriest()</code> 的感化档里，对"需要前出"的情形（<code>cdist &gt; 12 格</code>，即要主动移动过去）追加门槛：该目标 12 格内我方非祭司军事单位 ≥ N（建议 2~4，先取 2 试）。不满足则该帧不起手，落到下方保命/待命逻辑。已在 12 格内的<b>被动感化</b>不受限。</span>
+  <b>代价</b><span>若门槛过高会让祭司在反攻期几乎不感化（现有 <code>N-2</code> 的另一面）。</span>
+  <b>风险</b><span>中。建议 N 从 2 起，跑批后按"祭司感化次数 vs 死亡帧"双向调参。</span>
+  <b>注意</b><span>这一条与 P0 有重叠但不等价：P0 管"不许碰远程"，P0b 管"没有兵就别过去"（近战目标也可能在敌远程掩护下）。cur8 的最后目标是阔剑兵（近战）却仍死 —— 那条正是 P0b 要治的。</span>
+</div>
+
+<h3><span class="tag p1">P1</span> 让 <code>manageCounterAttack()</code> 的祭司安全逻辑真正生效 <span class="small">成本 ≈ 3 行　收益 高　风险 中</span></h3>
+
+<div class="kv">
+  <b>改法</b><span>在 <code>managePriest()</code> 感化档之前加状态守卫：<code>if (state == COUNTERATTACK) { /* 祭司交给 manageCounterAttack 的推进/后撤逻辑 */ }</code> —— 用一个变量显式 fork，而不是让它自然 <code>return</code>。</span>
+  <b>语义</b><span>这才是 2026-09-12 那次改动的<b>本意</b>。等于把两套控制器合成一套，消除"死代码"。</span>
+  <b>风险</b><span><b>较高</b>。反攻期祭司会改由 <code>manageCounterAttack()</code> 全权管理，而那套逻辑包含"非清场期退回大队后方"——可能导致祭司再也不主动感化，武器厂起手率从 3/12 掉到 0。历史上有前车之鉴（<code>ALL WAVES</code> 后祭司两头不管、被贴脸也不动的 bug）。</span>
+  <b>建议</b><span><b>先做 P0 + P0b，观察一批后再决定是否动这条。</b>P0/P0b 是"局部加闸"，这条是"换控制器"，风险和收益都大一个量级。</span>
+</div>
+
+<h3><span class="tag p2">P2</span> 我方复合弓优先打「锁定祭司的敌远程」 <span class="small">成本 ≈ 20 行　收益 中　风险 低</span></h3>
+
+<div class="kv">
+  <b>攻略原文</b><span>「战斗时连打带射，<b>复合弓优先攻击范围内的远程兵，以免祭司被打</b>。」</span>
+  <b>现状</b><span>已有"有敌人以祭司为目标 → 全军扑上拉仇恨"的分支（<code>UsrAI.cpp:4011</code>，判据 <code>e.WorkObjectSN == priestSN</code>），但它是<b>全军一刀切</b>：所有兵都去扑同一个仇恨目标，没做兵种分层。</span>
+  <b>改法</b><span>在该分支内对复合弓兵/远程兵加一层优选：优先选<b>敌方远程兵</b>（战车弓兵/复合弓兵/弓兵/投石兵）作为目标；没有远程时再退化为原逻辑。</span>
+  <b>为什么有效</b><span>这是"疏"而非"堵"：P0 让祭司不去惹远程，P2 让远程先死。两者互补。</span>
+  <b>风险</b><span>低。可复用现有 <code>sortIsRanged()</code>，无新常量。</span>
+</div>
+
+<h3><span class="tag p2">P2b</span> 我方箭塔索敌改为「打没在打我的兵」 <span class="small">成本 ≈ 12 行　收益 中　风险 低</span></h3>
+
+<div class="kv">
+  <b>攻略原文</b><span>「遍历箭塔周边 7 格内的敌军，如果敌军的目标不是自己（箭塔），则攻击敌军。如果敌军目标设为自己了，切换攻击目标为不是自己的敌军……这样祭司站在箭塔附近，只会被远程攻击。」</span>
+  <b>现状</b><span><b>已实现</b>手工索敌（<code>UsrAI.cpp:3889</code> B 段，用 <code>HumanAction(塔SN, 目标SN)</code>，判据 <code>Project != -1</code> 为"已在攻击"）。<b>但</b>：<br>① 目标选取是"射程内<b>最近</b>敌人"，不看敌军当前锁定谁；<br>② <code>if (tower.Project != -1) continue;</code> —— 塔一旦锁定目标就<b>不再换</b>，直到目标死亡或离开。</span>
+  <b>改法</b><span>① 目标筛选改为两档：优先 <code>e.WorkObjectSN != tower.SN</code>（没在打我的）中最近者；无则退化为最近者。<br>② 把 <code>Project != -1 → continue</code> 改成"仅当目标仍在自己射程内才跳过"，允许中途改打更该打的兵。</span>
+  <b>收益场景</b><span>有效载荷 = 把塔的火力从"本来就跑不掉、正在拆塔的近战兵"转到"正在追祭司/农民的兵"。第一二波尤其值钱。</span>
+  <b>风险</b><span>低。但要注意别让塔每帧改目标（加节流），否则引擎侧可能反复重置攻击前摇。</span>
+</div>
+
+<h3><span class="tag p2">P2c</span> 集结区从「单点」改成「5×5 区块循环填入」 <span class="small">成本 ≈ 25 行　收益 中　风险 低</span></h3>
+
+<div class="kv">
+  <b>攻略原文</b><span>「单一集结点对于集结是不够的。因为核心有个特性，位置附近站满人则认为不可达，发命令人不动。因此需要一个集结区域，以集结点为中心，弄个 3*3-5*5 的区块，每个点去一个兵。攻击开始后，军队会移动，集结点就空出来了，可以循环填入。」</span>
+  <b>现状</b><span><code>rallyCtrDR/UR</code> 是<b>单一坐标</b>（TC 中心，<code>UsrAI.cpp:4767</code>）。<span class="small">（注：代码里已有一处"8/11/14 格 × 8 角 = 24 档"的散开逻辑，但那是"回基地外围待命螺旋"，不是集结区。）</span></span>
+  <b>改法</b><span>把集结落点从 <code>rallyCtrDR/UR</code> 换成"以它为中心的 5×5 格阵列，按单位 SN 取格"。可以直接复用现成的散开写法（<code>UsrAI.cpp:3945</code> 那段 <code>SN%11</code>/<code>SN%5</code> 的做法）。</span>
+  <b>为什么有效</b><span>这是引擎级的"拥堵判定"补偿，成本很低。攻略作者把它当必需项，说明实战差异明显。</span>
+  <b>风险</b><span>低（只动落点、不动决策）。</span>
+</div>
+
+<h3><span class="tag p3">P3</span> 反攻时点前移 <span class="small">成本 ≈ 1 行　收益 高　风险 <b>高</b></span></h3>
+
+<div class="kv">
+  <b>现状</b><span><code>updateState()</code> 进 COUNTERATTACK 的条件：<code>frame &gt; COUNTER_ATTACK_FORCE_TIME(33000)</code> <b>且</b>（敌数 &lt; 3 或 <code>frame &gt; 39000</code>）。实测反攻帧 <b>12/12 恒为 33001</b> ⇒ 实际生效的是<b>超时强制</b>，第三波"全灭"条件从未提前满足。</span>
+  <b>攻略的时点</b><span>「第二波防御一过就集结，集结 10 个左右复合弓就可以开战了，差不多是<b>11 分钟</b>多点」；「一般在防御过第三波之后，<b>24000 帧左右</b>（16 分钟）」。</span>
+  <b>差距</b><span>我们 22 分钟开战 → 胜局耗时 39114 / 43001 / 44406 帧（26~30 分钟）。攻略理想线 27000 帧（18 分钟）胜。<b>时间差 ≈ 6 分钟，几乎全部来自这里。</b></span>
+  <b>为什么难</b><span>2026-09-08 有过明确教训：强制反攻阈值从 27000 上调到 33000，正是因为"<code>armyCount</code> 远未达 12 即提前全军出击、零散士兵 + 祭司被集火送命"。</span>
+  <b>建议</b><span><b>不要一次跳。</b>先只用 P0/P0b/P2 把祭司的存活率提上去，再看能否把 <code>COUNTER_ATTACK_FORCE_TIME</code> 从 33000 分两步试（33000 → 30000 → 27000），每步单跑一批。</span>
+</div>
+
+<h3><span class="tag p3">P3b</span> 农民冲锋时点前移 <span class="small">成本 ≈ 1 行　收益 中高　风险 中</span></h3>
+
+<div class="kv">
+  <b>现状</b><span><code>COUNTER_FARMER_ATTACK_FRAME = 40500</code>（27 分钟）。<b>三个胜局里只有 cur11（42701 起手武器厂）享受到它；cur4 在 39114 帧就赢了，cur6 的武器厂起手在 44069 —— 农民令对赢得最快的两局完全没发挥作用。</b></span>
+  <b>攻略原文</b><span>「11 分钟之后砍树的村民就没用了，可以调往前线集结，13 分左右所有农民都不必收集资源，可以当近战冲锋。<i>（这一步我没有实现，所以没进 21000，只进了 22000）</i>」</span>
+  <b>改法</b><span>把 40500 降到约 21000~24000（14~16 分钟），或改为<b>动态触发</b>：当祭司距武器厂 &lt; 30 格且敌方军队已清空时，立即释放农民。</span>
+  <b>风险</b><span>中。农民全投入后经济停摆，一旦冲不下来就再无翻盘能力（而祭司死亡本身就直接判负，所以"保祭司"与"放农民"其实同一目标）。</span>
+</div>
+
+<h3><span class="tag p3">P3c</span> 复合弓量产时点 <span class="small">成本 ≈ 1 行　收益 待评估　<span style="color:var(--red)">需你拍板</span></span></h3>
+
+<div class="kv">
+  <b>现状</b><span><code>COMPOSITE_BOW_MIN_FRAME = 22500</code>（15 分钟前不训练复合弓兵）。</span>
+  <b>攻略原文</b><span>「升时代后立刻研究复合弓和多靶场造兵……理想情况下，<b>8 分多一点就可以两个靶场同时出兵</b>，10 分钟前 3 个靶场同时出兵。」</span>
+  <b>差距</b><span>8~10 分钟 vs 15 分钟。<b>但</b>：这条是你在 2026-09-06 明确要求的（"15min 前先不训练复合弓兵，避免被打死"），且当时的理由是"早期弓兵会被打死、白费食物 + 20 黄金"。</span>
+  <b>为什么现在可以重新讨论</b><span>当时的前提是"祭司死了也没关系、先把经济做厚"。现在已确定<b>祭司存活 = 唯一胜负开关</b>，而攻略反复强调"保护好复合弓手"是核心。早期就有 6 个复合弓，第二波（13500）就能"无损过波次"，反攻也能提前。</span>
+  <b>建议</b><span>不直接改常量，而是先跑一组"<code>COMPOSITE_BOW_MIN_FRAME = 15000</code>"的对照批。这是<b>唯一一条有独立批次价值的</b>。</span>
+</div>
+
+<hr>
+
+<h2>四、攻略里<b>不该照抄</b>的部分</h2>
+
+<p>攻略作者是在写一个从零开始的 AI；我们这套已经跑了很久、沉淀了大量实测口径。以下 7 条照抄会引入<b>倒退</b>：</p>
+
+<table>
+<tr><th style="width:230px">攻略建议</th><th>为什么不照抄</th></tr>
+<tr>
+  <td><code>map&lt;int,int&gt; farmer_state</code> 记录村民工作</td>
+  <td>引擎的 <code>tagFarmer</code> 已经给了 <code>NowState</code>（空闲/移动/攻击/工作）、<code>ResourceSort</code>（手持资源）、<code>WorkObjectSN</code>（工作目标）、<code>FarmerSort</code>。<b>另维护一份必然与引擎失同步</b>（单位死亡/感化/重编号时 AI 侧不知道）。<br>我们已有的 <code>huntingGroup</code> / <code>buildingFarmerType</code> 是"<b>AI 侧额外意图</b>"（谁被打猎指派了、谁是建造者），颗粒度正确 —— 该记的才记。</td>
+</tr>
+<tr>
+  <td>「全局变量记录建设者 SN」</td>
+  <td>已有 <code>buildingFarmerType</code>（<code>SN → FarmerType</code>）承担同一职责，且能同时管多个建造者。</td>
+</tr>
+<tr>
+  <td>「每帧最多分配一次，不易冲突」</td>
+  <td>已按此实现。例：<code>manageHunting()</code> 末尾 <code>return; // 每帧最多分配1个猎人</code>。</td>
+</tr>
+<tr>
+  <td>「双人打猎效率最高」（需详细状态转换流程）</td>
+  <td>已实现且更简：每只瞪羚限 2 人（<code>if (realCount &gt;= 2) continue;</code>），无需状态机。另"先建仓库再打猎、仓库选离死羚羊最近处"也已有 <code>gazelleDropoffReady()</code> 把关。</td>
+</tr>
+<tr>
+  <td>「反攻只训练复合弓 + 方阵兵」</td>
+  <td>已实现（<code>DISABLE_CAVALRY_TRAIN true</code>，<code>UsrAI.cpp:271-273</code>），连理由都一样（骑兵抢复合弓的黄金）。</td>
+</tr>
+<tr>
+  <td>「祭司转换敌人，优先生命值最高的」</td>
+  <td>已实现：<code>pickByBlood()</code> 在每一档内部"选血量最高者，同血取近者"。<b>建议保留</b>。</td>
+</tr>
+<tr>
+  <td>「第一波祭司先转弓箭手，再转斧头兵」</td>
+  <td>与现优先级（方阵兵 &gt; 其余近战 &gt; 远程）不同。但<b>第一二波不是瓶颈</b>：cur 批 12/12 都活到了反攻。改它属于无证据改动的范围。</td>
+</tr>
+</table>
+
+<h2>五、这与既有诊断的关系</h2>
+
+<p>此前记忆里对 N-2 的描述是：<b>「感化档只判冷却 + 28 格不看血量 → 节流闸 <code>return</code> 全体短路 → 濒死逃命档轮不到 ⇒ 一次感化令冻结 150 帧」</b>。</p>
+
+<p>本轮证据把这条<b>具体化并向前推了一步</b>：</p>
+<ul>
+  <li>「节流闸短路」成立，但它是<b>果</b>：真正致命的是 <b>祭司为什么要在这时候起手</b> —— 因为第③档把"战车弓兵"列为合法目标，而感化距离（12）&gt; 战车弓兵射程（7），起手即入网。</li>
+  <li>被短路的"濒死逃命档"同样在 <code>managePriest()</code> 内部（第 2 步 <code>pBR &lt;= 0.25</code> 强制撤退）—— 它<b>排在感化档之后</b>，且感化档 <code>return</code> 了。所以 3.5 秒内从满血到死亡期间，逃命档一次都没被执行。</li>
+  <li>新增一条此前没有的判据：<b>祭司的感化目标兵种 = 负局的预测因子</b>（远程 → 死，武器厂 → 胜）。这条可以直接做成跑批后的自动体检项。</li>
+</ul>
+
+<h2>六、建议的下一步</h2>
+
+<div class="box blu">
+  <div class="t">最小可验证改动（建议一次只改这一个组合）</div>
+  <b>P0（禁远程档，6 行）+ P2b（箭塔索敌筛选，12 行）</b> → 跑 12 局 → 用 <code>_priest_death.py</code> 看负局最后感化目标是否已无远程兵、祭司死亡帧是否后移。<br><br>
+  这两条都<b>只加筛选、不换控制器</b>，改坏了删掉即回到原状，不动祭司的主循环结构。确认方向正确后再叠 P0b（兵力门槛）与 P2（复合弓优选）。
+</div>
+
+<p class="small">产物：本报告 <code>aoe3_optimize_directions_20260924.html</code>｜证据脚本 <code>_priest_death.py</code>｜原始日志 <code>cur1..cur12.{ait,jsonl}</code>｜跑批脚本 <code>cur_verify.sh</code>。</p>
+
+</div>
+</body>
+</html>

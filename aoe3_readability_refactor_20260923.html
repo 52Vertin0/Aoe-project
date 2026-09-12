@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>UsrAI 可读性重构 · 行为等价性验证（2026-09-23）</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--ink:#1c2024;--dim:#5b6570;--line:#e2e6ea;
+        --ok:#1a7f45;--okbg:#e8f6ee;--warn:#a34a00;--warnbg:#fff3e0;--bad:#b3261e;--badbg:#fdecea;
+        --code:#f2f4f6;--accent:#24507a;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 64px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:19px;margin:36px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+  h3{font-size:15.5px;margin:22px 0 8px;color:var(--accent)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  .verdict{border-left:5px solid var(--ok);background:var(--okbg)}
+  .verdict.bad{border-left-color:var(--warn);background:var(--warnbg)}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:20px;font-weight:700;
+       vertical-align:1px;margin-right:6px}
+  .t-ok{background:var(--okbg);color:var(--ok);border:1px solid #b6dcc7}
+  .t-warn{background:var(--warnbg);color:var(--warn);border:1px solid #f0cfa0}
+  .t-bad{background:var(--badbg);color:var(--bad);border:1px solid #f2c1bd}
+  .t-info{background:#eef3f8;color:var(--accent);border:1px solid #c8d8e6}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#eef1f4;font-weight:700;white-space:nowrap}
+  td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  code,pre{font-family:"Cascadia Mono",Consolas,"Courier New",monospace;font-size:12.8px}
+  code{background:var(--code);padding:1px 5px;border-radius:4px}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+      overflow-x:auto;line-height:1.6}
+  ul,ol{margin:8px 0 8px 1.2em;padding:0}
+  li{margin:4px 0}
+  .kpi{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
+  .kpi div{flex:1 1 150px;background:#fbfcfd;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  .kpi b{display:block;font-size:20px;color:var(--accent);font-variant-numeric:tabular-nums}
+  .kpi span{font-size:12.5px;color:var(--dim)}
+  .dim{color:var(--dim)}
+  .mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.8px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>UsrAI 可读性重构 · 行为等价性验证</h1>
+<div class="sub">2026-09-23 ｜ 权威源 <span class="mono">C:\new-aoe3.0.7g\UsrAI.cpp</span>
+｜基线 <span class="mono">5b4183b2</span>/6342 → 当前 <span class="mono">d4cf7cc3</span>/6389
+｜判据分级：L2（控制流重构）</div>
+
+<div class="card verdict">
+  <h2 style="margin-top:0;border:0;padding:0">结论</h2>
+  <ol style="margin-bottom:0">
+    <li><span class="tag t-ok">零行为变化</span><b>可读性重构本身已证等价</b>。抽出的 6 个辅助函数 + <code>countBuildings</code> 重载化 +
+        <code>isPositionFree</code> 改调用，经 <b>3 项独立证据</b>判定与重构前行为一致（逐条代数等价 / 全函数反汇编切片 / 调用点审计），
+        编译 <code>0 err · 17 warn</code>（与基线集合完全一致），实跑一局 41633 帧取胜。</li>
+    <li><span class="tag t-warn">需拍板</span><b>同批改动里混入 1 处「非可读性」的语义改动</b>：
+        <code>WAVE1_TIME 5000 → 6000</code>（第 9 行，09:20 落下）。该常量在 <b>12 处</b>参与阶段判定，
+        等于把「第一波之前」的所有时间闸整体推后 1000 帧（40 秒）。它<b>不属于</b>可读性范畴，请确认是有意对齐实测脉冲还是误改。</li>
+  </ol>
+</div>
+
+<h2>1 改动全集（基线 → 当前，共 6 处 hunk）</h2>
+<p>用<span class="mono">D:\deepseek\optimize_new_aoe_20260921\UsrAI_pre.cpp</span>（=<span class="mono">5b4183b2</span>/6342 行，
+与 MEMORY 记录的权威版逐字节一致）做基线逐行比对，改动面如下：</p>
+<table>
+  <tr><th>#</th><th>pre 行</th><th>内容</th><th>性质</th><th>判定</th></tr>
+  <tr><td>1</td><td class="n">9</td><td><code>WAVE1_TIME 5000 → 6000</code></td>
+      <td><span class="tag t-warn">语义</span></td><td>见 §6</td></tr>
+  <tr><td>2</td><td class="n">359</td><td><code>processData()</code> 首部插入 <code>[ENV]</code> 环境自证块（本次会话 09-23 所加）</td>
+      <td><span class="tag t-info">诊断</span></td><td>只打印一次，不改任何判据</td></tr>
+  <tr><td>3</td><td class="n">5264</td><td>新增 6 个辅助函数：<code>buildingFootprintSize</code> / <code>footprintsOverlap</code> /
+      <code>inBounds</code> / <code>isBlockedByBuildings</code> / <code>isBlockedByResources</code> / <code>countBuildings(4 参)</code></td>
+      <td><span class="tag t-ok">可读性</span></td><td>等价（§2）</td></tr>
+  <tr><td>4</td><td class="n">5412</td><td><code>countBuildings(int)</code> 与 <code>countBuildingsAll(int)</code> 改为转调 4 参重载（用三目参数区分口径）</td>
+      <td><span class="tag t-ok">可读性</span></td><td>等价（§2.2）</td></tr>
+  <tr><td>5</td><td class="n">5455</td><td><code>isPositionFree</code> 起手边界判断改调 <code>inBounds()</code></td>
+      <td><span class="tag t-ok">可读性</span></td><td>等价（§2.1）</td></tr>
+  <tr><td>6</td><td class="n">5471</td><td><code>isPositionFree</code> 三处内联三重循环（我方建筑 / 敌方建筑 / 资源）改调辅助函数</td>
+      <td><span class="tag t-ok">可读性</span></td><td>等价（§2.1）</td></tr>
+</table>
+<div class="kpi">
+  <div><b>0</b><span>error（两臂一致）</span></div>
+  <div><b>17 / 17</b><span>warning 集合完全一致</span></div>
+  <div><b>374,544</b><span>穷举用例，0 不一致</span></div>
+  <div><b>137</b><span>个函数机器码归一化后完全相同</span></div>
+  <div><b>41633</b><span>冒烟局帧数 · VICTORY</span></div>
+</div>
+
+<h2>2 逐 hunk 等价性证明</h2>
+
+<h3>2.1 <code>isPositionFree</code>（hunk 5+6）——代数等价 + 37.4 万例穷举</h3>
+<p>原实现是「把候选 footprint 外扩 <code>BUILD_GAP</code> 后逐格与建筑占格求交」，新实现改成标准 AABB 相交测试。
+两者都必须严格等价，含边界：</p>
+<pre>原（逐格三循环）:  ∃i,j :  i ∈ [dr−g, dr+size+g) ∩ [bdr, bdr+bSize)
+                          ∧ j ∈ [ur−g, ur+size+g) ∩ [bur, bur+bSize)
+
+新（footprintsOverlap）:
+   !( (dr−g)+(size+2g) ≤ bdr  ∨  bdr+bSize ≤ (dr−g)
+    ∨ (ur−g)+(size+2g) ≤ bur  ∨  bur+bSize ≤ (ur−g) )
+ =  dr+size+g &gt; bdr  ∧  bdr+bSize &gt; dr−g
+ ∧  ur+size+g &gt; bur  ∧  bur+bSize &gt; ur−g        ← 与原式逐项相同（半开区间 ⇒ 边界同为严格 &gt;）</pre>
+<table>
+  <tr><th>被抽出的判据</th><th>原式</th><th>新式</th><th>穷举结果</th></tr>
+  <tr><td><code>inBounds</code></td>
+      <td><code>!(dr&lt;0 ‖ ur&lt;0 ‖ dr+size&gt;MAP_L ‖ ur+size&gt;MAP_U)</code></td>
+      <td><code>dr&gt;=0 &amp;&amp; ur&gt;=0 &amp;&amp; dr+size&lt;=MAP_L &amp;&amp; ur+size&lt;=MAP_U</code></td>
+      <td class="n">578 例 / 0 不一致</td></tr>
+  <tr><td><code>isBlockedByBuildings</code></td>
+      <td>三重循环 + <code>bSize = (HOME‖ARROWTOWER)?2:3</code></td>
+      <td><code>buildingFootprintSize()</code> + <code>footprintsOverlap()</code></td>
+      <td class="n">374,544 例 / 0 不一致</td></tr>
+  <tr><td><code>isBlockedByResources</code></td>
+      <td><code>if (r.Cnt&lt;=0) continue;</code> 逐格比对 <code>i==r.BlockDR &amp;&amp; j==r.BlockUR</code></td>
+      <td>同式，仅返回值语义反转（命中 ⇒ <code>return true</code>）</td>
+      <td class="n">同式照搬</td></tr>
+</table>
+<p><b>求值顺序亦保持原样</b>：边界 → 地图非空 → 地形/高度 → <b>我方建筑 → 敌方建筑 → 资源</b> → 狮子规避。
+新代码把三处循环按<b>原顺序</b>依次替换为三个 <code>if (... ) return false;</code>，短路行为不变。</p>
+<p class="dim">穷举脚本按 <code>BUILD_GAP=1</code>、<code>MAP_L/U</code> 任意（边界式与地图尺寸无关）、
+建筑 footprint ∈ {2,3}、坐标域 −3…15 全覆盖枚举。命令见 §8。</p>
+
+<h3>2.2 <code>countBuildings</code> 重载化（hunk 4）——口径真值表</h3>
+<p>新签名为 <code>countBuildings(type, includePending, includeDead, countUnderConstruction)</code>，两个旧函数改成传不同参数：</p>
+<table>
+  <tr><th>旧函数</th><th>实际调用</th><th>展开后的过滤条件</th><th>与旧实现</th></tr>
+  <tr><td><code>countBuildings(type)</code></td><td><code>countBuildings(type, <b>false, true, false</b>)</code></td>
+      <td><code>Type==type</code> ∧ <code>Percent==100</code>（<code>includeDead=true</code> ⇒ 跳过死亡过滤；
+          <code>countUnderConstruction=false</code> ⇒ 只算已建成）</td>
+      <td><span class="tag t-ok">逐字等价</span> 旧式 = <code>Type==type &amp;&amp; Percent==100</code></td></tr>
+  <tr><td><code>countBuildingsAll(type)</code></td><td><code>countBuildings(type, <b>false, false, true</b>)</code></td>
+      <td><code>Type==type</code> ∧ <code>!deadBuildings.count(SN)</code>（不过滤百分比）</td>
+      <td><span class="tag t-ok">逐字等价</span> 旧式 = <code>Type==type &amp;&amp; !deadBuildings.count(SN)</code></td></tr>
+</table>
+<p class="dim">短路顺序也保持了原意：<code>includeDead=true</code> 时 <code>!includeDead &amp;&amp; ...</code> 直接短路，等价于「不做死亡检查」。</p>
+
+<h2>3 全函数反汇编切片比对（§3.7b L2 流程）</h2>
+<p>L2 重构会<b>合法地</b>改变 <code>.text</code>，因此不能用「代码段逐字节相同」判定。做法是：先造一个
+<b>只差这次重构</b>的对照臂，再用函数级指令序列比对把差异全部归因。</p>
+<pre>armA = UsrAI_pre.cpp(<b>5b4183b2</b>/6342)
+       + ① WAVE1_TIME 5000→6000  ② [ENV] 块      ⇒  ＿cmp/armA.cpp  <b>55ca62fe</b>/6358
+armB = 当前源码                                 ⇒  UsrAI.cpp      <b>d4cf7cc3</b>/6389
+diff: 仅 4 处 hunk（26 删 / 57 增），全部落在这次重构范围内  ✔ 差异可归因
+
+同参数编译（Makefile.Release 原样 -O2 -std=gnu++1y …）：
+  g++ … -o _cmp/armA.o _cmp/armA.cpp      → rc=0
+  g++ … -o _cmp/armB.o UsrAI.cpp          → rc=0</pre>
+<p>比对时做了两项抗噪归一化：<b>①</b> 跳转/调用指令的<b>目标地址</b>一律换成「目标符号名」（代码整体后移 368 字节不再产生假警报）；
+<b>②</b> 函数体范围按 nm 的 addr 钳到「下一个函数符号的 addr」（否则 objdump 会把后续函数吞进来）。
+<code>nop</code>（对齐填充）单独剔除。</p>
+<table>
+  <tr><th>结果</th><th class="n">数量</th><th>说明</th></tr>
+  <tr><td>归一化后指令序列<b>完全相同</b></td><td class="n">137</td><td>无关函数未受影响</td></tr>
+  <tr><td>不同</td><td class="n">17</td><td>见下方逐类归因，<b>全部可解释</b></td></tr>
+  <tr><td>函数符号总数 A / B</td><td class="n">245 / 251</td><td>差 6 = 新增的 6 个辅助函数</td></tr>
+</table>
+<h3>17 个「不同」的逐类归因</h3>
+<table>
+  <tr><th>类别</th><th>符号</th><th>为什么合理</th></tr>
+  <tr><td rowspan="2"><b>A. 新增符号</b></td>
+      <td><code>countBuildingsEibbb</code>(272B)、<code>footprintsOverlap</code>(64B)、
+          <code>buildingFootprintSize</code>(32B)、<code>inBounds</code>(80B)、
+          <code>isBlockedByBuildings</code>(160B)、<code>isBlockedByResources</code>(128B)</td>
+      <td>抽出来的函数体（gcc 未内联，成了真实函数）</td></tr>
+  <tr><td colspan="2" class="dim">6 个新函数合计 736 B，与 <code>.text</code> 净增 368 B（736 − 被改函数的缩减 368）相符</td></tr>
+  <tr><td rowspan="3"><b>B. 被改写函数变小</b></td>
+      <td><code>countBuildings(int)</code> 30 → 10 条指令</td><td>变成「准备 3 个 bool 参数 + 转调 4 参版」</td></tr>
+  <tr><td><code>countBuildingsAll(int)</code> 55 → 10 条指令</td><td>同上</td></tr>
+  <tr><td><code>isPositionFree</code> 419 → 347 条指令</td><td>三处内联循环被外提成函数调用</td></tr>
+  <tr><td rowspan="5"><b>C. 调用方</b><br>（<b>1 参 → 4 参</b>的栈参数准备）</td>
+      <td><code>manageBuildings</code>：<code>+5×call countBuildings(4参)</code>、<code>+21×movl $K,OFF(%rip)</code></td>
+      <td>原来直接调 1 参版，现需把 3 个 bool 压栈</td></tr>
+  <tr><td><code>assignIdleSimple</code>：<code>+1×call countBuildings(4参)</code></td><td>同上</td></tr>
+  <tr><td><code>assignIdleFarmers</code>：<code>+2×call countBuildings(4参)</code></td><td>同上</td></tr>
+  <tr><td><code>manageBuildings</code> 的 <code>lambda#5</code> / <code>lambda#7</code>：各 <code>+1</code></td><td>同上</td></tr>
+  <tr><td class="dim">另 <code>manageBuildings</code> 有若干内联决策变化（<code>tryBuild</code>/<code>countBuildingsExisting</code>/<code>manageEconomy</code>
+      在 B 臂被内联进来、一个旧 lambda 被内联掉）—— 纯代码生成余波</td><td class="dim">不影响语义</td></tr>
+  <tr><td><b>D. 重编号 / 标签噪声</b></td>
+      <td><code>managePriest</code>、<code>isSiteReachable</code>、<code>manageLionDefense</code>、<code>manageTechUpgrade</code>、
+          <code>__ZSt16__insertion_sort…</code>、<code>__ZSt25__unguarded_linear_insert…</code>、<code>findFarmSiteBest</code></td>
+      <td>差异<b>仅</b>为 <code>.constprop.N</code>/<code>.isra.N</code>/<code>.part.N</code> 编号位移，
+          以及 objdump 把一个无符号名的局部 <code>call</code> 归因到了外层函数符号</td></tr>
+</table>
+<p><b>关键推理</b>：diff 已证明<b>除这 4 处 hunk 外没有任何函数的源码发生改变</b>。
+因此那些函数的机器码差异只可能来自「新签名」的代码生成余波（栈参数 + 内联决策），
+不可能是逻辑改变 —— 唯一可能存在语义差异的位置就是这 4 处 hunk，而它们已在 §2 逐条证等价。</p>
+
+<h2>4 调用点审计</h2>
+<p>把每个函数内的 <code>call</code> 目标多重集抽出来对比（抹掉 <code>.constprop/.isra/.part</code> 编号），确认<b>没有任何函数新增判据或分支</b>：</p>
+<table>
+  <tr><th>新增辅助函数</th><th>被谁调用（B 臂）</th><th>是否符合预期</th></tr>
+  <tr><td><code>countBuildings(4 参)</code></td>
+      <td class="mono">manageBuildings ×5 ｜ assignIdleSimple ×1 ｜ assignIdleFarmers ×2 ｜
+          manageBuildings::lambda#5 ×1 ｜ lambda#7 ×1 ｜ countBuildings(int) ×1 ｜ countBuildingsAll(int) ×1</td>
+      <td><span class="tag t-ok">是</span>每个原 <code>countBuildings*(1 参)</code> 调用点一一对应</td></tr>
+  <tr><td><code>inBounds</code></td><td class="mono">isPositionFree ×1</td><td><span class="tag t-ok">是</span>仅该处</td></tr>
+  <tr><td><code>isBlockedByBuildings</code></td>
+      <td class="mono">isPositionFree ×2（info.buildings + info.enemy_buildings）</td>
+      <td><span class="tag t-ok">是</span>对应原来两处内联循环</td></tr>
+  <tr><td><code>isBlockedByResources</code></td>
+      <td class="mono">无显式调用 —— 被 gcc 内联回 isPositionFree</td>
+      <td><span class="tag t-ok">是</span>符号仍存在，语义路径不变</td></tr>
+</table>
+
+<h2>5 编译与警告</h2>
+<table>
+  <tr><th>检查</th><th>结果</th></tr>
+  <tr><td><code>syn.py UsrAI.cpp</code>（-fsyntax-only -Wall -Wextra）</td><td><code>rc=0 · 0 err · 17 warn</code> <span class="tag t-ok">通过</span></td></tr>
+  <tr><td><code>warn_cmp2.py _cmp/armA.cpp UsrAI.cpp</code>（按<b>类别</b>比 warning 集合）</td>
+      <td>BASE 17 / NOW 17，<b>唯一差异是临时文件名</b>（<code>tmp_wb.cpp</code> vs <code>tmp_wn.cpp</code>） <span class="tag t-ok">一致</span></td></tr>
+  <tr><td><code>build.py</code>（Release 增量）</td><td><code>rc=0 · errors=0</code>，<code>release/UsrAI.o</code> 与 <code>release/newAOE.exe</code> 均 09:27:32 &gt; <code>UsrAI.cpp</code> 09:20:03 <span class="tag t-ok">真重链</span></td></tr>
+  <tr><td><code>chk_src.py</code>（字节级体检）</td><td>UTF-8 / 统一 CRLF / 0 三元字 / <code>\r\r\n</code>=0 <span class="tag t-ok">干净</span></td></tr>
+</table>
+
+<h2>6 ⚠ <code>WAVE1_TIME 5000 → 6000</code>：不属于可读性，需拍板</h2>
+<p>该常量在源码里被 <b>12 处</b>引用，且全部是<b>时间阶段闸</b>：</p>
+<pre>第 527-528 行  if (frame &gt; WAVE1_TIME &amp;&amp; state == EARLY_ECONOMY) → 退出早期经济态
+第 578-580 行  if (frame &gt; WAVE1_TIME + 3500) / + 6000          → 第一波防御兜底
+第 602 行      if (frame &gt;= WAVE1_TIME &amp;&amp; !wave1Started)        → 波次记账
+第 1539-1541   preW1 / postW1 / postW2 三段分段判据
+第 3475 行     TOOL_AGE_ARMY_TARGET = (frame &gt;= WAVE1_TIME) ? 6 : 2  → 兵力目标 2→6
+共 12 处（含注释引用）</pre>
+<table>
+  <tr><th>疑点</th><th>说明</th></tr>
+  <tr><td>落点时间</td><td>文件 mtime <b>09:20:03</b>，在我本轮第一次核对（09:19，当时与 09:14 备份 0 差异）<b>之后</b> ⇒ 是一次独立编辑，不是重构的一部分</td></tr>
+  <tr><td>影响面</td><td>把「第一波之前」的全部时间闸整体推后 1000 帧 = <b>40 秒</b>；直接改变 3 处判据：退出早期经济、第一波防御兜底、方阵兵目标值 2→6 的切换时点</td></tr>
+  <tr><td>可能的动机</td><td>实测第一波脉冲出现在 <b>6001</b> 帧（<code>WAVE1_TIME=5000</code> 时代）⇒ 把 5000 改成 6000 恰好「对齐实测脉冲」。
+      但同一组常量里 <code>WAVE2/3</code> 的实测脉冲是 13501 / 21001，与 <code>13500/21000</code> 只差 1 帧，
+      唯独 WAVE1 差 1000 ⇒ 这个 +1000 更像是本图/本脚本的启动延迟，改成 6000 之后脉冲是否会跟着变成 7001，<b>需一局实测确认</b>。</td></tr>
+</table>
+<p><b>请拍板</b>：① 有意调参（那我按新基线继续）；② 误改（我回滚该行，恢复 5000）。
+无论哪条，<b>本轮的可读性重构结论都不受影响</b>——两者互不耦合（已由 armA 隔离证明）。</p>
+
+<h2>7 附带观察（非行为变化，供后续清理参考）</h2>
+<ul>
+  <li><code>countBuildings(type, bool, bool, bool)</code> 的 <code>includePending</code> 分支目前<b>零消费点</b>
+      （两个旧入口都传 <code>false</code>，全文件无 <code>countBuildings(x, true, …)</code> 调用）。
+      该语义已由 <code>countBuildingsExisting()</code> 覆盖 ⇒ 是个<b>永不被执行的新分支</b>。
+      不影响行为，但属于「新写死代码」，建议二选一：删掉该参数，或保留并在注释里标明「为后续合并 countBuildingsExisting 预留」。</li>
+  <li><code>countBuildingsAll(int)</code> 全文件<b>仅 1 处调用</b>（第 1531 行 <code>houseCount</code>）。
+      它现在只是 4 参版的一个 10 指令转发器。</li>
+  <li>第 6 个 hunk 的注释「建筑间距检查：候选 footprint 外扩 BUILD_GAP 格内不得与任何建筑相交(含边界)」中，
+      「<b>含边界</b>」与实现不符：新实现（与原实现一致）在<b>恰好贴边</b>时不算相交（半开区间，严格 <code>&gt;</code>）。
+      属注释与代码的老口径不一致（非本轮引入），可顺手修正措辞。</li>
+</ul>
+
+<h2>8 复现命令</h2>
+<pre># 1) 造只差这次重构的对照臂
+python _cmp/mkarmA.py                                   # pre + WAVE1=6000 + [ENV] → _cmp/armA.cpp
+diff &lt;(tr -d '\r' &lt; _cmp/armA.cpp) &lt;(tr -d '\r' &lt; UsrAI.cpp)   # 应只剩 4 处 hunk
+
+# 2) 同参数编译两臂（参数取自 Makefile.Release -n -B）
+FLAGS='-c -O2 -std=gnu++1y -Wextra -Wall -W … -o'
+g++ $FLAGS _cmp/armA.o _cmp/armA.cpp ; g++ $FLAGS _cmp/armB.o UsrAI.cpp
+
+# 3) 全函数反汇编切片比对（已抗地址平移 + 抹 clone 重编号）
+python _cmp/allfn_cmp2.py  _cmp/armA.o _cmp/armB.o
+python _cmp/callsites_cmp.py _cmp/armA.o _cmp/armB.o
+
+# 4) 编译与警告
+python syn.py UsrAI.cpp ; python warn_cmp2.py _cmp/armA.cpp UsrAI.cpp ; python build.py
+
+# 5) 跑局（PATH 必须同时含 Qt bin 与 mingw bin，否则静默不产出日志）
+export PATH="/d/360Downloads/5.9.2/mingw53_32/bin:/d/360Downloads/Tools/mingw530_32/bin:$PATH"
+QT_QPA_PLATFORM=offscreen ./release/newAOE.exe -exam -offscreen -freq MAX -map map3.njust \
+    -rotate 90 -ResultLogFile rf1.jsonl -AITextLog rf1.ait</pre>
+
+</div></body></html>

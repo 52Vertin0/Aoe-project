@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AoE3 · 双会话合并状态（dsh × WorkBuddy）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1c1f23; --sub:#5b6472; --line:#e3e6ea;
+    --red:#c0392b; --green:#1e8e5a; --blue:#1f6feb; --amber:#b7791f; --purple:#6b46c1;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",Helvetica,Arial,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--sub);font-size:13px;margin-bottom:22px}
+  h2{font-size:17px;margin:30px 0 12px;padding-left:10px;border-left:4px solid var(--blue)}
+  h3{font-size:14px;margin:18px 0 8px;color:#2b3138}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:12px 0;
+    box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  .alert{border-left:5px solid var(--red);background:#fdf3f2}
+  .ok{border-left:5px solid var(--green);background:#f1faf5}
+  .warn{border-left:5px solid var(--amber);background:#fdfaf1}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}
+  th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left}
+  th{background:#f0f2f5;font-weight:600;color:#39414b}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .up{color:var(--red);font-weight:600}   /* 涨=红 */
+  .down{color:var(--green);font-weight:600}
+  code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .kpi .v{font-size:26px;font-weight:700;letter-spacing:-.5px}
+  .kpi .k{color:var(--sub);font-size:12px;margin-top:2px}
+  ul{margin:6px 0 6px 20px;padding:0}
+  li{margin:4px 0}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);
+    background:#f0f2f5;color:#39414b;margin-right:6px}
+  .tiny{font-size:12px;color:var(--sub)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>AoE3 · 双会话合并状态</h1>
+  <div class="sub">
+    dsh 会话 <code>4972ed3e</code>（<code>D:\deepseek</code>）× 本会话 WorkBuddy —— 同项目、同目录
+    <code>C:\new-aoe3.0.7g</code>，2026-10-07 19:00 → 10-08 01:00 并行修改同一份 <code>UsrAI.cpp</code>。
+    <br>生成时间：2026-10-08 08:56（磁盘实勘，无 agent 在跑）
+  </div>
+
+  <div class="card alert">
+    <h3 style="margin-top:0">⚠ 一、必须先知道的事实：两个 agent 抢过同一个文件</h3>
+    <p style="margin:6px 0">
+      23:20 左右 <b>WorkBuddy（本会话）把「复合弓兵版」覆盖进了 <code>UsrAI.cpp</code></b>。
+      铁证：备份链里 <code>_pre_farm6</code>(23:14) 还是 <code>AT_CHARIOT_ARCHER</code>，
+      <code>_pre_clubsuicide</code>(23:38) 已变成 <code>AT_COMPOSITE_BOWMAN</code>。
+    </p>
+    <ul>
+      <li>⇒ dsh 的 <b>farm6 / cs3 / 人口满(sf1) 四批跑在错误基线上，结论作废</b>（含「棍棒兵自毁更差」「人口满即反攻更差」）。</li>
+      <li>污染版已存证：<code>UsrAI.cpp.bak_20261008_overwritten_by_composite</code>(482418 B)。</li>
+      <li>后果不止数据：残留 <code>newAOE.exe</code> 进程锁文件 ⇒ dsh 侧<b>编译静默失败 3 次</b>。</li>
+      <li><b>纪律</b>：同目录禁止双 agent 并行改/编。动手前查 <code>ps | grep newAOE</code> ＋ <code>ls --time-style=full-iso</code>。</li>
+    </ul>
+  </div>
+
+  <h2>二、dsh 的验证链（map.njust，各 48 局；口径＝我方 outcome 定义）</h2>
+  <table>
+    <thead><tr><th>批次</th><th>内容</th><th class="num">胜</th><th class="num">祭死</th><th class="num">未决</th><th class="num">胜率</th><th>备注</th></tr></thead>
+    <tbody>
+      <tr><td><code>armypush24</code></td><td>dsh 接手前（=WorkBuddy 的版本）</td><td class="num">13</td><td class="num">24</td><td class="num">11</td><td class="num">27.1%</td><td class="tiny">基线</td></tr>
+      <tr><td><code>gg1</code></td><td>+ 集结闸</td><td class="num">15</td><td class="num">21</td><td class="num">12</td><td class="num">31.2%</td><td class="tiny">p=1.0 不显著</td></tr>
+      <tr><td><code>ca1</code></td><td>+ 战车弓兵 · <b>单换</b></td><td class="num">13</td><td class="num">17</td><td class="num">18</td><td class="num">27.1%</td><td><span class="tag">★单换无效</span>祭死↓但未决↑</td></tr>
+      <tr><td><code>wb1</code></td><td>+ 木材经济提档</td><td class="num">19</td><td class="num">25</td><td class="num">4</td><td class="num">39.6%</td><td>未决 18→4 (p=0.001)</td></tr>
+      <tr><td><code>pe1</code></td><td>+ 祭司卫队闸 · <b>卡推进</b></td><td class="num">12</td><td class="num">9</td><td class="num">27</td><td class="num">25.0%</td><td><span class="tag">反面教材</span>把祭司按住了</td></tr>
+      <tr class="ok"><td><code>pe2</code>+<code>pe5</code></td><td>+ 祭司卫队闸 · <b>只卡施法</b>（96 局）</td><td class="num">48</td><td class="num">24</td><td class="num">24</td><td class="num"><b>50.0%</b></td><td><b>定版</b>；vs 接手前 p=0.0087</td></tr>
+    </tbody>
+  </table>
+  <div class="card warn">
+    <b>两条可直接复用的结论</b>
+    <ul>
+      <li><b>「战车弓兵换复合弓兵」= 单换不提高胜率</b>（ca1 与基线都 27.1%）；<b>必须配木材提档</b>才有效（39.6%→50%）。⇒ 本会话先前那个 A/B 已被这条数据回答，不必再跑。</li>
+      <li><b>祭司卫队闸的正确形态 = 只卡「施法」</b>（感化武器厂有 400 帧静默期，那才是真活靶窗口），<b>不卡「推进」</b>；卡推进＝按住祭司到不了终点（pe1 掉到 25%）。</li>
+    </ul>
+  </div>
+
+  <h2>三、当前磁盘状态（08:56 实勘）</h2>
+  <div class="grid">
+    <div class="kpi"><div class="v">0565ef20</div><div class="k">UsrAI.cpp md5 · 481462 B · 00:32:57</div></div>
+    <div class="kpi"><div class="v">战车弓</div><div class="k">MAIN_RANGED_SORT = AT_CHARIOT_ARCHER</div></div>
+    <div class="kpi"><div class="v">50.0%</div><div class="k">map.njust 96 局最好验证点（pe2）</div></div>
+    <div class="kpi"><div class="v">64.6%</div><div class="k">四图合计（pe4，各 12 局）</div></div>
+  </div>
+  <table>
+    <tbody>
+      <tr><th style="width:34%">关键常量</th><td><code>MAX_FARMS 10</code> · <code>EARLY_CLUBMAN_TARGET 8</code> · <code>PRIEST_WITH_ARMY_LEAD 12.0</code> · <code>ARMY_SIEGE_PROTECT_RADIUS 24.0</code></td></tr>
+      <tr><th>本轮新补丁</th><td>第二仓库优先：<code>SECOND_STOCK_FRAME</code>(4) + <code>farmYieldToStock</code>(3) —— <code>sf2</code> 16 局 = 50.0%，<b>没打坏胜率，但也没加快（卡的是木，150 木）</b></td></tr>
+      <tr><th>exe</th><td><code>release/newAOE.exe</code> @00:33:25</td></tr>
+      <tr><th>正确回退锚</th><td><code>UsrAI.cpp.bak_20261007_pre_vanguardfix</code>（= 96 局 50.0% 的 pe2）<br>
+        <span class="tiny">⚠ <code>_pre_farm6</code>/<code>_pre_clubsuicide</code>/<code>_pre_popfull</code>/<code>_pre_stockfirst</code> 均受复合弓覆盖污染，慎用</span></td></tr>
+    </tbody>
+  </table>
+
+  <h2>四、已证否 —— 别再走</h2>
+  <div class="card">
+    <span class="tag">打猎优先 / 打猎开闸</span>首杀仍在 6 分，孤猎被羚羊放风筝（hunt3 反而更差）
+    <br><span class="tag">农场上限 6 / 8</span>45.8% 中立偏弱
+    <br><span class="tag">农民自毁</span>25.0%
+    <br><span class="tag">棍棒兵自毁 · 人口满即反攻</span>在<b>错误基线</b>上测的，结论作废、需重测
+  </div>
+
+  <h2>五、真实结构性瓶颈（一次没动过）</h2>
+  <div class="card alert">
+    <ul>
+      <li><b>升铜中位 12.9 分</b>（f=19387），文档满分路线 6~7 分。成因：铜器前农民目标 16 人 ≈ 吃掉 800 食升铜费（<code>tryStartBronzeUpgrade</code> 只需 <code>food≥800</code> + 已建 2 座）。</li>
+      <li><b>侦察太晚</b>：敌基地中位 <b>24.5 分</b>才发现，而反攻 22:00 已开打。</li>
+    </ul>
+    <p style="margin:6px 0"><b>OJ 实败证据</b>（engine v3.0.7h，附件 <code>debug_14448…log</code>）：12:45 升铜 → 22:00 反攻 → <b>24:45 才发现敌基地 → 27:11 才发现武器厂</b> → 30:00 超时，<b>最终得分 524</b>。</p>
+  </div>
+
+  <h2>六、未完成的两条主线（dsh 交接，按性价比）</h2>
+  <div class="card">
+    <h3 style="margin-top:0">① 木材瓶颈（第二仓库 150 木 vs 伐木工只有 4 人）</h3>
+    <p class="tiny">第二仓库下单中位 11.3 分，而时机闸已提前到 4.7 分 ⇒ <b>卡的是木，不是时机</b>。改法：<b>有远距羚羊群时</b>把伐木工目标提到 8~10（复用 dsh 已加的 <code>WOOD_BOOM</code>，触发条件改「有远距群」而非「铜器后」）。</p>
+    <h3>② 升铜 12.9 → 8 分（铜器前农民目标 16 → 12）</h3>
+    <p class="tiny">唯一能<b>同时</b>改善「开打时机」与「兵力规模」的结构性杠杆。文档满分路线：6~7 分升铜、11~12 分开打、14 分内取胜。</p>
+  </div>
+
+</div>
+</body>
+</html>

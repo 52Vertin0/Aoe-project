@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AOE3 UsrAI · OJ 崩溃第二次复发 → 零拷贝快照改造（2026-09-27）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#ffffff; --ink:#1a1d21; --ink2:#4a5057; --ink3:#767d86;
+    --line:#e3e6ea; --accent:#b4232a; --accent-bg:#fdf2f2;
+    --ok:#1a7f37; --ok-bg:#eef8f0; --warn:#9a6700; --warn-bg:#fff8e6;
+    --code-bg:#f2f4f6; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.72 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:980px;margin:0 auto;padding:40px 26px 72px}
+  h1{font-size:25px;line-height:1.35;margin:0 0 8px;letter-spacing:-.2px}
+  .sub{color:var(--ink3);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:18.5px;margin:36px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--line);letter-spacing:-.1px}
+  h3{font-size:15.5px;margin:22px 0 8px;color:var(--ink2)}
+  p{margin:9px 0}
+  code{font-family:var(--mono);font-size:12.8px;background:var(--code-bg);padding:1.5px 5px;border-radius:4px}
+  pre{background:#1f2329;color:#e6e9ed;padding:14px 16px;border-radius:8px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.6px;line-height:1.6;margin:12px 0}
+  pre .c{color:#8b949e}
+  pre .k{color:#ffa657}
+  pre .s{color:#a5d6ff}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.6px;background:var(--panel);
+    border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafbfc;font-weight:600;color:var(--ink2);font-size:12.8px;letter-spacing:.2px}
+  tr:last-child td{border-bottom:none}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:16px 0}
+  .box.bad{border-left:4px solid var(--accent);background:var(--accent-bg)}
+  .box.good{border-left:4px solid var(--ok);background:var(--ok-bg)}
+  .box.warn{border-left:4px solid var(--warn);background:var(--warn-bg)}
+  .box h3{margin-top:0}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13.6px}
+  .kv b{color:var(--ink2);font-weight:600;white-space:nowrap}
+  .mono{font-family:var(--mono);font-size:12.6px}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:5px 0}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:20px;
+    background:#eef1f4;color:var(--ink2);margin-right:6px;vertical-align:1px}
+  .tag.ok{background:var(--ok-bg);color:var(--ok)}
+  .tag.bad{background:var(--accent-bg);color:var(--accent)}
+  .tag.warn{background:var(--warn-bg);color:var(--warn)}
+  .strike{text-decoration:line-through;color:var(--ink3)}
+  .num{font-family:var(--mono);font-weight:600}
+  footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OJ 崩溃第二次复发 → 零拷贝快照改造</h1>
+<div class="sub">AOE3 UsrAI · 2026-09-27 17:0x · <code>UsrAI.cpp 1aecc386·6891</code> / <code>UsrAI.h 1f9c61872·442</code></div>
+
+<div class="box bad">
+<h3><span class="tag bad">结论</span>加固"换线程"能解决第一次崩溃，但解决不了同一个目标对象</h3>
+<p>第二次 backtrace 的崩溃点从 <code>processData</code> 挪到了 <code>refreshSnapshot</code>，<strong>但函数栈末端完全相同</strong> —— 都是往同一个成员做 <code>vector&lt;tagBuilding&gt;</code> 深拷贝。
+两次崩溃<strong>源不同、目标相同</strong> ⇒ 根因是"<strong>这个目标的缓冲不可信</strong>"，与"谁在写源"无关。所以本次把该成员从「值 + 反复深拷贝」改为「<code>shared_ptr</code> 直达、全程零拷贝」，让这条崩溃路径<strong>在结构上消失</strong>。</p>
+</div>
+
+<h2>一、两次崩溃的对比 —— 决定性判据</h2>
+
+<table>
+<thead><tr><th>#</th><th>提交版本</th><th>崩溃帧（UsrAI.cpp）</th><th>该行实际内容</th><th>源（<code>other</code>）来自</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>bb6cd60e</code>·6718<br>无加固</td><td><code>processData:428</code></td><td class="mono">info = tagUsrGame.getInfo();</td><td>引擎 <code>getInfo()</code> 的返回值</td></tr>
+<tr><td>2</td><td><code>17696b0c</code>·6868<br>非阻塞加固</td><td><code>refreshSnapshot:501</code></td><td class="mono">dst = *fresh;</td><td>主线程 <code>new tagInfo(...)</code> 的独立对象</td></tr>
+</tbody>
+</table>
+
+<p><strong>两个源毫无关系，但崩溃的<code>tagInfo::operator=</code> 的 <code>this</code> 两次都是同一个地址</strong>（<code>UsrAI</code> 对象 <code>+0x58</code>）：</p>
+
+<pre><span class="c"># 第一次：UsrAI::processData(this=0x616037951ff0) → tagInfo::operator=(this=0x616037952048)  差 0x58</span>
+<span class="c"># 第二次：UsrAI::refreshSnapshot(this=0x58aa73cefea0) → tagInfo::operator=(this=0x58aa73cefef8) 差 0x58</span>
+<span class="k">⇒ AI 基类成员尺寸之和恰为 88 字节 = 0x58</span>，故该成员是派生类第一个成员、紧贴基类，偏移自洽。
+<span class="k">⇒ 目标恒为 UsrAI::info；源换了也没用 ⇒ 不是"读源竞争"，是"写目标"。</span></pre>
+
+<div class="box">
+<h3>行号逐字对齐 —— 同时确认了评测机跑的就是我们提交的文件</h3>
+<div class="kv">
+<b>428 行</b><span class="mono">bak_20260927_1545_pre_snaprestore_UsrAI.cpp:428 → info = tagUsrGame.getInfo();</span>
+<b>501 行</b><span class="mono">bak_20260927_snapnonblock_UsrAI.cpp:501 → dst = *fresh;</span>
+</div>
+<p>两个版本、两个行号都与 backtrace 逐字吻合 ⇒ 排除"代码没编进去 / 交错文件"，也钉死了<strong>崩的是哪一版</strong>（避免在错误版本上归因）。</p>
+</div>
+
+<h2>二、逐条排除的嫌疑（全部否掉）</h2>
+
+<table>
+<thead><tr><th>嫌疑</th><th>检验</th><th>结论</th></tr></thead>
+<tbody>
+<tr><td>外部有人写 <code>info</code></td><td><code>grep '->info'</code> 在 UsrAI.cpp 之外全部为空</td><td><span class="tag ok">排除</span>仅 AI 线程自用</td></tr>
+<tr><td>自身越界写</td><td>UsrAI.cpp 内 <code>memcpy/memset/strcpy</code> 计数 = 0</td><td><span class="tag ok">排除</span></td></tr>
+<tr><td>delete 竞态（派生类成员先释放、线程仍在跑）</td><td><code>MainWidget::~MainWidget()</code> 是 <code>stopProcessing()</code>+<code>wait()</code> 在 <code>delete</code> <strong>之前</strong></td><td><span class="tag ok">排除</span>顺序正确</td></tr>
+<tr><td>简单数据竞争（读写同一缓冲）</td><td><code>tagGame</code> 的 <code>QMutex Locker</code> 与 <code>tryLock()</code> 是<strong>同一把锁</strong>，<code>infoShare()</code> 受 MainWidget 双锁保护</td><td><span class="tag ok">排除</span></td></tr>
+<tr><td>代码里误改 <code>info</code></td><td><code>infoPtr-></code> <strong>全程只读</strong>（无赋值 / clear / push_back）</td><td><span class="tag ok">排除</span></td></tr>
+<tr><td>评测机 <code>NOWPLAYER&gt;2</code> 导致 Buffer 越界</td><td>见下节复现实验</td><td><span class="tag warn">已排除为本次原因</span></td></tr>
+</tbody>
+</table>
+
+<p class="mono" style="color:var(--ink3)">⇒ 具体写者<strong>未定位</strong>，但"目标缓冲不可信"已由两次独立崩溃锁定。</p>
+
+<h2>三、修法：零拷贝快照</h2>
+
+<h3>1. 数据结构改造（核心）</h3>
+<pre><span class="c">// UsrAI.h —— 原： tagInfo info;   （值成员，被反复深拷贝）</span>
+std::shared_ptr&lt;tagInfo&gt; infoPtr;   <span class="c">// ★ 快照由主线程 new、AI 线程独占持有</span>
+
+<span class="c">// UsrAI.cpp refreshSnapshot()：三处深拷贝全部换成只换指针</span>
+- dst = *fresh;              <span class="c">// 写旧缓冲 ⇒ 崩溃点</span>
++ infoPtr = fresh;           <span class="c">// O(1)，引用计数原子 +1</span>
+- std::shared_ptr&lt;tagInfo&gt; cached = st.lastGood;  dst = *cached;
++ if (infoPtr) { st.reuseCount++; return true; }  <span class="c">// 沿用上一帧，连指针都不换</span></pre>
+<p>访问方式：<code>info.xxx</code> → <code>infoPtr-&gt;xxx</code>，共 <strong>400 处</strong>按 <code>\binfo\.</code> 词边界脚本替换。改前已验证四项、零误伤：无 <code>-&gt;info.</code>、无字符串字面量、无同名局部变量、无前缀粘连（<code>[A-Za-z_0-9]*info.</code> 计数全是裸 <code>info.</code>）。</p>
+
+<h3>2. 完整性哨兵（配套防线）</h3>
+<pre>static bool snapshotLooksSane(const tagInfo&amp; t) {   <span class="c">// 全 O(1)：只做指针相减，不解引用任何元素 ⇒ 自身绝不能崩</span>
+    const size_t LIM = 20000;
+    return t.buildings.size()       &lt;= LIM &amp;&amp; t.farmers.size()         &lt;= LIM
+        &amp;&amp; t.armies.size()          &lt;= LIM &amp;&amp; t.enemy_buildings.size() &lt;= LIM
+        &amp;&amp; t.enemy_farmers.size()   &lt;= LIM &amp;&amp; t.enemy_armies.size()    &lt;= LIM
+        &amp;&amp; t.resources.size()       &lt;= LIM &amp;&amp; t.exploredUpdate.size()  &lt;= LIM * 8;
+}</pre>
+<p>在 <code>event()</code> <strong>发布前</strong>检查；不合理则丢弃本次、AI 沿用上一帧（最坏钝 1 帧）、累计 <code>badSnapCount</code>。被踩坏的数据典型特征就是 <code>size()</code> 变天文数字 —— 不拦的话后续任何迭代/深拷贝立刻 SIGSEGV。</p>
+
+<h3>3. 防御层</h3>
+<pre>~UsrAI() { stopThread = true; condition.wakeAll(); wait(); }   <span class="c">// 派生类侧先停线程（~AI() 的 wait 太晚）</span></pre>
+
+<h2>四、验证</h2>
+
+<table>
+<thead><tr><th>项</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>语法（7g / 7h）</td><td><span class="num">rc=0 · 0 error · 16 warning</span>（与改动前同口径）</td></tr>
+<tr><td>编译</td><td>7g exe 16:48:43 ｜ 7h exe 17:02:57，均 <span class="num">0 error</span></td></tr>
+<tr><td>行为回归（map2）</td><td><strong>v1+v2 共 36 局：25 胜 / 10 负 / 1 未决 = 69.4%</strong> —— 与非阻塞加固版 <code>u1+u2</code>（36 局 69.4%）<strong>完全一致 ⇒ 零回归</strong></td></tr>
+<tr><td>机制自证</td><td class="mono">[SNAP f=39000] main=19513 reuse=19513 wait=1 skip=0 fb=0 bad=0</td></tr>
+<tr><td>7h 冒烟</td><td>4 局 <code>exit=0</code> 全通过（3 胜 1 负）</td></tr>
+<tr><td>exe 指纹</td><td>命中 <code>bad=%7</code>、<code>SNAP f=%1</code> ⇒ 新代码确已编入</td></tr>
+</tbody>
+</table>
+
+<p><code>wait=1</code>（仅开局等过一次）、<code>skip=0</code>（从不卡住）、<code>main:reuse ≈ 1:1</code>（每 2 帧一份新数据，滞后 40ms 游戏时间）⇒ 机制健康。</p>
+
+<h2>五、两个重大副产品（都影响后续诊断方式）</h2>
+
+<div class="box warn">
+<h3>① <code>-exam</code> 模式下 <code>DebugText</code> 全部被丢弃 —— 自证日志在评测机上读不到</h3>
+<pre><span class="c">// GlobalVariate.cpp:510</span>
+void call_debugText(QString color, QString content, int playerID) {
+    if( <span class="k">!IsExamining</span> &amp;&amp; ( ... ) ) {     <span class="c">// ← exam 模式下整个分支不执行</span>
+        debugMassagePackage.push(...);
+    }
+}</pre>
+<p><strong>⇒ 我们埋的 <code>[ENV]</code> / <code>[SNAP]</code> / <code>[DIRTY-SNAP]</code> 在 OJ 上一条都看不到</strong>（所以此前只能拿到 backtrace、拿不到日志）。哨兵逻辑本身仍有效（能防崩），但计数读不到。本机之所以有 ait，是靠 7g 额外的 <code>-AITextLog</code> + <code>aiTextLog_write</code> 通道。</p>
+</div>
+
+<div class="box warn">
+<h3>② <code>NOWPLAYER≥3</code> 时本机必崩（已复现）—— 但<strong>不是</strong>本次原因</h3>
+<p>把 7h 的 <code>config.json</code> 的 <code>NOWPLAYER</code> 由 2 改成 3，跑 4 局：<strong>4/4 SIGSEGV（exit=139）、jsonl 仅 86 字节 ≈ 第 1 帧就死</strong>。
+机理 = 7h 的 <code>Core.cpp:7-8</code> 仍是 <code>tagInfo Buffer0[2]; Buffer1[2];</code>，而 <code>infoShare()</code> 里是 <code>for(i&lt;NOWPLAYER) currentBuff[i].clear()</code>（7g 早在 09-22 已改成 <code>[8]</code>）。</p>
+<p><strong>反推：</strong>越界型崩在<strong>第 1 帧</strong>，而用户那两次是<strong>运行中</strong>崩 ⇒ <strong>评测机 <code>NOWPLAYER=2</code></strong> ⇒ Buffer 越界不是本次根因（属另一条独立隐患，且选手侧改不到）。实验后 <code>config.json</code> 已还原。</p>
+</div>
+
+<h2>六、提交与风险</h2>
+
+<div class="box good">
+<h3><span class="tag ok">提交</span>只交这两个文件（用 7h 目录里那份）</h3>
+<table>
+<thead><tr><th>文件</th><th>路径</th><th>md5</th><th>行数</th></tr></thead>
+<tbody>
+<tr><td><code>UsrAI.cpp</code></td><td class="mono">C:\new-aoe3.0.7h\UsrAI.cpp</td><td class="mono">1aecc386a65fed57bb803de4704e94ae</td><td>6891</td></tr>
+<tr><td><code>UsrAI.h</code></td><td class="mono">C:\new-aoe3.0.7h\UsrAI.h</td><td class="mono">1f9c61872b1b68d03b666c68a1958a05</td><td>442</td></tr>
+</tbody>
+</table>
+<p>7g 与 7h 逐字节一致。只替换这两个文件，<strong>其余保持评测方原样</strong>；勿把 <code>syn.py</code>/<code>build.py</code>/<code>smoke_verify.sh</code>/<code>*.bak_*</code>/<code>*.jsonl</code> 一起交。</p>
+</div>
+
+<div class="box bad">
+<h3><span class="tag bad">风险声明</span>本机 <code>NOWPLAYER=2</code> 且时序宽松，<strong>从来不崩</strong></h3>
+<p>⇒ "零拷贝版在评测机上不崩"<strong>只能靠再上 OJ 实测</strong>，这是唯一终判据。</p>
+<p><strong>本次改动在结构上消除了已知的两条崩溃路径</strong>（不再做任何 <code>tagInfo</code>/<code>vector</code> 深拷贝），并加了坏数据哨兵；但如果崩溃另有第三处来源，仍可能复现。若还崩，请把新 backtrace 发来 —— 行号能直接告诉我们跑到了哪一版、哪一行。</p>
+</div>
+
+<h2>七、备份链</h2>
+<table>
+<thead><tr><th>备份</th><th>md5</th><th>性质</th></tr></thead>
+<tbody>
+<tr><td><code>bak_20260927_zerocopy_UsrAI.cpp/.h</code></td><td class="mono">1aecc386 / 1f9c61872</td><td><strong>本次采纳版</strong>（零拷贝）</td></tr>
+<tr><td><code>bak_20260927_snapnonblock_UsrAI.cpp/.h</code></td><td class="mono">17696b0c / 738fe1db</td><td>非阻塞加固版（OJ 仍崩）</td></tr>
+<tr><td><code>bak_20260927_snaprestore_UsrAI.cpp/.h</code></td><td class="mono">f2fb6642</td><td>每帧等待版（胜率腰斩，弃）</td></tr>
+<tr><td><code>bak_20260927_1545_pre_snaprestore_UsrAI.cpp/.h</code></td><td class="mono">bb6cd60e / 78b64ea7</td><td>无加固对照版（第一次崩溃那版）</td></tr>
+</tbody>
+</table>
+
+<footer>
+诊断依据：两次 OJ backtrace 的行号逐字对齐 · <code>tagInfo::operator=</code> 目标偏移 <code>+0x58</code> 两次一致 · 引擎锁/析构顺序/符号依赖逐条排除 · <code>NOWPLAYER</code> 复现实验。
+</footer>
+
+</div>
+</body>
+</html>

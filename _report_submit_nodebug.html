@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>_submit/nodebug —— 去调试文本提交版</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#fff; --line:#e3e6ea; --ink:#1f2329; --dim:#6b7280;
+    --ok:#0f7b3f; --okbg:#e8f6ee; --warn:#b45309; --warnbg:#fef4e6;
+    --bad:#b91c1c; --badbg:#fdeaea; --accent:#1d4ed8; --accentbg:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:36px 24px 72px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:26px}
+  h2{font-size:18px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15px;margin:22px 0 8px;color:#374151}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f3f5f8;font-weight:600;color:#374151}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  code,pre{font-family:"Cascadia Mono",Consolas,"Courier New",monospace}
+  code{background:#f1f3f6;padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:#1e2228;color:#e6e9ee;padding:14px 16px;border-radius:9px;
+      overflow-x:auto;font-size:13px;line-height:1.55}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12.5px;font-weight:600}
+  .t-ok{background:var(--okbg);color:var(--ok)}
+  .t-warn{background:var(--warnbg);color:var(--warn)}
+  .t-bad{background:var(--badbg);color:var(--bad)}
+  .t-info{background:var(--accentbg);color:var(--accent)}
+  .note{background:var(--accentbg);border-left:4px solid var(--accent);
+        padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+  .warnbox{background:var(--warnbg);border-left:4px solid var(--warn);
+        padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .big{font-size:22px;font-weight:700;color:var(--ok)}
+  .mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:13px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 18px;font-size:14px}
+  .kv div:nth-child(odd){color:var(--dim)}
+  hr{border:0;border-top:1px dashed var(--line);margin:26px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>_submit/nodebug —— 去掉调试文本的提交版</h1>
+<div class="sub">生成时间 2026-10-08 21:4x ｜ 工作目录 <code>C:\new-aoe3.0.7g</code> ｜ 源：<code>UsrAI.cpp</code> md5 <code>e5e77387</code></div>
+
+<div class="card">
+  <div class="kv">
+    <div>产物</div><div class="mono">_submit\nodebug\UsrAI.cpp&nbsp;&nbsp;+&nbsp;&nbsp;UsrAI.h</div>
+    <div>去除范围</div><div><span class="tag t-info">仅 DebugText（121 处）</span> 保留 <code>[OJ-ENV]</code> 环境自证与 <code>[OJ-HB]</code> 崩溃定位心跳</div>
+    <div>方式</div><div>在所有 <code>#include</code> 之后插入 1 行变参宏，把 <code>AI::DebugText</code> 的 5 个重载整体屏蔽</div>
+    <div>编译校验</div><div><span class="tag t-ok">0 error</span> <span class="tag t-ok">warning 19 → 4（无新增）</span></div>
+    <div>可复现</div><div class="mono">python mk_submit.py --nodebug-only&nbsp;&nbsp;→&nbsp;&nbsp;python _chk_nodebug.py</div>
+  </div>
+</div>
+
+<h2>1 · 产物与环境</h2>
+<table>
+  <tr><th>文件</th><th>md5</th><th class="num">字节</th><th class="num">行数</th><th>行尾</th></tr>
+  <tr><td class="mono">_submit\nodebug\UsrAI.cpp</td><td class="mono">5c26d31287465c1f2199820ababe4a26</td><td class="num">481 405</td><td class="num">7 645</td><td><span class="tag t-ok">纯 LF</span></td></tr>
+  <tr><td class="mono">_submit\nodebug\UsrAI.h</td><td class="mono">50cef8aac60a9dea1652ecf0ea4ddcdf</td><td class="num">35 159</td><td class="num">495</td><td><span class="tag t-ok">纯 LF</span></td></tr>
+  <tr><td class="mono">UsrAI.cpp<span style="color:#6b7280">（源，未改动）</span></td><td class="mono">e5e77387e54c8fae074db6ce6b6d42ad</td><td class="num">480 155</td><td class="num">7 631</td><td>纯 LF</td></tr>
+</table>
+<div class="note">
+  <b>相对源的改动 = 唯一的 13 行补丁块（第 20~32 行）。</b>
+  <code>_chk_nodebug.py</code> 用「剥掉补丁块后与源码<strong>逐字符比对</strong>」证明：除这 13 行外零差异。
+</div>
+
+<h2>2 · 补丁块长什么样</h2>
+<pre>// ...
+//   把 ai.h 中 AI::DebugText 的 5 个重载整体屏蔽为无操作 —— 121 处调用全部静默。
+//   · 本块必须位于**所有 #include 之后**：放前面会把 ai.h 里的声明一起替换掉 ⇒ 编译错。
+//   · 宏体用 `if (0) { (void)(...); }` 而非裸 `((void)0)`：
+//     裸写法会把 23 个「只服务打印」的变量变成 unused 警告；
+//     if(0) 在 -O2 下整块被删（零运行时开销），但语义上"引用"了实参 ⇒ 不触发 unused。
+//   · 外面套 do{}while(0)：调用点存在「单语句 if」的无花括号写法。
+// ============================================================================================
+#define DebugText(...) do { if (0) { (void)(__VA_ARGS__); } } while (0)</pre>
+
+<h3>为什么用宏而不是逐处删 121 个调用</h3>
+<ul>
+  <li><b>风险</b>：121 处里大量是多行链式 <code>.arg()</code>，逐处删容易破坏括号配对，且不可逆。</li>
+  <li><b>可证明</b>：宏版是「1 行的改动」，能靠「剥补丁后逐字符相同」把"行为不变"钉死。</li>
+  <li><b>必须放最后</b>：<code>DebugText</code> 是 <code>ai.h</code> 里 <code>AI</code> 类的成员函数（5 个重载：<code>std::string / QString / char* / int / double</code>，见 <code>ai.h:66-74</code>）。宏在 <code>#include</code> 之前定义会连声明一起替换掉。本文件最后一个 <code>#include</code> 在第 18 行，宏在第 32 行 ✓。</li>
+</ul>
+
+<h2>3 · 三重验证证据</h2>
+
+<h3>① 语法 / 编译校验（真实构建标志，32 位工具链）</h3>
+<table>
+  <tr><th>口径</th><th class="num">源 UsrAI.cpp</th><th class="num">nodebug/UsrAI.cpp</th><th>结论</th></tr>
+  <tr><td>g++ 退出码</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-ok">均通过</span></td></tr>
+  <tr><td>error 数</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-ok">—</span></td></tr>
+  <tr><td>warning 数</td><td class="num">19</td><td class="num">4</td><td><span class="tag t-ok">少 15 条，无新增</span></td></tr>
+  <tr><td>其中 <code>-Wwrite-strings</code></td><td class="num">15</td><td class="num">0</td><td>正是 <code>DebugText("字面量")</code> 走 <code>char*</code> 重载引起的，随调用被屏蔽而消失</td></tr>
+</table>
+<div class="note">nodebug 版剩下的 4 条 warning（<code>-Wreorder</code> ×2、<code>__forceinline redefined</code> 等）与 DebugText 无关，源版同样有。</div>
+
+<h3>② 调试文本是否真的从产物里消失（<code>-c</code> 编译到 .o 后查字符串常量）</h3>
+<table>
+  <tr><th>字符串</th><th class="num">源 .o</th><th class="num">nodebug .o</th></tr>
+  <tr><td class="mono">ALL WAVES DEFEATED</td><td class="num">1</td><td class="num">0</td></tr>
+  <tr><td class="mono">Wave 1 defeated</td><td class="num">1</td><td class="num">0</td></tr>
+  <tr><td class="mono">Priest FLEE</td><td class="num">1</td><td class="num">0</td></tr>
+  <tr><td class="mono">GAZELLE-STOCK</td><td class="num">1</td><td class="num">0</td></tr>
+  <tr><td class="mono">GHOST-BLD</td><td class="num">1</td><td class="num">0</td></tr>
+  <tr><td class="mono">AI started</td><td class="num">1</td><td class="num">0</td></tr>
+  <tr><td colspan="3" style="background:#f8fafc;color:#6b7280">以下为<b>有意保留</b>的 OJ 诊断通道</td></tr>
+  <tr><td class="mono">OJ-ENV</td><td class="num">2</td><td class="num"><b>2</b></td></tr>
+  <tr><td class="mono">OJ-HB</td><td class="num">1</td><td class="num"><b>1</b></td></tr>
+</table>
+<p style="font-size:14px;color:#6b7280">
+  <code>UsrAI.o</code> 体积 <b>439 844 B → 324 994 B</b>（<span class="big" style="font-size:16px">−26.1%</span>）。
+  字符串常量被整段消除 ⇒ <code>if (0)</code> 确实被 <code>-O2</code> 死代码消除掉，<b>零运行时开销</b>。
+</p>
+
+<h3>③ 结构一致性（<code>_chk_nodebug.py</code>）</h3>
+<table>
+  <tr><th>检查项</th><th>结果</th></tr>
+  <tr><td>与当前源码一致（新鲜，非陈旧定格）</td><td><span class="tag t-ok">[.] 通过</span></td></tr>
+  <tr><td>补丁块位于所有 <code>#include</code> 之后（宏在第 32 行 / 最后 include 第 18 行）</td><td><span class="tag t-ok">[.] 通过</span></td></tr>
+  <tr><td>剥掉补丁块后与源逐字符相同</td><td><span class="tag t-ok">[.] 通过</span></td></tr>
+  <tr><td>纯 LF、无 BOM、无三元字</td><td><span class="tag t-ok">[.] 通过</span></td></tr>
+  <tr><td>调用点守恒：<code>DebugText(</code> 源 122 行 → 产物 123 行（+1 = 宏定义）</td><td><span class="tag t-ok">[.] 通过</span></td></tr>
+</table>
+
+<h2>4 · 复现命令</h2>
+<pre># 生成 / 刷新（不动 _submit\ 主提交件）
+python mk_submit.py --nodebug-only
+
+# 提交前核对一致性（防「提交件陈旧定格」）
+python _chk_nodebug.py
+python _chk_nodebug.py --fix        # 陈旧则自动重跑生成
+
+# 若同时也要刷新主提交件（带调试文本的那份）
+python mk_submit.py --nodebug</pre>
+
+<h2>5 · 两个必须知道的坑</h2>
+<div class="warnbox">
+  <b>① 语法快检静默 exit=1 ≠ 代码有问题。</b><br>
+  本机 PATH 里若没有 32 位工具链目录，<code>g++</code> 能打印 <code>--version</code>，但一编译就
+  <b>exit=1 且零输出</b> —— 因为 <code>cc1plus</code> 子进程找不到配套 DLL。
+  本次一开始就踩了这个（<code>SRC/NB exit=1</code>、<code>error=0 warning=0</code>、输出 0 字节）。
+  解法：
+  <pre style="margin:8px 0 0">export PATH="/d/360Downloads/Tools/mingw530_32/bin:/d/360Downloads/5.9.2/mingw53_32/bin:$PATH"</pre>
+</div>
+<div class="warnbox">
+  <b>② <code>_submit\UsrAI.cpp</code> 仍是 10-06 的 fixM 旧版，本次<b>未动</b>。</b><br>
+  现有 <code>_submit\UsrAI.cpp</code> md5 = <code>055e3668</code>，与当前源码 <code>e5e77387</code> 差 4379 行。
+  按你的选择（方案 A：只加子目录），本次只新增 <code>_submit\nodebug\</code>，主提交件保持原样。
+  若以后想让它跟上，跑 <code>python mk_submit.py</code> 即可。
+</div>
+
+<h2>6 · 本次改动的文件清单</h2>
+<table>
+  <tr><th>文件</th><th>动作</th><th>说明</th></tr>
+  <tr><td class="mono">_submit\nodebug\UsrAI.cpp</td><td><span class="tag t-ok">新增</span></td><td>去 DebugText 版，7 645 行 / 纯 LF</td></tr>
+  <tr><td class="mono">_submit\nodebug\UsrAI.h</td><td><span class="tag t-ok">新增</span></td><td>当前 .h 的 LF 版</td></tr>
+  <tr><td class="mono">mk_submit.py</td><td><span class="tag t-warn">修改</span></td><td>新增 <code>--nodebug</code> / <code>--nodebug-only</code>；备份在 <code>mk_submit.py.bak_20261008_nodebug</code></td></tr>
+  <tr><td class="mono">_chk_nodebug.py</td><td><span class="tag t-ok">新增</span></td><td>提交前一致性核对（防陈旧定格）</td></tr>
+  <tr><td class="mono">_submit.bak_20261008_pre_nodebug\</td><td><span class="tag t-info">备份</span></td><td>原有 _submit 的快照</td></tr>
+  <tr><td class="mono">UsrAI.cpp / UsrAI.h</td><td>未改动</td><td>源码保持 <code>e5e77387</code> / <code>e39b5d45</code></td></tr>
+</table>
+
+<hr>
+<div style="color:#6b7280;font-size:13.5px">
+  未做的事（可选）：① 未跑完整 <code>mingw32-make</code> 链接（会覆盖你 21:36 刚编的
+  <code>release\newAOE.exe</code>）—— 语法/编译单元已 0 error，若要端到端确认可另安排；
+  ② 未给 nodebug 版跑局（去 DebugText 后 <code>AIText.log</code> 会空，胜负只能看引擎侧行动日志）。
+</div>
+
+</div>
+</body>
+</html>

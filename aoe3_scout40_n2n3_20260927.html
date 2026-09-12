@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>探路半径 100→40 格 验证报告（n2/n3 批）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1c1f23; --sub:#5b6470; --line:#e2e6eb;
+    --red:#c0392b; --green:#1e8449; --amber:#b7791f; --blue:#1f6feb; --purple:#6b46c1;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 64px}
+  h1{font-size:24px;margin:0 0 6px}
+  h2{font-size:18px;margin:34px 0 12px;padding-left:10px;border-left:4px solid var(--blue)}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--sub)}
+  .lead{color:var(--sub);margin:0 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .verdict{border-left:5px solid var(--green)}
+  .verdict strong{color:var(--green)}
+  .warnbox{border-left:5px solid var(--amber)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  thead th{background:#eef1f5;color:var(--sub);font-weight:600}
+  tbody tr:hover{background:#fafbfc}
+  .num{font-variant-numeric:tabular-nums}
+  .bad{color:var(--red);font-weight:600}
+  .good{color:var(--green);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+  .hl{background:#fff7e6}
+  code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:#1e2228;color:#d7dee8;padding:12px 14px;border-radius:8px;
+      overflow-x:auto;font-size:12.5px;line-height:1.6}
+  ul{margin:8px 0;padding-left:22px}
+  .note{font-size:13px;color:var(--sub)}
+  .bar{height:14px;border-radius:7px;background:#e8ecf1;display:inline-block;vertical-align:middle}
+  .bar>i{display:block;height:100%;border-radius:7px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>探路半径 100 → 40 格 —— 验证报告</h1>
+  <p class="lead">n2 批（map2，12 局）+ n3 批（map3 回归，12 局）· 2026-09-27 · 代码 <code>408e2e62</code>·6485 行（exe 12:57）</p>
+
+  <div class="card verdict">
+    <strong>结论：采纳。map2 胜率 0% → 50%（p=0.0031），祭司死亡 15/15 → 2/12（p=8e-6），早死 11/15 → 0/12；map3 无显著退化（p=0.72）。</strong>
+    <ul>
+      <li>祭司**不再撞敌主力**：敌首次锁定祭司的帧从 map2 的 <b>2800~2950</b> 推到 <b>6600~37550</b>。</li>
+      <li>本批唯一变量 = 探路半径（同时回退了上一轮已证伪的"探路期敌情闸"）。</li>
+    </ul>
+  </div>
+
+  <h2>一、改动</h2>
+  <table>
+    <thead><tr><th>#</th><th>位置</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><code>UsrAI.cpp</code> L228</td><td>新增常量 <code>SCOUT_MAX_DIST 40.0</code>（原 100 格；附依据注释）</td></tr>
+      <tr><td>2</td><td><code>managePriestScout</code> L2446</td><td><code>const double SCOUT_DIST = SCOUT_MAX_DIST;</code>（原硬编码 <code>100.0</code>）</td></tr>
+      <tr><td>3</td><td><code>processData</code> 强推块</td><td><b>回退</b>上一轮"探路期敌情闸"（删 <code>SCOUT_BREAK_ENEMY_DIST</code> / <code>scoutBreakByEnemy</code>）；<code>managePriestScout</code> 的 <code>enemyDist</code> 恢复 <code>12*BL</code></td></tr>
+    </tbody>
+  </table>
+  <p class="note">校验：<code>syn.py</code> 0 error / 16 warning（与基线一致）；<code>build.py</code> rc=0 / 0 error；备份 <code>bak_20260927_scout40_UsrAI.cpp</code>。</p>
+
+  <h2>二、结果</h2>
+  <table class="num">
+    <thead><tr><th>批</th><th>地图</th><th>半径</th><th>胜/负/未决</th><th>胜率</th><th>祭司死亡</th><th>早死(&lt;5000)</th></tr></thead>
+    <tbody>
+      <tr><td>z2（改动前）</td><td>map2</td><td>100</td><td>0 / 3 / 0</td><td class="bad">0%</td><td>3</td><td>2</td></tr>
+      <tr><td>n1（敌情闸）</td><td>map2</td><td>100 + 闸</td><td>0 / 12 / 0</td><td class="bad">0%</td><td>12</td><td>9</td></tr>
+      <tr class="hl"><td><b>n2（本轮）</b></td><td><b>map2</b></td><td><b>40</b></td><td><b>6 / 2 / 4</b></td><td class="good"><b>50.0%</b></td><td class="good"><b>2</b></td><td class="good"><b>0</b></td></tr>
+      <tr><td>g1（改动前，已知最优）</td><td>map3</td><td>100</td><td>16 / 7 / 1</td><td>66.7%</td><td>7</td><td>0</td></tr>
+      <tr class="hl"><td><b>n3（回归）</b></td><td><b>map3</b></td><td><b>40</b></td><td><b>7 / 4 / 1</b></td><td>58.3%</td><td>4</td><td>0</td></tr>
+    </tbody>
+  </table>
+
+  <h3>显著性（Fisher 精确检验）</h3>
+  <table class="num">
+    <thead><tr><th>对比</th><th>指标</th><th>改动前</th><th>改动后</th><th>p 值</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>map2</td><td>胜率</td><td>0/15</td><td>6/12</td><td class="good">0.0031</td><td class="good">显著改善</td></tr>
+      <tr><td>map2</td><td>祭司死亡</td><td>15/15</td><td>2/12</td><td class="good">0.000008</td><td class="good">极显著</td></tr>
+      <tr><td>map2</td><td>早死</td><td>11/15</td><td>0/12</td><td class="good">0.00018</td><td class="good">极显著</td></tr>
+      <tr><td>map3 回归</td><td>胜率</td><td>16/24 (66.7%)</td><td>7/12 (58.3%)</td><td class="warn">0.7199</td><td>无显著退化</td></tr>
+      <tr><td>map3 回归</td><td>祭司死亡</td><td>7/24</td><td>4/12</td><td>1.0000</td><td>无差异</td></tr>
+    </tbody>
+  </table>
+  <p class="note">map3 n=12 的置信区间较宽（58.3% ⇒ 27.7~84.8%），"58.3% vs 66.7%" 无法判定退化，但可判定"未崩"。</p>
+
+  <h2>三、机制：祭司不再撞敌主力</h2>
+  <table class="num">
+    <thead><tr><th>指标</th><th>map2 改动前（z2/n1）</th><th>map2 改动后（n2）</th></tr></thead>
+    <tbody>
+      <tr><td>敌首次锁定祭司（帧）</td><td class="bad">2800 ~ 2950</td><td class="good">6600 ~ 37550</td></tr>
+      <tr><td>WAVE1 是否触发</td><td class="bad">9/12 局未触发</td><td class="good">12/12 触发（5012~5037）</td></tr>
+      <tr><td>祭司死亡帧</td><td class="bad">3007 ~ 3477</td><td class="good">15029 / 35912</td></tr>
+      <tr><td>ADV_SIEGE&gt;0（=胜路）</td><td class="bad">0 局</td><td class="good">7 局（其中 6 局获胜）</td></tr>
+    </tbody>
+  </table>
+  <p>原半径 100 格时，祭司从 TC 出发直行 <b>56 格</b>在 f≈2708 撞上敌方 <b>10 个单位</b>（复合弓兵/战车弓兵×2/阔剑兵×2/Prof.Lu×3/刀斧兵/方阵兵）；而祭司速度 ~0.5 格/秒 vs 敌方 ~1.76 格/秒（<b>3.5 倍</b>）⇒ 接触即必死。限 40 格后，祭司活动范围与敌主力（~56 格）留出 16 格余量，<b>压根不接触</b>。</p>
+
+  <h2>四、残留观察（待跟）</h2>
+  <div class="card warnbox">
+    <ul>
+      <li><b>map2 未决偏高</b>：n2 的 UND = 4/12（33%），其中 <b>3 局 <code>ADV=0</code></b>（反攻期祭司没前出）⇒ 疑似"敌基地/目标未探明"导致的僵局；g1（map3）的 UND 仅 1/24。半径缩小可能略增"找不到目标"的僵局。</li>
+      <li><b>n211</b>：<code>ADV=160</code> 但 <code>CONV=0</code> —— 祭司前出 160 次仍未感化成功（清场/拦截问题，非探路问题）。</li>
+      <li><b>map3 回归样本仅 12 局</b>：如需确认"无退化"，建议补到 24 局。</li>
+    </ul>
+  </div>
+
+  <h2>五、复现</h2>
+  <pre>cd /c/new-aoe3.0.7g
+PAR=8 bash n2_verify.sh     # map2 × 12（探路 40 格）
+PAR=8 bash n3_verify.sh     # map3 × 12（回归）
+python analyze_n2.py        # 与 z2 / n1 / g1 对照
+grep -n "SCOUT_MAX_DIST" UsrAI.cpp</pre>
+  <p class="note">⚠ 本改动为<b>全局生效</b>（代码拿不到地图名），已用 map3 作回归。⚠ 用户 13:03 自改了源码（新增 ECO 性能剖析 <code>[PROF-ECO]</code>，<b>未重编</b>）⇒ n2/n3 跑的都是 12:57 的 exe，即本报告所述 scout40 版本。</p>
+
+</div>
+</body>
+</html>

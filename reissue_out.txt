@@ -1,0 +1,18 @@
+=== wd：唯一建筑 BUILD-ISSUE 复发(>=2次=前座未完工) ===
+  wd1.ait    复发={'STABLE': 2, 'RANGE': 2, 'MARKET': 19}
+  wd10.ait   复发={'STABLE': 2, 'RANGE': 2, 'MARKET': 21}
+  wd11.ait   复发={'STABLE': 2, 'RANGE': 2}
+  wd12.ait   复发={'STABLE': 2, 'RANGE': 2, 'MARKET': 20}
+  wd13.ait   复发={'STABLE': 2, 'RANGE': 2}
+  wd14.ait   复发={'STABLE': 2, 'RANGE': 3}
+  wd15.ait   复发={'STABLE': 2, 'RANGE': 2, 'MARKET': 13}
+  wd16.ait   复发={'STABLE': 2, 'RANGE': 3, 'MARKET': 12}
+  wd2.ait    复发={'STABLE': 2, 'RANGE': 2, 'FARM': 2, 'MARKET': 20}
+  wd3.ait    复发={'STABLE': 2, 'RANGE': 2}
+  wd4.ait    复发={'STABLE': 2, 'RANGE': 2}
+  wd5.ait    复发={'STABLE': 2, 'RANGE': 2, 'MARKET': 14, 'FARM': 2}
+  wd6.ait    复发={'STABLE': 2, 'RANGE': 2}
+  wd7.ait    复发={'STABLE': 2, 'RANGE': 2, 'FARM': 2, 'MARKET': 20}
+  wd8.ait    复发={'STABLE': 2, 'RANGE': 2}
+  wd9.ait    复发={'STABLE': 2, 'RANGE': 2}
+含唯一建筑复发的局数 = 16 / 16

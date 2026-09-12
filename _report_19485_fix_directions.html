@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>debug_19485 优化方向（含 45 臂胜率总表与祭司临死静默分布）</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#fff; --line:#e3e6ea; --ink:#1f2329; --dim:#6b7280;
+    --ok:#0f7b3f; --okbg:#e8f6ee; --warn:#b45309; --warnbg:#fef4e6;
+    --bad:#b91c1c; --badbg:#fdeaea; --accent:#1d4ed8; --accentbg:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 24px 72px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:26px}
+  h2{font-size:18px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15px;margin:22px 0 8px;color:#374151}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f3f5f8;font-weight:600;color:#374151}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  code,pre{font-family:"Cascadia Mono",Consolas,"Courier New",monospace}
+  code{background:#f1f3f6;padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:#1e2228;color:#e6e9ee;padding:14px 16px;border-radius:9px;
+      overflow-x:auto;font-size:13px;line-height:1.55}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12.5px;font-weight:600}
+  .t-ok{background:var(--okbg);color:var(--ok)}
+  .t-warn{background:var(--warnbg);color:var(--warn)}
+  .t-bad{background:var(--badbg);color:var(--bad)}
+  .t-info{background:var(--accentbg);color:var(--accent)}
+  .hl{background:#fff8d6;padding:1px 4px;border-radius:3px}
+  ul{margin:8px 0 8px 4px;padding-left:20px}
+  li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:172px 1fr;gap:6px 14px;font-size:14px}
+  .kv b{color:#374151;font-weight:600}
+  .big{font-size:22px;font-weight:700}
+  .muted{color:var(--dim);font-size:13px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  hr{border:0;border-top:1px dashed var(--line);margin:26px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>debug_19485：优化方向</h1>
+<div class="sub">
+  输入：<code>debug_19485_4625f111…log</code>（OJ，map 单图，失败 411）｜
+  工作副本：<code>C:\new-aoe3.0.7g</code>｜
+  生成 2026-10-08 23:0x｜
+  <b>本轮未改任何源码</b>
+</div>
+
+<div class="card">
+<h3 style="margin-top:0">一句话结论</h3>
+<p style="margin:6px 0">
+<b>19485 不是「祭司逻辑在正常条件下的缺陷」，而是一个本地从未复现过的状态卡死。</b>
+本地 108 个祭死局中，祭司临死前的「无移动令静默」<span class="hl">全部 &lt; 600 帧（≤0.4 秒）</span>；
+19485 是 <span class="hl">1930 帧（32.2 秒）</span>，超本地最大值 9.5 倍。
+</p>
+<p style="margin:6px 0" class="muted">
+⇒ 因此在本地盲调祭司参数（第 3 节的 1/2/3 项）收益上限很低；<b>第一优先级是把 19485 的形态在本地/7h 引擎上复现出来</b>，
+否则所有改动都无法验证。
+</p>
+</div>
+
+<h2>1. 三条新证据</h2>
+
+<h3>1.1 祭司临死静默：19485 是孤立异常</h3>
+<p class="muted">口径：<code>死亡帧 − 最后一条 <code>HumanMove:祭司</code> 帧</code>；只统计有祭司死亡行的局。脚本 <code>_priest_deathgap.py</code>。</p>
+<table>
+<tr><th>实验臂</th><th class="num">祭死局 n</th><th class="num">静默中位</th><th class="num">P90</th><th class="num">最大</th><th class="num">≥600 帧的局</th></tr>
+<tr><td>wbase</td><td class="num">13</td><td class="num">14</td><td class="num">121</td><td class="num">170</td><td class="num">0 / 13</td></tr>
+<tr><td>sc1</td><td class="num">17</td><td class="num">20</td><td class="num">77</td><td class="num">80</td><td class="num">0 / 17</td></tr>
+<tr><td>p3a</td><td class="num">15</td><td class="num">20</td><td class="num">52</td><td class="num">72</td><td class="num">0 / 15</td></tr>
+<tr><td>fh1</td><td class="num">20</td><td class="num">15</td><td class="num">80</td><td class="num">97</td><td class="num">0 / 20</td></tr>
+<tr><td>pe2</td><td class="num">11</td><td class="num">8</td><td class="num">33</td><td class="num">85</td><td class="num">0 / 11</td></tr>
+<tr><td>pe5</td><td class="num">13</td><td class="num">13</td><td class="num">44</td><td class="num">204</td><td class="num">0 / 13</td></tr>
+<tr><td>club8n</td><td class="num">19</td><td class="num">23</td><td class="num">62</td><td class="num">142</td><td class="num">0 / 19</td></tr>
+<tr style="background:#fdeaea"><td><b>19485 (OJ)</b></td><td class="num">1</td><td class="num" colspan="3"><b>1930 帧 = 32.2 秒</b></td><td class="num"><b>1 / 1</b></td></tr>
+</table>
+<p><b>读法</b>：本地祭司临死前几乎总在持续发令（每 30 帧一条，见 <code>_priest_gap.py</code>：中位间隔 30 帧、P90 也是 30 帧）。
+「32 秒完全不发移动令」是 OJ 独有形态。</p>
+
+<h3>1.2 19485 精确死亡时间线（逐行核对，修正上轮）</h3>
+<table>
+<tr><th class="num">时刻</th><th>事件</th></tr>
+<tr><td class="num">25:01:52</td><td>最后一条「回家令」<code>HumanMove:祭司 91168 移动至 (348.923,236.15)</code></td></tr>
+<tr><td class="num">25:03:96</td><td>折返敌基地外圈 <code>(2896.85,2670.50)</code> = 块 (80.97,74.65) ← <b>最后一条移动令</b></td></tr>
+<tr><td class="num">25:10:16</td><td><code>HumanAction:祭司 91168 设置转换目标为 战车 91219</code> ← <b>起手感化</b></td></tr>
+<tr><td class="num">25:10:20</td><td><code>祭司开始向战车(编号：91219)攻击</code> ← 进射程，引导中</td></tr>
+<tr><td class="num">25:14:08</td><td><span class="bad">复合弓兵 91175 开始向祭司攻击</span> ← 首次被攻击</td></tr>
+<tr><td class="num">25:29:64</td><td>方阵兵 91193 攻击祭司</td></tr>
+<tr><td class="num">25:32:48</td><td>复合弓兵 91218 攻击祭司</td></tr>
+<tr><td class="num">25:34:64</td><td>复合弓兵 91181 + 战车弓兵 91200 + 战车弓兵 91207 <b>三个同时</b>攻击祭司</td></tr>
+<tr><td class="num">25:35:52</td><td>方阵兵 91196 攻击祭司</td></tr>
+<tr><td class="num">25:36:16</td><td><b>祭司(编号91168)死亡</b></td></tr>
+<tr><td class="num">25:37:40</td><td>游戏失败，得分 411</td></tr>
+</table>
+<p>⇒ 从最后一个移动令到死亡：<b>1930 帧内 0 条移动令</b>，其中 26 秒处于「感化引导 + 被 6 个单位攻击」。</p>
+<p class="muted">⚠ 修正上轮报告的两处口径错误：① 全文 <code>攻击.*91168</code> 匹配为 0 —— 必须用引擎行 <code>…开始向祭司(编号：91168)攻击</code>（全角冒号）反查；② 上轮把 25:36:16 那行误读为死亡行，实际死亡行在 7764 行。</p>
+
+<h3>1.3 45 个实验臂胜率总表（map 单图，同口径）</h3>
+<p class="muted">口径：W = <code>被祭司转换,归属阵营1->0</code>｜P = <code>DEFEAT: Priest killed</code>｜T = 主营被毁｜U = 超时/截断。脚本 <code>_sig_stat.py</code>。<b>n=48 的 95%CI 半宽 ≈ ±14pp</b>。</p>
+<table>
+<tr><th>档位</th><th>实验臂（W/n，95%CI）</th></tr>
+<tr><td><span class="tag t-ok">50.0%</span></td><td>wbase 24/48 ｜ pe2 24/48 ｜ pe5 24/48</td></tr>
+<tr><td><span class="tag t-ok">47.9%</span></td><td>p3a 23/48</td></tr>
+<tr><td><span class="tag t-ok">45.8%</span></td><td>club8n 22/48 ｜ farm6 22/48</td></tr>
+<tr><td>41.7%</td><td>c6a 20/48 ｜ v1 20/48</td></tr>
+<tr><td>39.6%</td><td>wb1 19/48 ｜ wearly 19/48</td></tr>
+<tr><td>37.5%</td><td>sc1 18/48 ｜ rc1 9/24</td></tr>
+<tr><td>35.4%</td><td>club6 17/48 ｜ club6n 17/48 ｜ ps1 17/48</td></tr>
+<tr><td>33.3%</td><td>fh1 16/48</td></tr>
+<tr><td>31.2%</td><td>cs3 15/48 ｜ gg1 15/48</td></tr>
+<tr><td>29.2%</td><td>fixM 7/24 ｜ sprd 7/24 ｜ ka1 14/48</td></tr>
+<tr><td>27.1%</td><td>armypush24 13/48 ｜ <b>ca1（全战车弓兵）13/48</b> ｜ nc1 13/48</td></tr>
+<tr><td>25.0%</td><td>fs2 ｜ gs1 ｜ witharmy12 ｜ composite ｜ pe1 ｜ hunt3 ｜ f20</td></tr>
+<tr><td><span class="tag t-bad">16.7%</span></td><td><b>earlyclub8 8/48</b> ｜ hunt1 5/30</td></tr>
+<tr><td><span class="tag t-bad">12.5%</span></td><td>arb1 3/24 ｜ chariot 2/16 ｜ fixN3 3/24</td></tr>
+<tr><td><span class="tag t-bad">6.2%</span></td><td><b>er1（提前侦察）3/48</b></td></tr>
+<tr><td><span class="tag t-bad">0%</span></td><td>base1 0/24 ｜ comp_b 0/8</td></tr>
+</table>
+<p><b>关键读数</b>：</p>
+<ul>
+<li>最高的三个臂 <b>wbase / pe2 / pe5 全是 50.0%</b>，都在 22:00 前后（复合弓版）；当前工作版对应批次 <b>sc1 = 37.5%</b>。</li>
+<li>⚠ <b>但跨批不可直比</b>（噪声铁律：同源码复跑胜负会翻转）⇒ 12.5pp 的差<b>不能</b>当作因果，必须同批重跑才能定论。</li>
+<li>三个「方向性」实验全部大幅退化：<b>提前侦察 er1 6.2%</b>、<b>全战车弓兵 ca1 27.1%</b>、<b>逃跑保持 fh1 33.3%</b> ⇒ 这三条路已可封。</li>
+</ul>
+
+<h2>2. 优化方向（按 ROI 排序）</h2>
+
+<div class="card">
+<h3 style="margin-top:0"><span class="tag t-info">P0</span> 先把 19485 的形态复现出来 —— 否则一切改动不可验证</h3>
+<p>本地 108 个祭死局没有一例「临死静默 &gt; 600 帧」，说明触发条件不在本地配置内。候选差异只有两个：</p>
+<ul>
+<li><b>(a) 引擎版本</b>：19485 是 <code>engine=v3.0.7h</code>，本地 exe 是 3.0.7g（16577/19104 也都是 7g）。用户手上的 7h 副本
+<code>C:\Users\ZhuanZ\Downloads\new-aoe3.0.7I\new-aoe3.0.7h</code> 可直接复现。</li>
+<li><b>(b) OJ 地图几何</b>：19485 的固定坐标 <code>(348.923,236.15)</code> 在本地全部 ait 中出现 <b>0 次</b>（16577/map2、19104/map1 也是 0 次）⇒ 它是地图相关的实物位置，不是常量；OJ 的 16 种几何（4 图 × 4 旋转）本地只覆盖 4 种。</li>
+</ul>
+<p><b>行动</b>：把 <code>UsrAI.cpp</code> 拷进 7h 工程编译，跑 map 局 24 局，用 <code>_priest_deathgap.py</code> 看是否出现 &gt;600 帧的静默。</p>
+</div>
+
+<div class="card">
+<h3 style="margin-top:0"><span class="tag t-warn">P1</span> 感化引导「超时断路器」（直击 1930 帧静默）</h3>
+<p><b>机制假设</b>：<code>canAct = (NowState==IDLE || NowState==WALKING)</code>。祭司起手感化时置 <code>priestMoveCooldown = 150</code>（<code>:1785</code>），
+引导期 <code>NowState</code> 为 WORKING/ATTACKING ⇒ <code>canAct=false</code> ⇒ <b>下面所有「逃跑 / 治疗 / 待命」分支全被跳过</b>，唯一的出口是
+<code>:1696</code> 的 <code>if (!canAct)</code> 块（<code>pBRx &lt;= abortHp</code> 才断引导逃跑）。</p>
+<p>19485 里祭司被 6 个单位打了 22 秒仍不撤 ⇒ 该出口没打开。两个可能：<b>(i)</b> <code>danger = (lockers&gt;=2) || (near12&gt;=4)</code> 门槛没达到（25:34:64 只有 3 个同时攻击）；
+<b>(ii)</b> 血从 &gt;25% 直接被秒 ⇒ 从没进入可撤状态。</p>
+<p><b>改动</b>（一处新增，约 5 行）：用已存在的 <code>priestConvFrame</code> 做硬超时 ——</p>
+<pre>if (priestConvFrame &gt; -999999 &amp;&amp; frame - priestConvFrame &gt; 900) {
+    priestMoveCooldown = 0;      // 解除移动锁
+    priestConvSN = -1;           // 放弃本次引导，交给下方逃跑闸
+}</pre>
+<p><b>验证口径</b>：<code>_priest_deathgap.py</code> 的「祭死局最大静默」应 ≤ 本地基线（≤204 帧）；
+次级端点 = 24 局/臂 win%（噪声带 ±14pp ⇒ 只作记账）。</p>
+</div>
+
+<div class="card">
+<h3 style="margin-top:0"><span class="tag t-warn">P1</span> 被集火而不撤：门槛与阈值</h3>
+<ul>
+<li><code>:1707</code> <code>danger = (lockers&gt;=2) || (near12&gt;=4)</code> ⇒ 建议 <code>(lockers&gt;=1) || (near12&gt;=2)</code></li>
+<li><code>:1708</code> <code>abortHp = danger ? 0.60 : 0.25</code> ⇒ 反攻期建议固定 0.50~0.60（祭司满血到 25% 在 3 个远程集火下只需几秒）</li>
+</ul>
+<p class="muted">⚠ 这两条都属于「祭司单点微调」。本项目历史上祭司单点微调 <b>8 次全部中性或有害</b>（fix2/fix4/fix5/FixC/FixG/fixH/fixJ/fixN）。
+一次只动一处，24 局/臂，先看机制量（本项机制量 = 祭死局静默帧数、<code>lockers</code>/<code>near12</code> 命中率）。</p>
+</div>
+
+<div class="card">
+<h3 style="margin-top:0"><span class="tag t-warn">P2</span> 逃跑/追敌落点压在射程边界（上轮已量，未改）</h3>
+<ul>
+<li><code>:1790 double stopDist = 12.0</code>（追敌落点）与 <code>:1782 if (cdist &lt;= 12*BL)</code>（发感化令门槛）<b>同指 12.0</b>；
+1 格档直方图在 12.0 格出现唯一尖峰 13.20%。</li>
+<li><code>:1527 OFF[6]</code> 垂直侧移把落点推到 <code>√(12²+off²)</code> = 12.0 / 12.4 / 13.4 / 15.0 格 ⇒ 为绕开友军而横移，代价是被挤出射程。</li>
+<li>同文件另 3 处停位都写 <code>RANGE − 1.0</code> = 11.0（<code>:5307/:5300/:5403</code>）—— 唯独追敌路径留 0 格余量。</li>
+</ul>
+<p><b>改动候选</b>：<code>stopDist 12.0 → 9.0</code>（或统一 <code>PRIEST_CONVERT_SIEGE_RANGE − 3.0</code>）；侧移后把落点投影回「以敌为心、半径 stopDist」的圆。</p>
+<p class="muted">⚠ 与 P1 的「引导期静止更险」存在张力：深入 3 格 = 引导期离敌更近。若要一起改，须拆成两批跑以保留归因能力。</p>
+</div>
+
+<h2>3. 反面清单（已试并证否，别再投入）</h2>
+<table>
+<tr><th>方向</th><th>实验臂</th><th class="num">胜率</th><th>结论</th></tr>
+<tr><td>提前侦察 / 反攻前探明武器厂</td><td>er1</td><td class="num"><span class="bad">6.2%</span></td><td>灾难性退化（vs 基线 37.5~50%）</td></tr>
+<tr><td>早出 clubman（EARLY_CLUBMAN_TARGET 提高）</td><td>earlyclub8</td><td class="num"><span class="bad">16.7%</span></td><td>退化；club6=35.4% 同向</td></tr>
+<tr><td>全战车弓兵 + 减金工 + 停学院/马厩</td><td>ca1</td><td class="num"><span class="bad">27.1%</span></td><td>退化；且 exit=3(abort) 18/48</td></tr>
+<tr><td>逃跑保持</td><td>fh1</td><td class="num"><span class="bad">33.3%</span></td><td>退化</td></tr>
+<tr><td>木材前置 / wood early</td><td>wearly</td><td class="num"><span class="bad">39.6%</span></td><td>退化</td></tr>
+<tr><td>抬人口上限（MAX_FARMERS 22→20）</td><td>f20</td><td class="num">25.0%（n=8）</td><td>机制量精确落地但军队到顶时刻 21.1→22.0 分，零窗口</td></tr>
+<tr><td>农民自杀腾人口（fixN）</td><td>fixN2/fixN3</td><td class="num">25.0% / 12.5%</td><td>已证否（61.5%→47.9%，p=0.082）</td></tr>
+<tr><td>祭司单点微调（8 次）</td><td>fix2/4/5/G/H/J/C</td><td class="num">—</td><td>全部中性或有害</td></tr>
+</table>
+<p class="muted">⇒ 「军队耗光」是结构性问题的结论再次被加强：<b>不要</b>再从人口位、兵种构成、提前侦察三个方向入手。</p>
+
+<h2>4. 未解 / 待查</h2>
+<ul>
+<li><b>固定坐标 <code>(348.923,236.15)</code>（19 次）是什么</b>：本地 0 次、16577/19104 0 次。<b>已排除</b>它是我方 TC ——
+本地对应局的 TC 附近落点在 19485 里是 <code>(754.958,1213.5)</code>（208 次），而开局农民建造区块为 (27~31, 37~41)。
+两个时刻都出现该点：14:59~15:07（当时祭司就在附近 (7.45,8.74)）与 24:58~25:01（当时祭司在敌基地外圈 (82.4,77.0)）。
+<b>下一步</b>：在本地 map 局里搜同类「远距离固定地标」并读完整 DebugText（<code>Priest FLEE</code> / <code>Priest RETURN-TOWER</code> / <code>[PRST-NOARMY]</code>），直接定位发令分支。</li>
+<li><b>OJ 7h vs 本地 7g</b>：<code>[OJ-ENV]</code> 的 NOWPLAYER/MAXPLAYER/represent 与本地 config 一致，但引擎版本不同。</li>
+<li><b>同批对照缺失</b>：wbase/pe2/pe5(50.0%) 与当前版(37.5%) 是不同批次 ⇒ 需同批重跑 48 局/臂才能回答「哪一版真的最好」。</li>
+</ul>
+
+<hr>
+<p class="muted">
+本轮新增脚本：<code>_sig_stat.py</code>（45 臂胜率总表）｜<code>_priest_gap.py</code>（祭司移动令间隔分布）｜<code>_priest_deathgap.py</code>（临死静默）。<br>
+复现命令：<code>python _sig_stat.py &lt;tag…&gt;</code> / <code>python _priest_deathgap.py &lt;tag…&gt;</code><br>
+源码状态：<code>UsrAI.cpp</code> = <code>acee5e49</code>（= 回退 safecast 后）｜<code>UsrAI.h</code> = <code>e39b5d45</code>｜本轮未做任何修改。
+</p>
+
+</div>
+</body>
+</html>

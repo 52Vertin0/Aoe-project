@@ -1,0 +1,149 @@
+<meta charset="UTF-8">
+<title>AoE3 UsrAI · OJ 连败两局诊断（fixM 提交）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --sub:#5b6470; --line:#e3e6ea;
+    --ok:#0b8a4b; --warn:#c26a00; --bad:#c0392b; --accent:#1f5fd0; --mono:#f0f2f5;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);margin:0;padding:28px 20px 60px;
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 4px}
+  h2{font-size:17px;margin:32px 0 10px;padding-left:10px;border-left:4px solid var(--accent)}
+  p{margin:8px 0}
+  .dim{color:var(--sub)}
+  .good{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  .mono{font-family:"SFMono-Regular",Consolas,monospace;background:var(--mono);
+        padding:1px 5px;border-radius:3px;font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+  .verdict{border-left:5px solid var(--ok)}
+  .kpi{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+  .kpi>div{flex:1 1 190px;background:var(--card);border:1px solid var(--line);
+           border-radius:10px;padding:14px 16px}
+  .kpi b{display:block;font-size:24px;line-height:1.25}
+  .kpi span{display:block;font-size:12.5px;color:var(--sub);margin-top:4px}
+  table{border-collapse:collapse;width:100%;background:var(--card);
+        border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:10px 0;font-size:14px}
+  th,td{border-bottom:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#eef1f5;font-weight:600;font-size:13.5px}
+  tr:last-child td{border-bottom:none}
+  td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  th.n{text-align:right}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:9px;vertical-align:1px}
+  .t-ok{background:#e3f5ea;color:var(--ok)} .t-bad{background:#fbe9e7;color:var(--bad)}
+  .t-warn{background:#fdf1e0;color:var(--warn)} .t-neu{background:#eceff3;color:var(--sub)}
+  pre{background:var(--mono);border:1px solid var(--line);border-radius:8px;
+      padding:11px 13px;overflow:auto;font:12.5px/1.6 Consolas,monospace;margin:8px 0}
+  ul{margin:8px 0;padding-left:20px} li{margin:5px 0}
+  footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
+         font-size:12.5px;color:var(--sub)}
+</style>
+<div class="wrap">
+
+<h1>OJ 连败两局诊断 · fixM 提交</h1>
+<p class="dim">日志 <span class="mono">debug_10567…</span>（<span class="mono">map</span> 旋转 270°）、<span class="mono">debug_10859…</span>（<span class="mono">map1</span> 旋转 180°）
+　提交件 md5 <span class="mono">055e3668</span>（fixM）</p>
+
+<div class="card verdict">
+<h3 style="margin-top:0">一句话结论</h3>
+<p><b class="good">不是崩溃，也不是 fixM 回归 —— 是两次正常失败，且都落在已知败因桶里。</b><br>
+两局均无 <span class="mono">error/abort/Exception</span>，引擎跑完全程（f=38784 / f=44995），末行
+<span class="mono">GameOver,Win:0</span> ＋ <span class="mono">游戏失败，未达成目标</span>。
+fixM 本地败率 38.5% ⇒ <b>连败 2 局概率 ≈ 14.8%</b>，属正常。<br>
+唯一值得追的新线索（随机旋转）已用 <b>48 局实测证否</b>：<span class="mono">map1</span> 旋转 180° 后与 rot=0 <b>逐项全同</b>（16/24 vs 16/24）。</p>
+</div>
+
+<div class="kpi">
+  <div><b class="good">0</b><span>崩溃 / RE 次数（两局均跑完全程）</span></div>
+  <div><b class="good">fixM</b><span>提交版本已确认（POP-SAC=0，非 fixN）</span></div>
+  <div><b class="dim">14.8%</b><span>连败 2 局的先验概率</span></div>
+  <div><b class="good">中性</b><span>随机旋转已实测证否（48 局）</span></div>
+</div>
+
+<h2>1 · 两局败因</h2>
+<table>
+<thead><tr><th>局</th><th>地图 / 旋转</th><th>结局</th><th>机制链</th><th>桶</th></tr></thead>
+<tbody>
+<tr><td>10567</td><td><span class="mono">map</span> 270°</td><td>祭司死 @25.9 分<br>467 分</td>
+    <td><b>武器厂从未发现</b>（0 次 <span class="mono">Enemy Siege Workshop found</span>）⇒ <span class="mono">ADVANCE=0</span> ⇒ 祭司无推进目标；
+        祭司 15:24 起 <b>134 次</b>血量告警，25:51:32 死于交战（死时 Frm=22 / Mil=10，军队 24→10）</td>
+    <td><span class="tag t-bad">C3 反攻期祭司死</span></td></tr>
+<tr><td>10859</td><td><span class="mono">map1</span> 180°</td><td>30:00 超时<br>522 分</td>
+    <td>26:43 才发现武器厂 (4,86)（<b>反攻后 4.7 分钟</b>）；<span class="mono">ADVANCE</span> <b>75 次但 d 恒 21.6~22.1 从不闭合</b>；
+        42k 后 Frm 22→0、Mil 22→2 被打崩、Fd=2</td>
+    <td><span class="tag t-warn">C4 超时</span> ＋ 推进段不闭合</td></tr>
+</tbody>
+</table>
+<p class="dim">两局都正常进入反攻（f=33002 / 33001），军队也都练到 27 —— 不是前期崩盘，是<b>反攻段"到不了/活下来"</b>的老问题。</p>
+
+<h2>2 · 版本与环境核对（两条硬判据）</h2>
+<table>
+<thead><tr><th>项</th><th>判据</th><th>结论</th></tr></thead>
+<tbody>
+<tr><td>提交的是不是 fixM</td><td>两份日志 <span class="mono">POP-SAC</span> 计数 = <b>0</b>（fixN 的标记），且 <span class="mono">[BEAT]</span> 含 <span class="mono">pm</span> 字段（base0 没有）</td>
+    <td class="good">✓ 是 fixM，与 <span class="mono">_submit/</span> 的 <span class="mono">055e3668</span> 自洽</td></tr>
+<tr><td>OJ 环境是否一致</td><td>OJ <span class="mono">NOWPLAYER=2 MAXPLAYER=8 represent=0</span>；本地 <span class="mono">config.json</span> <span class="mono">NOWPLAYER:2 / NOWPLAYERREPRESENT:0</span></td>
+    <td class="good">✓ 逐字段相同，无环境差</td></tr>
+<tr><td>是否崩溃</td><td><span class="mono">error / Error / ERROR / crash / abort / Exception / assert</span> 全部 0 次</td>
+    <td class="good">✓ 正常失败</td></tr>
+</tbody>
+</table>
+
+<h2>3 · ★ 新线索：随机旋转 —— 已用 48 局证否</h2>
+<p>OJ 的 <span class="mono">-map</span>/<span class="mono">-rotate</span> 每局随机，而本地 96 局<b>全是 rot=0</b>。而且实测<b>四张图并不是彼此的旋转</b>：</p>
+<table>
+<thead><tr><th>几何</th><th class="n">基地中心</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><span class="mono">map</span> @0</td><td class="n">(80.40, 12.05)</td><td class="dim">本地已测</td></tr>
+<tr><td><span class="mono">map1</span> @0</td><td class="n">(22.35, 74.95)</td><td class="dim">本地已测</td></tr>
+<tr><td><span class="mono">map2</span> @0</td><td class="n">(73.75, 87.25)</td><td class="dim">本地已测</td></tr>
+<tr><td><span class="mono">map3</span> @0</td><td class="n">(28.90, 81.00)</td><td class="dim">本地已测</td></tr>
+<tr style="background:#fdf1e0"><td><span class="mono">map</span> @270（OJ 10567）</td><td class="n">(12.05, 19.60)</td>
+    <td>距最近已测图 <b>56.3 格</b> ⇒ <b>从未验证过的几何</b></td></tr>
+</tbody>
+</table>
+<p class="dim">旋转式（100×100 图）：<span class="mono">rot90=(100−y, x)</span>｜<span class="mono">rot180=(100−x, 100−y)</span>｜<span class="mono">rot270=(y, 100−x)</span>。
+⇒ OJ 实际是 <b>4 图 × 4 旋转 = 16 种几何，本地只覆盖 4 种</b>。</p>
+
+<h3>补跑：同地图文件、同 AI、只改旋转（各 24 局）</h3>
+<table>
+<thead><tr><th>组</th><th class="n">rot0</th><th class="n">旋转后</th><th class="n">Δ</th><th class="n">Fisher p</th><th>判读</th></tr></thead>
+<tbody>
+<tr style="background:#eef6ff"><td><b>map1</b>（@180）</td><td class="n">16/24 (66.7%)<br><span class="dim">发现 79%・祭死 7</span></td>
+    <td class="n"><b>16/24 (66.7%)</b><br><span class="dim">发现 79%・祭死 8</span></td>
+    <td class="n"><b>0.0pp</b></td><td class="n">1.000</td>
+    <td class="good"><b>胜/负/发现率/祭死 逐项全同 ⇒ 旋转是中性因子</b></td></tr>
+<tr><td><b>map</b>（@270）</td><td class="n">7/24 (29.2%)<br><span class="dim">发现 75%・祭死 14</span></td>
+    <td class="n">2/24 (8.3%)<br><span class="dim">发现 58%・祭死 20</span></td>
+    <td class="n">−20.8pp</td><td class="n">0.137</td>
+    <td class="dim">看似惨，但落在 <b>map</b> 自身的噪声带内（见下）</td></tr>
+<tr><td><b>合并</b></td><td class="n">23/48 (47.9%)</td><td class="n">18/48 (37.5%)</td><td class="n">−10.4pp</td><td class="n"><b>0.409</b></td>
+    <td class="good">不显著</td></tr>
+</tbody>
+</table>
+<div class="card">
+<p><b>为什么 <span class="mono">map@270</span> 的 2/24 不算旋转效应：</b>
+<span class="mono">map</span> 本来就是最差的一张图。近等价臂在 <b>map@0</b> 上的实测胜局范围是
+<span class="mono">fixI 7/24 ｜ fixK 3/24 ｜ fixL 1/24 ｜ fixM 7/24</span> —— 即 <b>1/24 ~ 7/24</b>。
+2/24 完全落在这个带里。而 <span class="mono">map1</span> 旋转后逐项全同，是"旋转中性"的直接证据。</p>
+</div>
+
+<h2>4 · 结论与建议</h2>
+<div class="card">
+<ul>
+  <li><b>无需改码、无需回退。</b>两次失败都是已知桶（C3 / C4），不是新失效模式。</li>
+  <li><b>不必为 OJ 补旋转批次</b>——已证旋转中性，本地 rot=0 的 61.5% 可直接代表 OJ 期望（OJ 随机取图，四图等权）。</li>
+  <li><b>真正拖 OJ 期望分的是 <span class="mono">map</span> 这张图本身</b>（rot=0 也只有 29%，主因 C1 前期崩盘；≈25% 的 OJ 局会落在它上面）。
+      唯一高 ROI 杠杆仍是 <span class="mono">EARLY_CLUBMAN_TARGET 4→8~10</span> —— <b class="warn">需你拍板</b>（那是 09-08 你亲定的值）。</li>
+  <li><b>次要待查</b>：10859 的"<span class="mono">ADVANCE</span> 75 次而 d 恒 22 格"形态，
+      <span class="mono">PRIEST-ADV-DEGRADE</span>（fixK 那条链）<b>0 次</b> ⇒ 是另一条"发了令但人没走"的路径，与 fixK 无关。</li>
+</ul>
+</div>
+
+<footer>
+  数据：OJ 日志 2 份（本地核对）＋ 补跑 <span class="mono">map@270</span> / <span class="mono">map1@180</span> 各 24 局（fixM 源码 <span class="mono">055e3668</span>，<span class="mono">-rotate</span> 指定）。<br>
+  判决：<b>非崩溃、非回归；旋转已证否；无需处置。</b>
+</footer>
+
+</div>

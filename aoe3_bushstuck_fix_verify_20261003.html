@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>采集卡死修复 · 跑局验证报告 (2026-10-03)</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --dim:#5c6570; --line:#e3e6ea;
+    --ok:#0a7d3c; --okbg:#e8f6ee; --bad:#b3261e; --badbg:#fdecea;
+    --warn:#8a5a00; --warnbg:#fff5e0; --acc:#1c5fb8; --accbg:#e8f0fb;
+    --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14171a; --card:#1c2024; --ink:#e8eaed; --dim:#9aa3ad; --line:#2c3238;
+      --ok:#5ed68f; --okbg:#12301f; --bad:#ff8a80; --badbg:#331614;
+      --warn:#f0c060; --warnbg:#2e2410; --acc:#79b0f5; --accbg:#132234;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+       font:15px/1.72 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 4px;letter-spacing:-.3px}
+  h2{font-size:18px;margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+  h3{font-size:15px;margin:20px 0 8px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+  .verdict{background:var(--okbg);border:1px solid var(--ok);border-left:5px solid var(--ok);border-radius:10px;padding:16px 20px;margin:18px 0}
+  .verdict b{color:var(--ok);font-size:17px}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--accbg);font-weight:600;font-size:13px}
+  code{font-family:var(--mono);font-size:12.5px;background:var(--accbg);padding:1px 5px;border-radius:4px}
+  pre{font-family:var(--mono);font-size:12.5px;background:var(--bg);border:1px solid var(--line);
+      border-radius:8px;padding:11px 13px;overflow-x:auto;line-height:1.55;margin:9px 0}
+  .ok{color:var(--ok);font-weight:600}
+  .bad{color:var(--bad);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:20px;
+       background:var(--accbg);color:var(--acc);margin-right:6px}
+  .tag.ok{background:var(--okbg);color:var(--ok)}
+  .tag.bad{background:var(--badbg);color:var(--bad)}
+  .kv{display:grid;grid-template-columns:150px 1fr;gap:5px 12px;font-size:14px;margin:8px 0}
+  .kv dt{color:var(--dim);font-size:13px}
+  .kv dd{margin:0;font-family:var(--mono);font-size:12.5px}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:5px 0}
+  .note{font-size:13px;color:var(--dim);border-left:3px solid var(--line);padding-left:12px;margin:10px 0}
+  footer{margin-top:38px;padding-top:16px;border-top:1px solid var(--line);font-size:12.5px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>采集卡死修复 · 跑局验证报告</h1>
+<div class="sub">2026-10-03 ｜ 测试对象：<code>UsrAI.cpp</code> = <code>5af68f2d</code> · 7140 行（两轮修复合并版）｜ 跑局：map3 · <code>-exam -offscreen -freq MAX</code></div>
+
+<div class="verdict">
+  <b>结论：已修复。</b><br>
+  两局实机跑局中，<b>采集类卡死现象全部消失</b>：13 次卡死检测全部成功换目标并恢复工作（改前是"检测到但恢复不了，1502 帧周期复发"）；
+  <b>12/12 浆果丛全部采完</b>（改前凶手丛 21218 每派一人就吞一人、整局未采完）；两局末段引擎状态行 <b>Idle 异常 0 条、Work 稳定在岗</b>。
+</div>
+
+<h2>1. 实验设置与判据</h2>
+<table>
+  <tr><th>项</th><th>fix1</th><th>fix2</th></tr>
+  <tr><td>结果</td><td><span class="ok">胜</span>（jsonl 含 win:true）</td><td><span class="bad">负</span>（f15798 <code>DEFEAT: Priest killed</code>）</td></tr>
+  <tr><td>局长</td><td>41801 帧（27.9 分）打满</td><td>15802 帧（10.5 分）提前结束</td></tr>
+  <tr><td>退出码</td><td>0</td><td>3（<code>abort()</code>，已知非引入性，42~47% 局出现）</td></tr>
+  <tr><td>[STUCK] 触发</td><td>13 次</td><td>0 次</td></tr>
+  <tr><td>村民出生 / 死亡</td><td>25 / 5</td><td>17 / 0</td></tr>
+</table>
+<div class="note">
+  ⚠ <b>铁律 81</b>：2 局不足以判胜负，本报告<b>不用于胜率结论</b>，只用于验证"采集卡死"这一<b>机制</b>是否被消除（机制量不受局间随机性影响）。
+</div>
+
+<h2>2. J1 —— 新代码确实在跑</h2>
+<p>13 条 <code>[STUCK]</code> 全部带上了新增字段（<code>在采N人</code> / <code>拉黑N帧+待重派</code>），说明修复版二进制运行正常：</p>
+<pre>[STUCK f=21834] 村民SN=41350 state=1 空手1501帧 <b>目标SN=50719(资源) 在采0人</b> 位置=(661.9,541.1) 距TC=4.2格 <b>拉黑15000帧+待重派</b></pre>
+
+<h2>3. J2 —— 核心修复：同一村民再次卡死时，目标必换 ★</h2>
+<p>改前的铁证是"同一村民三次触发帧号严格等间隔 1502/1503，且目标从不改变"。现在的实测：</p>
+<table>
+  <tr><th>村民</th><th>触发次数</th><th>目标序列</th><th>间隔（帧）</th><th>判定</th></tr>
+  <tr><td>41153</td><td>2</td><td>50560 → 50763</td><td>4803</td><td class="ok">✅ 换了</td></tr>
+  <tr><td>41360</td><td>2</td><td>21196 → 51063</td><td>3677</td><td class="ok">✅ 换了</td></tr>
+  <tr><td>41350</td><td>2</td><td>50719 → 50671</td><td>12216</td><td class="ok">✅ 换了</td></tr>
+  <tr><td>41302</td><td>2</td><td>50897 → 21294</td><td>13917</td><td class="ok">✅ 换了</td></tr>
+</table>
+<p><b>4/4 全部换目标</b>（另 5 人只触发 1 次）。改前的病因是"拉黑打在旧树 50908、真凶丛从未进黑名单"，现在拉黑打的是<b>当场目标</b>，且主路径会查黑名单 ⇒ 必然换一个。</p>
+
+<h2>4. J3 —— 引擎状态行：全员在岗 ★主判据</h2>
+<p>引擎状态行（<code>Idle/Walk/Work</code> 计数）不受日志采样影响，是最可靠的机制量。取末 40% 局段的全部状态行：</p>
+<table>
+  <tr><th>局</th><th>末段状态行</th><th>Work≥5 的条数</th><th>Idle&gt;3 的条数</th><th>判定</th></tr>
+  <tr><td>fix1</td><td>112</td><td class="ok">112 / 112</td><td class="ok">0</td><td class="ok">✅ 全员在岗</td></tr>
+  <tr><td>fix2</td><td>43</td><td class="ok">43 / 43</td><td class="ok">0</td><td class="ok">✅ 全员在岗</td></tr>
+</table>
+<pre>fix1  f=41759 阶段=ATK  Idle:0 Carry:0 Walk:0 Work:20 Atk:0 | Mil:16 E:0
+fix2  f=15769 阶段=W2   Idle:0 Carry:0 Walk:0 Work:17 Atk:0 | Mil:1  E:4</pre>
+<p>fix1 的 5 名死亡村民（41317/41356/41350/41308/41164）是战损，不是卡死 —— 日志有明确死亡记录。其余 20 人全部工作到局末。</p>
+
+<h2>5. J4 —— 浆果丛：12/12 全部采完（改前有"吃人丛"）</h2>
+<table>
+  <tr><th>局</th><th>出现的浆果丛</th><th>采完</th><th>备注</th></tr>
+  <tr><td>fix1</td><td>12 个</td><td class="ok">12 / 12</td><td>改前凶手丛 21218 类现象<b>完全消失</b></td></tr>
+  <tr><td>fix2</td><td>6 个</td><td class="ok">5 / 6</td><td>21272 未采完 —— 但该局在 10.5 分因祭司被杀提前结束，非卡死</td></tr>
+</table>
+
+<h2>6. J5 —— 触发 [STUCK] 之后，村民是否真的恢复工作 ★</h2>
+<p>这是"打断不复位"缺陷是否修好的直接检验（改前：只派回 TC + 清零计时 ⇒ 1502 帧后原样复发）：</p>
+<table>
+  <tr><th>村民</th><th>末次触发帧</th><th>之后的指令条数</th><th>判定</th></tr>
+  <tr><td>41352</td><td>29722</td><td>26</td><td class="ok">✅ 恢复</td></tr>
+  <tr><td>41309</td><td>14724</td><td>11</td><td class="ok">✅ 恢复</td></tr>
+  <tr><td>41308</td><td>31263</td><td>8</td><td class="ok">✅ 恢复</td></tr>
+  <tr><td>41302 / 41313 / 41305</td><td>38285 / 29475 / 36086</td><td>7 / 7 / 6</td><td class="ok">✅ 恢复</td></tr>
+  <tr><td>41153 / 41350 / 41360</td><td>35182 / 34051 / 36882</td><td>5 / 4 / 3</td><td class="ok">✅ 恢复</td></tr>
+</table>
+<p><b>9/9 全部恢复工作</b>，且都工作到局末（或战死）。</p>
+
+<h2>7. 顺带拿到的两条新证据</h2>
+<div class="card">
+  <h3>① "满员超派"首次拿到阳性证据</h3>
+  <pre>[STUCK f=33204] 村民SN=41360 ... 目标SN=21196(资源) 在采2人 位置=(671.9,636.1) 距TC=1.7格</pre>
+  <p>村民 41360 被派去<b>已有 2 人</b>的浆果丛 21196 并卡死。这印证了"主路径每丛 ≤3 人 vs 冷路径 ≤2 人"的不一致确实会超派
+  —— 引擎/资源实际只容得下 2 人，第 3 人白跑。这条已从上轮的"假设降级"回到<b>待修清单</b>。</p>
+</div>
+<div class="card">
+  <h3>② 卡死位置分成两类（下一步的方向）</h3>
+  <ul>
+    <li><b>近距型</b>（距 TC 1.7 ~ 14.2 格）：多半是自家 TC/建筑旁<b>拥挤或被在建建筑挡住</b>（21196 那条仅 1.7 格）。</li>
+    <li><b>远距型</b>（距 TC 53.0 / 57.7 格）：远资源，多半是<b>不可达/地形阻隔</b>。</li>
+  </ul>
+  <p>两类病因不同 ⇒ 若要根治"卡死触发"本身（而非仅自动恢复），应分别处理。</p>
+</div>
+
+<h2>8. 判读口径的一处自我纠错</h2>
+<div class="card" style="border-left:5px solid var(--warn)">
+  <p>我第一版分析脚本用「<b>村民末条指令帧 → 沉默时长</b>」当卡死判据，<b>结论完全错误</b>：它把 fix2 报成"13 人沉默 2784~8875 帧"，
+  而同一局的引擎状态行显示 <code>Work:17 Idle:0</code> —— 人全在干活。</p>
+  <p><b>原因</b>：引擎只在【换目标】时打印 <code>设置工作目标为 X</code>，村民<b>持续采同一处不会产生新行</b> ⇒ "无新指令" ≠ "没活动"。</p>
+  <p><b>正确判据</b>：① 引擎状态行的 Idle/Walk/Work 计数（首选）② 死亡记录（死后无指令 ≠ 卡死）③ [STUCK] 行本身。<br>
+  脚本已修正为 v2，此项已写进归因技能。</p>
+</div>
+
+<h2>9. 结论</h2>
+<div class="card" style="border-left:5px solid var(--ok)">
+  <p><b>"4 分钟浆果采集者一直不动"已修复。</b>三层证据闭合：</p>
+  <ul>
+    <li><b>代码在跑</b> —— 13 条 <code>[STUCK]</code> 带新字段（含 <code>在采N人</code>、<code>+待重派</code>）</li>
+    <li><b>机制生效</b> —— 4/4 同村民复发时目标必换（改前永不变）；<b>9/9 触发者恢复工作</b>（改前沉默到底）</li>
+    <li><b>现象消除</b> —— 12/12 浆果丛采完；两局末段状态行 Idle 异常 0 条、Work 稳定</li>
+  </ul>
+  <p class="note">fix2 是祭司早死败局（<code>DEFEAT: Priest killed</code>），村民仍在岗 ⇒ 修复与胜负解耦，不是"靠胜负掩盖问题"。</p>
+</div>
+
+<h2>10. 附：你实机那局（30 分钟打满）照出一个相邻缺陷</h2>
+<div class="card" style="border-left:5px solid var(--warn)">
+  <p><b>现象</b>：反攻期（f40815 之后）有 <b>6 次 <code>[STUCK]</code> 的目标是敌方箭塔 <code>11416 / 11424</code></b>，
+  且 <code>在采21人 / 14人 / 15人</code> —— 一眼就是荒谬值（没人能 21 人同采一个点）。</p>
+  <pre>[STUCK f=40815] 41597 state=2 空手1503帧 <b>目标SN=11416(资源) 在采21人</b> 距TC=89.9格
+f40817 HumanAction:村民 41597 设置工作目标为 <b>浆果丛 21540</b>   ← 被"待重派"打断
+f40821 HumanAction:村民 41597 设置攻击目标为 <b>箭塔 11416</b>      ← 4 帧后又被反攻逻辑派回</pre>
+  <p><b>根因</b>：<code>11416</code> 是 27 分钟农民反攻（<code>COUNTER_FARMER_ATTACK_FRAME 40500</code>）
+  派去围攻的<b>敌箭塔</b>。攻击中的农民 ＝ <b>空手 ＋ <code>state=2</code>(WORKING)</b> ⇒ 正好落进
+  <code>detectStuckGatherers</code> 的「空手且非空闲」判据 ⇒ 1500 帧后被误判成"采集卡死"。</p>
+  <p><b>影响</b>：每次误报＝打断攻击 1~4 帧（反攻逻辑 4 帧内把它派回）⇒ <b>抖动，量级很小</b>；
+  更该管的是 <b>日志噪音</b>（6 条假 <code>[STUCK]</code> 干扰判读）与 <b>敌塔 SN 被写进资源黑名单</b>（无害 —— 它不是资源类型，不会被当资源选）。</p>
+  <p><b>⚠ 它不是本次修复引入的</b>：改前同样会打断（只是把村民派回 TC，而非派去采浆果），改后同样在 4 帧内被纠正
+  —— <b>严重程度相当</b>。它只是被"实机跑局 ＋ 新的 <code>在采N人</code> 字段"一起照了出来
+  （该字段本该显示"在采集的人数"，遇到围攻场景立刻自证荒谬）。<br>
+  <b>改法（待拍板）</b>：判定时排除"目标不是资源类" —— 即 <code>WorkObjectSN</code> 不在 <code>infoPtr->resources</code> 里就跳过；
+  或直接排除 <code>state == HUMAN_STATE_ATTACKING</code>（注意实测该场景 state=2，用 state 判不出来，得用目标类型）。</p>
+</div>
+
+<h2>11. 仍待处理</h2>
+<table>
+  <tr><th>#</th><th>项</th><th>状态</th></tr>
+  <tr><td>1</td><td>浆果每丛上限 3（主路径）vs 2（冷路径）不一致 + <code>assignedBush</code>/<code>frameBushCount</code> 双份实现</td><td class="warn">待 A/B（本轮已有"在采2人"超派旁证）</td></tr>
+  <tr><td>2</td><td>近距型卡死（TC/建筑旁拥挤）—— 是否需要在 <code>[STUCK]</code> 后顺带临时挪开落点</td><td>待定</td></tr>
+  <tr><td>3</td><td>祭司早死（fix2 的败因，属已知败因 A）</td><td>独立问题</td></tr>
+  <tr><td>5</td><td><b>战斗中村民被误判"采集卡死"</b>（反攻期围攻敌箭塔时 ⇒ 打断抖动 ＋ 日志噪音）</td><td class="warn">新增待修（见 §10）</td></tr>
+  <tr><td>4</td><td><code>_submit/</code> 已失配（仍是 <code>f425fcb1</code>·7199 / 507 行 .h），提交前必须 <code>mk_submit.py</code> 重生成 .cpp+.h</td><td class="bad">提交阻塞项</td></tr>
+</table>
+
+<footer>
+  验证方式：map3 · 2 局 <code>-exam -offscreen -freq MAX</code> 跑局 → AIText 日志机制量分析（引擎状态行为主判据）+ 二进制字符串互斥判据。<br>
+  测试对象：<code>UsrAI.cpp</code> = <code>5af68f2d</code>（7140 行 / 纯 LF）+ <code>UsrAI.h</code> = <code>996fc2c6</code>（508 行 / 纯 CRLF）；exe = 2210816 B。
+</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,6 @@
+lines= 45002
+--- first line (truncated) ---
+{"food":200,"frame":1,"gold":0,"score":0,"stone":0,"time":40,"win":false,"wood":200}
+
+--- sample building-like keys ---
+<class 'dict'> ['food', 'frame', 'gold', 'score', 'stone', 'time', 'win', 'wood']

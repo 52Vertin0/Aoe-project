@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>跨地图胜率矩阵 · AoE3 UsrAI · 2026-09-27</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --fg:#1c1c1e; --muted:#6b6f76; --line:rgba(0,0,0,.10);
+    --accent:#185fa5; --accent2:#85b7eb; --ok:#3b6d11; --bad:#a32d2d; --warn:#854f0b;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#141518; --card:#1d1f23; --fg:#ecedef; --muted:#9aa0a8; --line:rgba(255,255,255,.12);
+      --accent:#85b7eb; --accent2:#3a5f8a; --ok:#97c459; --bad:#f09595; --warn:#fac775;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.7;padding:28px 20px 60px}
+  .wrap{max-width:920px;margin:0 auto}
+  h1{font-size:20px;font-weight:500;margin:0 0 6px}
+  h2{font-size:15px;font-weight:500;margin:28px 0 10px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 18px}
+  .card{background:var(--card);border:0.5px solid var(--line);border-radius:12px;padding:16px 18px;margin:0 0 14px}
+  .banner{border-left:3px solid var(--warn);color:var(--warn);font-size:13px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 14px}
+  .metric{background:var(--card);border:0.5px solid var(--line);border-radius:8px;padding:12px 14px}
+  .metric .lab{font-size:12px;color:var(--muted)}
+  .metric .val{font-size:24px;font-weight:500;line-height:1.3}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:0.5px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-weight:500;font-size:12px}
+  tr:last-child td{border-bottom:none}
+  .best{color:var(--ok);font-weight:500}
+  .zero{color:var(--bad);font-weight:500}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+  ul{margin:6px 0 0;padding-left:20px}
+  li{margin:4px 0}
+  .chartbox{position:relative;width:100%;height:250px}
+  .tw{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>跨地图胜率矩阵</h1>
+  <p class="sub">AoE3 UsrAI 跑批 · 2026-09-27 · 代码 <span class="mono">UsrAI.cpp 5f0be948 · 6441 行</span> · 脚本 <span class="mono">z_verify.sh</span> / 分析 <span class="mono">analyze_maps.py</span></p>
+
+  <div class="card banner">
+    <b>⚠ 样本量警告</b>：每张地图仅 <b>3 局</b>（用户指定）。95% 置信区间宽达 ±56 个百分点，Fisher 精确检验全部不显著（p=0.40 / 1.00 / 0.40）。
+    <b>本页只能作为方向性探针，不能据此判定地图间的真实难度差异。</b>
+  </div>
+
+  <div class="grid">
+    <div class="metric"><div class="lab">合计局数</div><div class="val">12</div></div>
+    <div class="metric"><div class="lab">胜 / 负 / 未决</div><div class="val">3 / 8 / 1</div></div>
+    <div class="metric"><div class="lab">总胜率</div><div class="val">25.0%</div></div>
+    <div class="metric"><div class="lab">祭司死亡 / 早死</div><div class="val">8 / 4</div></div>
+  </div>
+
+  <h2>各地图胜率</h2>
+  <div class="card">
+    <div class="chartbox"><canvas id="c1" role="img" aria-label="各地图胜率横向条形图：map.njust 0%，map1.njust 33.3%，map2.njust 0%，map3.njust 66.7%，每图 3 局">map.njust 0%、map1.njust 33.3%、map2.njust 0%、map3.njust 66.7%（每图 3 局）</canvas></div>
+  </div>
+
+  <div class="card tw">
+    <table>
+      <thead><tr>
+        <th>地图</th><th>n</th><th>胜</th><th>负</th><th>未决</th><th>胜率</th><th>95% CI</th>
+        <th>祭司死</th><th>早死</th><th>进反攻</th><th>ADV&gt;0</th><th>首感化帧</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>map.njust <span style="color:var(--muted)">(map0)</span></td><td>3</td><td>0</td><td>3</td><td>0</td><td class="zero">0.0%</td><td>0.0~56.2</td><td>3</td><td>1</td><td>1</td><td>1</td><td>—</td></tr>
+        <tr><td>map1.njust</td><td>3</td><td>1</td><td>1</td><td>1</td><td>33.3%</td><td>6.1~79.2</td><td>1</td><td>1</td><td>2</td><td>1</td><td>43435</td></tr>
+        <tr><td>map2.njust</td><td>3</td><td>0</td><td>3</td><td>0</td><td class="zero">0.0%</td><td>0.0~56.2</td><td>3</td><td>2</td><td>1</td><td>0</td><td>—</td></tr>
+        <tr><td>map3.njust</td><td>3</td><td>2</td><td>1</td><td>0</td><td class="best">66.7%</td><td>20.8~93.9</td><td>1</td><td>0</td><td>2</td><td>2</td><td>40476</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>逐局明细</h2>
+  <div class="card tw">
+    <table>
+      <thead><tr><th>局</th><th>地图</th><th>结果</th><th>祭司死亡帧</th><th>反攻起帧</th><th>ADV</th><th>CONV</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">z001</td><td>map.njust</td><td>负</td><td>15718</td><td>—</td><td>0</td><td>0</td></tr>
+        <tr><td class="mono">z002</td><td>map.njust</td><td>负</td><td>41349</td><td>33001</td><td>1</td><td>0</td></tr>
+        <tr><td class="mono">z003</td><td>map.njust</td><td>负</td><td>24521</td><td>—</td><td>0</td><td>0</td></tr>
+        <tr><td class="mono">z101</td><td>map1.njust</td><td>未决</td><td>—</td><td>33001</td><td>0</td><td>0</td></tr>
+        <tr><td class="mono">z102</td><td>map1.njust</td><td><b>胜</b></td><td>—</td><td>33001</td><td>14</td><td>1</td></tr>
+        <tr><td class="mono">z103</td><td>map1.njust</td><td>负</td><td>15771</td><td>—</td><td>0</td><td>0</td></tr>
+        <tr><td class="mono">z201</td><td>map2.njust</td><td>负</td><td>39786</td><td>33001</td><td>0</td><td>0</td></tr>
+        <tr><td class="mono">z202</td><td>map2.njust</td><td>负</td><td><span class="zero">4165</span></td><td>—</td><td>0</td><td>0</td></tr>
+        <tr><td class="mono">z203</td><td>map2.njust</td><td>负</td><td><span class="zero">3788</span></td><td>—</td><td>0</td><td>0</td></tr>
+        <tr><td class="mono">z301</td><td>map3.njust</td><td><b>胜</b></td><td>—</td><td>33001</td><td>19</td><td>1</td></tr>
+        <tr><td class="mono">z302</td><td>map3.njust</td><td><b>胜</b></td><td>—</td><td>33001</td><td>12</td><td>1</td></tr>
+        <tr><td class="mono">z303</td><td>map3.njust</td><td>负</td><td>24838</td><td>—</td><td>0</td><td>0</td></tr>
+      </tbody>
+    </table>
+    <p class="sub" style="margin:10px 0 0">胜 = jsonl <b>任一行</b> <span class="mono">"win":true</span>（胜帧后引擎还会再写一帧 win:false）；负 = ait 含 <span class="mono">DEFEAT: Priest killed</span>（<span class="mono">ALL WAVES DEFEATED!</span> 是反攻启动事件，非胜负）；早死 = 死亡帧 &lt; 23253（复合弓首产中位帧）。</p>
+  </div>
+
+  <h2>关键观察</h2>
+  <div class="card">
+    <ul>
+      <li><b>胜路只在 map3 复现。</b>“33001 帧进入反攻 → 祭司前出感化武器厂 → 胜”这条链，只有 map3 的两局走出（ADV 19 / 12，各 1 次成功感化）；其余三图的败局几乎全部 <span class="mono">ADV=0</span>，祭司在反攻启动前就被击杀。</li>
+      <li><b>非 map3 图上是“开局就被贴脸”，不是“祭司冒进”。</b>z202 死在 4165 帧、z203 死在 3788 帧（连一条 <span class="mono">Priest st=</span> 状态行都来不及打印）。z202 死前状态：<span class="mono">hp=0.40 nearE=1.5 ally=0 mode=1(逃)</span> —— 身边一个兵都没有，敌军已贴身。</li>
+      <li><b>指向结构性过拟合。</b>历史上 71 个跑批脚本 <b>100% 只用 map3.njust</b>，全部调参（伐木锚点、农场数、复合弓、祭司站位）都是在该图的地形与出生布局上拟合出来的。换图后胜率崩塌，发生在开局/布局层面而非祭司行为层面。</li>
+    </ul>
+  </div>
+
+  <h2>方法与复现</h2>
+  <div class="card">
+    <ul>
+      <li>命令：<span class="mono">./release/newAOE.exe -exam -offscreen -freq MAX -map &lt;map&gt; -rotate 90 -ResultLogFile t.jsonl -AITextLog t.ait</span>（与原 g1/m1 批完全一致，唯一变量是 <span class="mono">-map</span>）。</li>
+      <li>地图文件：<span class="mono">map.njust</span> / <span class="mono">map1.njust</span> / <span class="mono">map2.njust</span> / <span class="mono">map3.njust</span>（文件名里的数字即本页的 map0~map3）。</li>
+      <li>跑批：<span class="mono">PAR=8 bash z_verify.sh</span>（8 路并发，12 局约 3 分钟）；数据 <span class="mono">z0*/z1*/z2*/z3*.ait|.jsonl</span>；统计 <span class="mono">python analyze_maps.py</span>。</li>
+      <li>代码版本：<span class="mono">UsrAI.cpp md5 5f0be948</span>（含用户 11:27 自改的“建造位黑名单按帧过期”），exe 11:27 重编；<span class="mono">syn.py</span> 0 error / 16 warning。</li>
+      <li>若要得出可信结论：每图 ≥24 局（共 96 局，8 路并发约 20 分钟）。</li>
+    </ul>
+  </div>
+
+  <p class="sub" style="margin-top:22px">生成于 2026-09-27 12:2x · 代码 5f0be948 · 逐局数据 z001~z303</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+(function(){
+  var cs = getComputedStyle(document.documentElement);
+  var txt = (cs.getPropertyValue('--muted')||'#6b6f76').trim();
+  var line = (cs.getPropertyValue('--line')||'rgba(0,0,0,.1)').trim();
+  var el = document.getElementById('c1');
+  if(!el || typeof Chart === 'undefined') return;
+  new Chart(el, {
+    type:'bar',
+    data:{
+      labels:['map.njust (map0)','map1.njust','map2.njust','map3.njust'],
+      datasets:[{label:'胜率 %', data:[0,33.3,0,66.7],
+        backgroundColor:['#85b7eb','#85b7eb','#85b7eb','#185fa5'],
+        borderRadius:4, barThickness:22}]
+    },
+    options:{
+      indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:function(c){return c.parsed.x+'%   ('+[0,1,0,2][c.dataIndex]+'/3)';}}}},
+      scales:{
+        x:{min:0,max:100,ticks:{color:txt,callback:function(v){return v+'%';}},grid:{color:line}},
+        y:{ticks:{color:txt,autoSkip:false},grid:{display:false}}
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

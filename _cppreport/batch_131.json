@@ -1,0 +1,16 @@
+{
+  "file_id": "C:/Users/ZhuanZ/Downloads/C++课程设计报告_帝国时代游戏.docx",
+  "blocks": [
+    {"block": "paragraph", "calls": [
+      {"tool": "doc_insert_paragraph_with_text", "args": {
+        "runs": [{"type": "image", "image_path": "C:/new-aoe3.0.7g/_cppreport/fig1_class.png", "w": 440, "h": 315}],
+        "paragraph_property": {"jc": "center"}}}
+    ]},
+    {"block": "paragraph", "calls": [
+      {"tool": "doc_insert_paragraph_with_text", "args": {
+        "text": "图 1  帝国时代 AI 相关类图",
+        "text_format": {"font_family": "宋体", "font_size": 10.5},
+        "paragraph_property": {"jc": "center", "first_line_indent": 0}}}
+    ]}
+  ]
+}

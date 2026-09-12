@@ -1,0 +1,95 @@
+# 注释引用核对  source=UsrAI.cpp
+
+
+## A. 注释中出现、但代码里找不到的「大写标识符」 (0 个)
+
+
+## B. 注释中的行号引用 → 当前该行真实内容 (22 处)
+
+注释L30     引用 L6438  
+    注释文字: //       的第一步【自带 findBuildSite 兜底】(旧 cpp:6438 `return findBuildSite(x,y,3);`)，
+    该行实际: lastBuildIssueFrame[buildingType] = frame;
+
+注释L301    引用 L804   
+    注释文字: //   马厩 = 学院前置（Development.cpp:804 addPreCondition(STABLE.buildCon)），不解马厩则学院永远建不出。
+    该行实际: //     判否(实测 4013 帧 0 次治疗)；2.0 格仍在近战贴身(≈1 格)之外，允许靠近交火线救人。
+
+注释L302    引用 L807   
+    注释文字: //   学院 = 方阵兵唯一产线（Development.cpp:807-810，BRONZEAGE + 60食+40金，无额外科技依赖）。
+    该行实际: for (auto &b : info.buildings)
+
+注释L308    引用 L602   
+    注释文字: // ★ 暂时封禁阔剑科技：引擎解锁条件有 bug——Development.cpp:602-603 把
+    该行实际: break;
+
+注释L309    引用 L602   
+    注释文字: //   历史上的引擎 bug（黄金被错传进石头槽）已修正：Development.cpp:602-603/607-608 现写为
+    该行实际: break;
+
+注释L327    引用 L158   
+    注释文字: //   （见 AI接口使用指南.md:352、Building.h:137-158、Development.cpp:158-180）
+    该行实际: //   浆果 resourceSort = HUMAN_GRANARYFOOD → 交付建筑就是【谷仓】(StaticRes.cpp:NUM_STATICRES_Bush)，
+
+注释L1223   引用 L1091  
+    注释文字: //     （引擎 Core.cpp:1091-1096 判定祭司对同阵营人类走"治疗"而非"攻击"）。
+    该行实际: if (margin >= 0 && !foundSafe) { bestX = tx; bestY = ty; bestSafe = margin; bestAnchor = dAnchor; foundSafe = true; found = true; 
+
+注释L1693   引用 L727   
+    注释文字: //     （靶场←兵营 Development.cpp:727、农场←市场 :765、市场←谷仓 :635）。
+    该行实际: //   【修正 2026-09-08】原 27000 帧(18 分钟)与反攻内部门槛 36000 不一致 →
+
+注释L1816   引用 L549   
+    注释文字: //   建的是仓库 STOCK 而非谷仓：瞪羚肉 ProductSort=HUMAN_STOCKFOOD，只能交付仓库（Building.cpp:549）。
+    该行实际: return n;
+
+注释L1920   引用 L1637  
+    注释文字: //   ⇒ 农场闸(cpp:1637 / 1856 两处均要求 ==1) 永久卡死，食物只能靠浆果/猎象。
+    该行实际: }
+
+注释L1966   引用 L765   
+    注释文字: //   而农场依赖市场、市场依赖谷仓（Development.cpp:765 / :635）⇒ 整条食物经济链被推迟。
+    该行实际: if (priestMoveCooldown > 0) priestMoveCooldown--;
+
+注释L1985   引用 L696   
+    注释文字: //   ★ 时代闸（引擎 Development.cpp:696 buildCon 要求 CIVILIZATION_TOOLAGE）：缺此闸时
+    该行实际: state = UPGRADING;
+
+注释L3434   引用 L739   
+    注释文字: // ★ 引擎真实成本（Development.cpp:739-740）：只需「铜器时代 + 木材 + 食物」，**不需要黄金**，
+    该行实际: }
+
+注释L3809   引用 L744   
+    注释文字: //   真实扣费 = 食物 + 黄金(20)，不扣石头(Development.cpp:744-745，引擎已修正)。
+    该行实际: void UsrAI::managePriest() {
+
+注释L3907   引用 L607   
+    注释文字: //   ★ 引擎已修正：训练阔剑兵(Development.cpp:607-608)现真扣 食物+黄金（need_Stone=0）。
+    该行实际: bronzeStallFrames = 0;
+
+注释L4018   引用 L582   
+    注释文字: //     (Core.cpp:582 getObjectSN)：空闲=-1、攻击中=目标SN，故"已在攻击"判据是 Project != -1。
+    该行实际: state = UPGRADING;
+
+注释L4174   引用 L433   
+    注释文字: // 已接令/正在攻击该目标(引擎 Core.cpp:433 会把 WorkObjectSN 设为目标SN)→不重发，
+    该行实际: // ★ 石头保底采集（仅在不达停采上限时生效）：石头现仅用于
+
+注释L4365   引用 L549   
+    注释文字: //   资源→建筑映射（引擎确认）：瞪羚/大象/浆果/树/石/金 → 仓库(STOCK，Building.cpp:549 收
+    该行实际: return n;
+
+注释L4517   引用 L622   
+    注释文字: //   Core.cpp:622【explored||visible】约束 ⇒ "发现→丢失视野→重置→需再次可见"循环 ⇒ 祭司目标不稳定。
+    该行实际: }
+
+注释L5156   引用 L3952  
+    注释文字: // ★ 远程兵推进 / 拆基地（cpp:3952 之前已重写为"打-拉"双状态机,本段只承接相位机没管的"射程外"流程）：
+    该行实际: info.Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD + goldKeep2) {
+
+注释L5195   引用 L622   
+    注释文字: //   ⚠ 只统计【已探明】的敌建筑（Core.cpp:622 受 explored||visible 约束）——未侦察到的塔对 AI "不存在"。
+    该行实际: }
+
+注释L5642   引用 L5405  
+    注释文字: //   （箭塔是 2×2，+1 即中心；见 cpp:5405 bSize 判据）。
+    该行实际: if (isPassableAt(tx, ty)) {

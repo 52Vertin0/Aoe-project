@@ -1,0 +1,158 @@
+<meta charset="UTF-8">
+<title>AoE3 UsrAI · fixN 判决（反攻前农民自杀腾人口）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --sub:#5b6470; --line:#e3e6ea;
+    --ok:#0b8a4b; --warn:#c26a00; --bad:#c0392b; --accent:#1f5fd0; --mono:#f0f2f5;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);margin:0;padding:28px 20px 60px;
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 4px}
+  h2{font-size:17px;margin:34px 0 10px;padding-left:10px;border-left:4px solid var(--accent)}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--sub)}
+  p{margin:8px 0}
+  .dim{color:var(--sub)}
+  .good{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  .mono{font-family:"SFMono-Regular",Consolas,monospace;background:var(--mono);
+        padding:1px 5px;border-radius:3px;font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+  .verdict{border-left:5px solid var(--bad)}
+  .kpi{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+  .kpi>div{flex:1 1 190px;background:var(--card);border:1px solid var(--line);
+           border-radius:10px;padding:14px 16px}
+  .kpi b{display:block;font-size:25px;line-height:1.25}
+  .kpi span{display:block;font-size:12.5px;color:var(--sub);margin-top:4px}
+  table{border-collapse:collapse;width:100%;background:var(--card);
+        border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:10px 0;font-size:14px}
+  th,td{border-bottom:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#eef1f5;font-weight:600;font-size:13.5px}
+  tr:last-child td{border-bottom:none}
+  td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  th.n{text-align:right}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:9px;vertical-align:1px}
+  .t-ok{background:#e3f5ea;color:var(--ok)} .t-bad{background:#fbe9e7;color:var(--bad)}
+  .t-warn{background:#fdf1e0;color:var(--warn)} .t-neu{background:#eceff3;color:var(--sub)}
+  pre{background:var(--mono);border:1px solid var(--line);border-radius:8px;
+      padding:11px 13px;overflow:auto;font:12.5px/1.6 Consolas,monospace;margin:8px 0}
+  ul{margin:8px 0;padding-left:20px} li{margin:5px 0}
+  footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
+         font-size:12.5px;color:var(--sub)}
+</style>
+<div class="wrap">
+
+<h1>fixN · 反攻前人口满 ⇒ 农民自杀腾人口给军队</h1>
+<p class="dim">96 局四图 × 24，<span class="mono">-rotate 0</span>，<span class="mono">PAR=8</span>，<span class="mono">TMO=420</span>
+　源码 <span class="mono">e41869fb</span>·7786 ／ 基线 fixM <span class="mono">055e3668</span>·7649</p>
+
+<div class="card verdict">
+<h3 style="margin-top:0">一句话结论</h3>
+<p><b class="bad">机制 100% 达成，胜率无收益且方向为负 ⇒ 不保留，已回退到 fixM。</b><br>
+强制把 <span class="mono">Mil</span> 从锁死的 <b>27 顶到 33</b>（农民 22→16），其余一切不变 ⇒
+胜率 <b>61.5% → 47.9%（−13.5pp，Fisher p=0.082）</b>，分图 <b>3 降 1 平</b>。
+按「处理前」分层后结论不变（MH OR=0.58，p≈0.084）⇒ <b>不是批次构成偏差</b>。</p>
+</div>
+
+<div class="kpi">
+  <div><b class="good">27 → 33</b><span>反攻前军队规模（机制完全达成）</span></div>
+  <div><b class="bad">−13.5pp</b><span>胜率 61.5% → 47.9%</span></div>
+  <div><b class="bad">3 / 4</b><span>分图下降（map1 持平）</span></div>
+  <div><b class="warn">p = 0.082</b><span>边缘：无收益证据，上限约中性</span></div>
+</div>
+
+<h2>1 · 全臂胜率对照</h2>
+<table>
+<thead><tr><th>臂</th><th>说明</th><th class="n">胜率</th><th class="n">祭死</th><th class="n">超时</th><th class="n">map</th><th class="n">map1</th><th class="n">map2</th><th class="n">map3</th></tr></thead>
+<tbody>
+<tr><td>base1</td><td class="dim">早期基线</td><td class="n">37/96 38.5%</td><td class="n">44</td><td class="n">15</td><td class="n">0</td><td class="n">8</td><td class="n">15</td><td class="n">14</td></tr>
+<tr><td>fix2</td><td class="dim">已回退</td><td class="n">42/96 43.8%</td><td class="n">31</td><td class="n">23</td><td class="n">2</td><td class="n">11</td><td class="n">13</td><td class="n">16</td></tr>
+<tr><td>fixH</td><td class="dim">已回退</td><td class="n">40/96 41.7%</td><td class="n">45</td><td class="n">11</td><td class="n">4</td><td class="n">11</td><td class="n">15</td><td class="n">10</td></tr>
+<tr><td>fixI</td><td class="dim">反攻期不主动追敌</td><td class="n">45/96 46.9%</td><td class="n">39</td><td class="n">12</td><td class="n">7</td><td class="n">12</td><td class="n">12</td><td class="n">14</td></tr>
+<tr><td>fixJ</td><td class="dim">已回退</td><td class="n">44/96 45.8%</td><td class="n">39</td><td class="n">13</td><td class="n">6</td><td class="n">13</td><td class="n">13</td><td class="n">12</td></tr>
+<tr><td>fixK</td><td class="dim">落点可达性退化</td><td class="n">49/96 51.0%</td><td class="n">37</td><td class="n">10</td><td class="n">3</td><td class="n">16</td><td class="n">16</td><td class="n">14</td></tr>
+<tr><td>fixL</td><td class="dim">W3 护驾排除投石车（无效但保留）</td><td class="n">46/96 47.9%</td><td class="n">41</td><td class="n">9</td><td class="n">1</td><td class="n">12</td><td class="n">15</td><td class="n">18</td></tr>
+<tr style="background:#eef6ff"><td><b>fixM</b> <span class="tag t-ok">当前</span></td><td>W3 祭司优先感化投石车</td>
+    <td class="n"><b>59/96 61.5%</b></td><td class="n">30</td><td class="n">7</td><td class="n">7</td><td class="n">16</td><td class="n">18</td><td class="n">18</td></tr>
+<tr style="background:#fdf1e0"><td><b>fixN3</b> <span class="tag t-bad">已回退</span></td><td>fixM ＋ 农民自杀腾人口</td>
+    <td class="n"><b>46/96 47.9%</b></td><td class="n">42</td><td class="n">8</td><td class="n">3</td><td class="n">16</td><td class="n">12</td><td class="n">15</td></tr>
+</tbody>
+</table>
+<p class="dim">fixN3 相对 fixM：map <b>7→3</b>、map2 <b>18→12</b>、map3 <b>18→15</b>、map1 <b>16→16</b>。掉的 13 胜 ≈ 变成 12 次祭司死亡。</p>
+
+<h2>2 · 机制量：改动本身完全生效</h2>
+<table>
+<thead><tr><th>判据</th><th class="n">fixM</th><th class="n">fixN3</th><th>判读</th></tr></thead>
+<tbody>
+<tr><td>触发局数 / 自杀次数</td><td class="n">0 / 0</td><td class="n"><b>69/96 局 · 362 次</b></td><td class="good">✓ 达成</td></tr>
+<tr><td>反攻前 <span class="mono">Frm</span>（农民数）</td><td class="n">恒 22</td><td class="n"><b>中位 16</b>（41 局 ≤16）</td><td class="good">✓ 降到地板</td></tr>
+<tr><td>反攻前 <span class="mono">Mil</span> 峰值</td><td class="n">锁死 27</td><td class="n"><b>中位 32，峰值 33</b></td><td class="good">✓ 一对一腾位</td></tr>
+<tr><td>全局 <span class="mono">Mil</span> &gt; 27 的局</td><td class="n">9/96</td><td class="n"><b>70/96</b></td><td class="good">✓</td></tr>
+<tr><td><span class="mono">nMy</span> 超卖（&gt;50）</td><td class="n">8 局</td><td class="n"><b>2 局</b></td><td class="good">✓ 护栏更严</td></tr>
+</tbody>
+</table>
+<pre>典型轨迹（map1_r0_1，win=1）  —— 杀一个、军队吃一个、再杀下一个
+26k:22/24  27k:22/26  28k:19/29  29k:16/32  30k:16/33  31k:16/33  ...  36k:16/26  37k:16/21
+     Frm/Mil        农民 22→16 的同时军队 24→33</pre>
+<p class="dim">⇒ <b>「腾位→扩军」这条链完全是通的</b>，问题不在实现，而在"扩军本身没有收益"。</p>
+
+<h2>3 · 统计判读：三层一致指向「负 / 至多中性」</h2>
+<table>
+<thead><tr><th>口径</th><th>结果</th><th>判读</th></tr></thead>
+<tbody>
+<tr><td><b>未分层 Fisher</b></td><td>Δ = −13.5pp，<b>p = 0.0816</b></td><td class="warn">边缘</td></tr>
+<tr><td>对 fixI / fixK / fixL / fixJ</td><td>p = 1.00 / 0.77 / 1.00 / 0.89</td><td class="dim">fixN3 已<b>退回历史簇</b>（簇均 45.1%、SD 4.1pp ⇒ fixN3 = +0.68 SD，fixM = +3.96 SD）</td></tr>
+<tr><td><b>分层（按处理前 <span class="mono">Mil</span>）</b><br><span class="dim">f=20000~27000，改动尚未生效</span></td>
+    <td>0~15：56%→40%（n=16/20）<br>16~25：69%→56%（n=71/63）<br>26+：50%→75%（n=2/4）</td>
+    <td><b>Mantel-Haenszel OR = 0.58，χ²=2.99，<span class="warn">p≈0.084</span></b><br>⇒ <b>不是构成偏差造成的假象</b></td></tr>
+<tr><td><b>批次可比性</b></td><td>处理前窗口两臂中位数<b>完全相同</b>（<span class="mono">Mil</span> 19、<span class="mono">nMy</span> 42）</td><td class="good">⇒ 不是跑批环境差异</td></tr>
+<tr><td>批次内分群</td><td>自杀局 40/69 = <b>58.0%</b>；非自杀局 6/27 = 22.2%</td><td class="dim">自杀本身不"毒"，但也<b>没能把胜率抬到 fixM 之上</b></td></tr>
+</tbody>
+</table>
+<p class="dim">95% CI（OR）：约 <span class="mono">[0.31, 1.07]</span> ⇒ <b>点估计为负、上界约中性</b>：没有任何"有收益"的证据，而成本是确定的（采集力 −27%）。</p>
+
+<h2>4 · ★ 本轮最有价值的一条：实验性证否「军队越多 ⇒ 胜率越高」</h2>
+<div class="card">
+<ul>
+  <li>既有记忆（§3.4）早有"反转记录"：<span class="mono">Mil≥28 ⇒ 75% 胜</span> 疑为<b>口径假象（是结果不是原因）</b>——但当时<b>只有相关性</b>，没有因果检验。</li>
+  <li><b>fixN 是第一个因果实验</b>：用外部手段（农民自杀腾位）把 <span class="mono">Mil</span> 从 27 <b>强制</b>顶到 33，控制住其余一切 ⇒ <b class="bad">胜率反降 13.5pp</b>。</li>
+  <li>⇒ <b><span class="mono">Mil</span> 大是"局面顺风"的结果，不是原因；27 不是被人口上限卡住的瓶颈。</b></li>
+  <li>⇒ <b>通用铁律：凡"某量大的局胜率高"，动手抬它之前必须先做因果实验</b>（外部手段强制改变该量、控制其余；再用「处理前」分层排除构成偏差）。</li>
+  <li>⇒ 代价侧：6 个农民 = 采集力 −27%，换来 6 个兵 ⇒ <b>反攻前"经济 → 军事"转换率 &lt; 1:1</b>。</li>
+</ul>
+</div>
+
+<h2>5 · 可复用的教训</h2>
+<div class="card">
+<ul>
+  <li><b>①「人口满」有两个不同的满。</b><span class="mono">Human_MaxNum</span> = 房屋数×每屋人口（<span class="mono">Development.h:63</span>），<b>不含</b> <span class="mono">humanNum_Top=50</span> 硬顶。
+      首轮用 <span class="mono">min(Human_MaxNum,50)</span> ⇒ 在 f=16536 就误触发（<span class="mono">pop=28/28</span>、军队仅 6），
+      那其实是<b>房屋不足的假满</b>，正解是补房子。真硬顶在 <span class="mono">getHumanNumCanReach()</span>（<span class="mono">Development.h:65</span>）。
+      <b>铁证：无自杀局 <span class="mono">Mil</span> 中位 30 ＞ 有自杀局 26</b> —— 触发条件反而筛出了弱局。</li>
+  <li><b>②「腾位」型改动必须先解决"位子被谁抢回去"。</b><span class="mono">processFrame</span> 是经济 → 军事，
+      杀 1 个农民 ⇒ <span class="mono">farmerCount 21&lt;22</span> 且 <span class="mono">totalPop 49&lt;50</span> 同时成立 ⇒ 下一帧农民自己补回，零收益。</li>
+  <li><b>③ 判据恒等于某个可疑常数时，先怀疑窗口。</b><span class="mono">Frm</span> 最小值不限定窗口会<b>恒等于 8</b>（开局初始村民数）。已修为限定 <span class="mono">f&gt;=27000</span>。</li>
+  <li><b>④ <span class="mono">cp -p</span> 回退会让 make 认为无需重编。</b>备份文件保留旧 mtime ⇒ <span class="mono">.o</span> 更新 ⇒
+      输出 <span class="mono">Nothing to be done</span>，<b>exe 仍是改动版</b>。回退后必须 <span class="mono">touch UsrAI.cpp</span> 再编。</li>
+</ul>
+</div>
+
+<h2>6 · 处置</h2>
+<table>
+<thead><tr><th>项</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>工作副本</td><td>已回退 = <span class="mono">055e3668</span>·7649（fixM），与 <span class="mono">_submit/</span> 逐字节一致</td></tr>
+<tr><td>exe</td><td>已用 fixM 源码重编（<span class="mono">touch</span> 后）<span class="dim">——同源码两次构建 md5 不同属正常</span></td></tr>
+<tr><td>保留备份</td><td><span class="mono">bak_20261006_fixN</span>（=fixM，回退锚点）｜<span class="mono">bak_20261006_fixN_impl</span>（fixN 实现，留档）</td></tr>
+<tr><td>重启成本</td><td>常量块 5 个 ＋ <span class="mono">manageEconomy</span> 开头 ＋ <span class="mono">:2047</span> 的 <span class="mono">effectiveMaxFarmers</span> 抑制</td></tr>
+<tr><td>是否建议重启（含 6→2~3 缩量版）</td><td class="bad"><b>不建议</b> —— §4 已证明瓶颈不在军队规模</td></tr>
+</tbody>
+</table>
+
+<footer>
+  数据：每臂 96 局；脚本 <span class="mono">_fixN.py</span>（主判据 ＋ 批次内分群）、<span class="mono">_winall.py</span>（全臂胜率总账 ＋ Fisher ＋ Wilson CI ＋ 噪声标定）、
+  分层对照用 Mantel-Haenszel（按处理前窗口分层）。<br>
+  判决：<b>fixN 不保留，已回退到 fixM</b>。
+</footer>
+
+</div>

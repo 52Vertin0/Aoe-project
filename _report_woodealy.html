@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>木材早期提档 A/B 报告 · AoE3 AI</title>
+<style>
+  :root{ --bg:#f6f7f9; --card:#fff; --ink:#1c2024; --sub:#5b6570; --line:#e3e6ea;
+         --red:#c0392b; --green:#1e8449; --blue:#1f5fa8; --amber:#b7791f; --chip:#eef1f4; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.65 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:32px 22px 60px}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--sub);font-size:13.5px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  h2{font-size:17px;margin:4px 0 12px;padding-left:10px;border-left:4px solid var(--blue)}
+  h3{font-size:14.5px;margin:16px 0 8px;color:var(--sub)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:6px 0}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--chip);font-weight:600}
+  code{background:var(--chip);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .kpi{display:flex;gap:14px;flex-wrap:wrap;margin:8px 0 2px}
+  .kpi .box{flex:1 1 200px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fbfcfd}
+  .kpi .n{font-size:22px;font-weight:700}
+  .kpi .l{font-size:12.5px;color:var(--sub)}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;background:var(--chip);color:var(--sub)}
+  .neg{color:var(--red);font-weight:700}
+  .pos{color:var(--green);font-weight:700}
+  .neu{color:var(--amber);font-weight:700}
+  ul{margin:6px 0 6px 20px;padding:0} li{margin:3px 0}
+  .hl{background:#fff8e6;border-left:4px solid var(--amber);padding:10px 14px;border-radius:8px;margin:10px 0}
+  .bad{background:#fdecea;border-left:4px solid var(--red);padding:10px 14px;border-radius:8px;margin:10px 0}
+  .ok{background:#eaf7ef;border-left:4px solid var(--green);padding:10px 14px;border-radius:8px;margin:10px 0}
+  .mono{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>木材早期提档（远距羚羊群 ⇒ 伐木工 8~10）· A/B 报告</h1>
+  <div class="sub">AoE3 AI · <code>map.njust</code> × 48 局/臂 · 2026-10-08 · 改前 <code>0565ef20</code> → 改后 <code>5b973657</code></div>
+
+  <div class="card">
+    <h2>结论（先看）</h2>
+    <div class="hl"><b>机制命中、胜负未改善、且触发面很窄。</b><br>
+      提档确实把「第二仓库」提前了（触发局中位 <b>17.8 分 → 9.0 分</b>），但
+      <b>胜率 50.0% → 39.6%（Fisher p=0.412，不显著）</b>——差异落在 n=48 的 ±14pp 噪声带内，方向偏负。<br>
+      <b>更关键：此触发条件在铜器前只 13/48 局满足</b> ⇒ 35 局行为与改前完全一致，A/B 实际只比了 13 局。</div>
+
+    <div class="kpi">
+      <div class="box"><div class="l">胜率（改前 → 改后）</div><div class="n">50.0% <span class="neg">→</span> 39.6%</div><div class="l">Fisher p=0.412 · 不显著</div></div>
+      <div class="box"><div class="l">第二仓库下单（中位）</div><div class="n">18919 <span class="pos">→</span> 17098</div><div class="l">帧（≈12.6 → 11.4 分）</div></div>
+      <div class="box"><div class="l">early 触发局数</div><div class="n">13<span style="font-size:15px">/48</span></div><div class="l">窄窗口（仅 27% 局生效）</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>1. 改动内容</h2>
+    <table>
+      <tr><th>位置</th><th>内容</th></tr>
+      <tr><td>常量（行 456-459）</td><td class="mono">WOOD_BOOM_EARLY_GAZELLE true｜WOOD_LOW_LINE_EARLY 150｜WOOD_TARGET_BASE_EARLY 8｜WOOD_TARGET_LOW_EARLY 10</td></tr>
+      <tr><td><code>assignIdleSimple()</code></td><td>新增「远距羚羊群」检测 <code>farGazelleHerd</code>（口径 = 建造段 <code>isFarGazelle</code>：距 TC&gt;20 且 距所有仓库&gt;20 的存活瞪羚 ≥ <code>MIN_GAZELLE_FOR_SECOND_STOCK</code>(2)；仅铜器前算）</td></tr>
+      <tr><td>提档判定</td><td class="mono">woodBoomEarly = ENABLE &amp;&amp; farGazelleHerd &amp;&amp; !woodBoom</td></tr>
+      <tr><td>停采水位</td><td><b>不改</b>（沿用常态 400/保留 2）—— 避免铜器前囤木到 900 抽空食物人力</td></tr>
+      <tr><td>观测</td><td><code>[WOOD]</code> 行新增 <code>early=</code> 标志</td></tr>
+      <tr><td>校验</td><td><code>syn.py</code> 0 err / 19 warn（= 改前基线）｜<code>build.py</code> rc=0</td></tr>
+    </table>
+    <p class="sub" style="margin:6px 0 0">设计理由：有远距群 ⇒ 食物靠猎人就地交货，抬伐木挤占的是「回 TC 交货的低效食物工」，不是升铜 800 食的主供给；且仓库盖到群边后瞪羚不再算「远距」⇒ 提档自限。</p>
+  </div>
+
+  <div class="card">
+    <h2>2. 结果</h2>
+    <table>
+      <tr><th>臂</th><th>n</th><th>结局 W/P/T/U</th><th>胜率 (95%CI)</th><th>第二仓库下单中位</th><th>升铜*中位</th><th>early 触发</th></tr>
+      <tr><td><code>wbase</code> 改前</td><td>48</td><td>24 / 13 / 0 / 11</td><td><b>50.0%</b> (36.4–63.6)</td><td>18919</td><td>21000</td><td>0/48</td></tr>
+      <tr><td><code>wearly</code> 改后</td><td>48</td><td>19 / 15 / 0 / 14</td><td><b>39.6%</b> (27.0–53.7)</td><td>17098</td><td>20400</td><td>13/48</td></tr>
+    </table>
+    <p class="sub" style="margin:4px 0 0">*升铜代理 = 首个 <code>[WOOD] boom=1</code>（铜器后才可能；本图 <code>Upgrading to Bronze Age! Frame=</code> 常缺失）。</p>
+    <p><b>Fisher 精确检验：p=0.412</b>（24/48 vs 19/48）。</p>
+
+    <h3>臂内隔离（<code>wearly</code> 内部）</h3>
+    <table>
+      <tr><th>子组</th><th>n</th><th>胜率</th><th>第二仓库下单中位</th></tr>
+      <tr><td>触发 early 的局</td><td>13</td><td>38%</td><td><b>13502（9.0 分）</b></td></tr>
+      <tr><td>未触发的局</td><td>35</td><td>40%</td><td>26748（17.8 分）</td></tr>
+    </table>
+    <div class="ok">⇒ 提档把第二仓库从 ~17.8 分提前到 ~9.0 分（<b>机制有效</b>），但两组胜率几乎相同（38% vs 40%）⇒ <b>没有转化</b>。第二仓库提前并没有带来胜率。</div>
+  </div>
+
+  <div class="card">
+    <h2>3. 为什么触发面这么窄</h2>
+    <ul>
+      <li><code>[GATE]</code> 日志显示：<code>needStock=1</code> 要求「远距瞪羚 ≥2 且 木 ≥180」，而该图铜器前远距群是<b>窄窗口</b>（长期 <code>needStock=0</code>）。</li>
+      <li>⇒ 用户提的触发条件（严格「有远距羚羊群」）在这张图上<b>只在少数局、少数帧窗口</b>成立。</li>
+      <li>第二仓库 48/48 局最终都下了单（说明远距群<b>出现过</b>，但常是转瞬即逝的窗口）。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>4. ⚠ 统计脚本 bug 修正（影响历史 p 值，需回查）</h2>
+    <div class="bad">
+      <code>_map_cmp5.py</code> 的 Fisher 双尾<b>漏了归一化分母</b>：只算 <code>Σ(P ≤ P_obs)</code> 未除以全体 <code>Σ</code> ⇒ 概率分布较宽时分子 &gt;1 被 clamp 成 <b>1.000</b>。<br>
+      本刀先误报 <b>p=1.000</b>，补分母后真实 <b>p=0.412</b>。<br>
+      同源 bug 可能在 <code>_map_cmp.py</code>（earlyclub8 报 0.479）/ <code>_map_cmp3.py</code>（armypush24 报 1.000）里 —— "不显著"的方向大概率不变，但具体 p 值需用正确口径回查。<br>
+      正确口径：<code>p = Σ_{P≤P_obs} exp(l−mx) / Σ_all exp(l−mx)</code>。自测：identical→1.0｜19v24→0.412｜30v10→0.00007。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>5. 产物与回退</h2>
+    <table>
+      <tr><th>项</th><th>值</th></tr>
+      <tr><td>改前锚（可回退）</td><td class="mono">bak_20261008_pre_woodealy_UsrAI.cpp = 0565ef20</td></tr>
+      <tr><td>改后（本刀）</td><td class="mono">UsrAI.cpp = 5b973657（+49 行）</td></tr>
+      <tr><td>数据</td><td class="mono">wbase_map_r0_*.ait (48)｜wearly_map_r0_*.ait (48)</td></tr>
+      <tr><td>脚本</td><td class="mono">_map_cmp5.py（Wilson CI + 已修 Fisher + 自测）</td></tr>
+    </table>
+  </div>
+
+</div>
+</body>
+</html>

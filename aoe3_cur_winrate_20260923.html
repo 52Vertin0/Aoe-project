@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>现行版胜率实测（cur 批）· 2026-09-23</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1b1f24;--dim:#5c6672;--line:#e3e7ec;
+      --ok:#0a7d43;--warn:#b4690e;--bad:#b3261e;--accent:#1a56c4;--code:#f2f4f7}
+*{box-sizing:border-box}
+body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--ink);
+     font:15px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:1000px;margin:0 auto}
+h1{font-size:26px;margin:0 0 6px}
+.sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+h2{font-size:18px;margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+h3{font-size:15px;margin:22px 0 8px;color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:#eef1f5;font-weight:600}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-family:Consolas,"Courier New",monospace;font-size:12.8px}
+pre{background:#1e2228;color:#e6e9ee;padding:13px 15px;border-radius:8px;overflow-x:auto;
+    font:12.6px/1.6 Consolas,"Courier New",monospace;margin:10px 0}
+.ok{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);
+     background:#eef1f5;color:var(--dim);margin-right:5px}
+ul{margin:6px 0 6px 20px;padding:0}li{margin:4px 0}
+.mono{font-family:Consolas,monospace;font-size:12.6px}
+.big{font-size:15px}
+.kpi{display:flex;gap:14px;flex-wrap:wrap;margin:4px 0}
+.kpi>div{flex:1 1 170px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:13px 16px}
+.kpi .n{font-size:25px;font-weight:700;line-height:1.25}
+.kpi .l{font-size:12.5px;color:var(--dim)}
+tr.win td{background:#eaf7ef}
+tr.lose td{background:#fdeeed}
+tr.und td{background:#fdf7e7}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>现行版胜率实测 —— cur 批（12 局）</h1>
+<div class="sub">
+  对象：<code>C:\new-aoe3.0.7g\release\newAOE.exe</code>（构建 09-23 23:31，源码 <code>UsrAI.cpp</code> <code>2710f75b</code>/6622 行）<br>
+  构成：方案 B(Tier-2 推进偏置) ＋ OJ 快照自救 ＋ <code>WAVE1_TIME=6000</code> ＋ 可读性重构 ＋ 注释同步<br>
+  跑批：<code>cur_verify.sh</code>，12 局，<code>-exam -map map3.njust -rotate 90 -freq MAX</code>，耗时 20m03s（单局 ≈ 97 s）
+</div>
+
+<h2>1 一句话结论</h2>
+<div class="card big">
+现行版 12 局 ⇒ <b>3 胜 / 8 负 / 1 打满未决 ＝ <span class="ok">25.0%</span></b>（95% CI 8.9~53.2%）。<br>
+与 09-22 末次完整批 kb2 的 41.7%（5/12）<b>无统计学差异</b>（Fisher 双侧 <code>p=0.667</code>），
+把今天全部同源跑局合并是 <b>5/15 ＝ 33.3%</b>。<br>
+<span class="warn">8 个负局 100% 是 <code>DEFEAT: Priest killed</code>，死亡帧全部落在 37304~39894（反攻发起后 2.1~4.6 分钟）</span>
+⇒ 瓶颈仍是 N-2，与本轮所有改动无关。
+</div>
+
+<div class="kpi">
+  <div><div class="n ok">25.0%</div><div class="l">胜率 3/12<br>95% CI 8.9~53.2%</div></div>
+  <div><div class="n bad">8/8</div><div class="l">负局败因<br>全部 = 祭司被杀</div></div>
+  <div><div class="n ok">3/3</div><div class="l">「感化武器厂起手 → 胜」<br>转化率 100%</div></div>
+  <div><div class="n">0</div><div class="l">快照自救异常<br>fallback / skip / 脏快照</div></div>
+</div>
+
+<h2>2 ★ 判定口径重大修正：胜负必须读 <code>jsonl</code> 的 <code>win</code> 字段</h2>
+<div class="card">
+  铁律旧口径是「胜负只认 <code>DebugText</code> 带冒号」（<code>VICTORY! Siege Workshop converted</code> / <code>DEFEAT: ...</code>）。
+  <b>本次发现该口径会漏胜：</b>
+<pre>cur6.ait   末帧 44406 —— 无 VICTORY 行，old 口径判「未决」
+cur6.jsonl {"frame":44406,...,"score":533,"win":<span class="ok">true</span>}
+cur6.ait   01:35:734 | 44406 | red  | -1 | 攻城武器厂(编号:11099)被祭司转换,归属阵营1-&gt;0
+           01:35:734 | 44406 | blue | -1 | 玩家 转换一般建筑，分数+8</pre>
+  <b>真因</b>：感化成功的那一帧游戏即结束（<code>exit=0</code>，全网唯一），<code>VICTORY</code> 文本没来得及落到 AIText。<br>
+  只 grep AIText ⇒ 3/12 ＝ <b>16.7%</b>；读 <code>jsonl.win</code> ⇒ 3/12 ＝ <b>25.0%</b>。<b>差 1 个胜场，方向都会读反。</b><br>
+  <b>已验证历史批次不受影响</b>：kb2 / kb / gsk 三批共 36 局，逐局比对 <code>jsonl.win</code> 与 AIText 完全一致，无同类漏判。
+  <span class="tag">新判据</span> 胜负以 <code>jsonl</code> 的 <code>win:true</code> 为准，AIText 只作交叉验证。
+</div>
+
+<h2>3 逐局明细</h2>
+<table>
+<tr><th>局</th><th>结局</th><th>末帧</th><th>exit</th><th>反攻发起</th><th>首感化令</th><th>感化 WS 令</th><th>祭司亡帧</th><th>KIT-R</th><th>TOWER-APPROACH</th></tr>
+<tr class="win"><td>cur4</td><td class="ok">胜</td><td>39114</td><td>3</td><td>33002</td><td>6692</td><td>2</td><td>—</td><td>292</td><td>20</td></tr>
+<tr class="win"><td>cur6</td><td class="ok">胜 <span class="tag">jsonl 独判</span></td><td>44406</td><td>0</td><td>33001</td><td>6723</td><td>2</td><td>—</td><td>176</td><td>29</td></tr>
+<tr class="win"><td>cur11</td><td class="ok">胜</td><td>43001</td><td>3</td><td>33002</td><td>6725</td><td>2</td><td>—</td><td>136</td><td>45</td></tr>
+<tr class="lose"><td>cur1</td><td class="bad">负 Priest killed</td><td>37680</td><td>3</td><td>33001</td><td>6717</td><td>0</td><td class="bad">37648</td><td>142</td><td>16</td></tr>
+<tr class="lose"><td>cur2</td><td class="bad">负 Priest killed</td><td>39926</td><td>3</td><td>33002</td><td>6746</td><td>0</td><td class="bad">39894</td><td>101</td><td>9</td></tr>
+<tr class="lose"><td>cur3</td><td class="bad">负 Priest killed</td><td>38772</td><td>3</td><td>33001</td><td>6735</td><td>0</td><td class="bad">38740</td><td>348</td><td>0</td></tr>
+<tr class="lose"><td>cur5</td><td class="bad">负 Priest killed</td><td>39288</td><td>3</td><td>33001</td><td>6706</td><td>0</td><td class="bad">39256</td><td>207</td><td>0</td></tr>
+<tr class="lose"><td>cur7</td><td class="bad">负 Priest killed</td><td>37491</td><td>3</td><td>33001</td><td>6679</td><td>0</td><td class="bad">37459</td><td>46</td><td>5</td></tr>
+<tr class="lose"><td>cur8</td><td class="bad">负 Priest killed</td><td>37336</td><td>3</td><td>33001</td><td>6733</td><td>0</td><td class="bad">37304</td><td>0</td><td>1</td></tr>
+<tr class="lose"><td>cur9</td><td class="bad">负 Priest killed</td><td>37486</td><td>3</td><td>33001</td><td>6761</td><td>0</td><td class="bad">37454</td><td>62</td><td>14</td></tr>
+<tr class="lose"><td>cur12</td><td class="bad">负 Priest killed</td><td>38521</td><td>3</td><td>33002</td><td>6717</td><td>0</td><td class="bad">38489</td><td>0</td><td>3</td></tr>
+<tr class="und"><td>cur10</td><td class="warn">打满未决</td><td>45001</td><td>3</td><td>33001</td><td>6734</td><td>0</td><td>—</td><td>191</td><td>0</td></tr>
+</table>
+
+<h2>4 与历史批次对比</h2>
+<table>
+<tr><th>批次</th><th>代码版本</th><th>n</th><th>胜</th><th>负</th><th>未决</th><th>胜率</th><th>95% CI</th></tr>
+<tr><td>vf_fix</td><td>09-21 早</td><td>16</td><td>0</td><td>9</td><td>7</td><td>0.0%</td><td>—</td></tr>
+<tr><td>vf_wood400</td><td>09-21 晚</td><td>13</td><td>0</td><td>4</td><td>9</td><td>0.0%</td><td>—</td></tr>
+<tr><td>vf_sd2</td><td>09-22 上午</td><td>12</td><td>2</td><td>5</td><td>5</td><td>16.7%</td><td>—</td></tr>
+<tr><td>vf_gsk（=§4m 的 A 臂）</td><td>09-22 上午</td><td>12</td><td>5</td><td>4</td><td>3</td><td>41.7%</td><td>19.3~68.0%</td></tr>
+<tr><td>vf_kb</td><td>09-22 下午</td><td>12</td><td>6</td><td>5</td><td>1</td><td>50.0%</td><td>25.4~74.6%</td></tr>
+<tr><td>vf_kb2（末次完整批）</td><td>09-22 晚</td><td>12</td><td>5</td><td>4</td><td>3</td><td>41.7%</td><td>19.3~68.0%</td></tr>
+<tr class="und"><td><b>cur（本批，现行版）</b></td><td><b>09-23 23:31</b></td><td><b>12</b></td><td><b>3</b></td><td><b>8</b></td><td><b>1</b></td><td><b>25.0%</b></td><td><b>8.9~53.2%</b></td></tr>
+<tr><td>今日同源合并（cur ＋ rf1/snap3/snap1）</td><td>09-23</td><td>15</td><td>5</td><td>9</td><td>1</td><td>33.3%</td><td>15.2~58.3%</td></tr>
+</table>
+<div class="card">
+  <b>显著性</b>：cur 3/12 vs kb2 5/12 —— Fisher 双侧 <code>p=0.667</code>（非负口径 <code>p=0.220</code>）。
+  两组 CI 大幅重叠 ⇒ <b class="warn">数据不足以宣称「退步」，也不足以宣称「持平」</b>。
+  叠加已知的同码复跑波动（4/8 vs 2/8 ⇒ ±25pp），12 局/臂的读数只能当方向。<br>
+  <b>要判「现行版是否比 kb2 差」，必须补 ≥24 局/臂 ＋ 同源码重跑臂</b>（铁律 81）。
+</div>
+
+<h2>5 机制诊断（本轮真正有信息量的部分）</h2>
+
+<h3>5.1 成功链条：损耗仍全在「让祭司起手」之前</h3>
+<div class="card">
+  <table>
+    <tr><th>环节</th><th>本批（cur）</th><th>历史（kd 24 局）</th></tr>
+    <tr><td>① 反攻发起</td><td class="ok">12/12（帧 33001，零方差）</td><td>22/24</td></tr>
+    <tr><td>② 首条感化令（任意敌单位）</td><td class="ok">12/12（帧 6679~6761）</td><td>—</td></tr>
+    <tr><td>③ 感化武器厂起手</td><td class="bad">3/12（cur4/6/11）</td><td>2/24</td></tr>
+    <tr><td>④ 胜</td><td class="bad">3/12</td><td>2/24</td></tr>
+    <tr><td><b>③ → ④</b></td><td class="ok"><b>3/3 = 100%</b></td><td class="ok"><b>2/2 = 100%</b></td></tr>
+  </table>
+  <b>结论与 09-19 的漏斗完全同形</b>：只要祭司真去感化武器厂就必赢。全部损耗发生在「反攻发起（33001）→
+  祭司进圈 → 起手」这一段，而这一段现在被 <b>N-2（祭司感化静默期致死）</b>整段吃掉。
+</div>
+
+<h3>5.2 祭司死亡高度扎堆在反攻后 2~4.6 分钟</h3>
+<div class="card">
+  <pre>亡帧排序： 37304  37454  37459  37648  38489  38740  39256  39894
+换算分钟： 24.87  24.97  24.97  25.10  25.66  25.83  26.17  26.60
+反攻发起： 33001 → 22.00 分   ⇒ 死亡窗口恒在反攻后 <b>2.1 ~ 4.6 分钟</b>，零例外</pre>
+  8 个负局的亡帧极差只有 <b>2590 帧（≈103 秒）</b>，中心 25.7 分。这是<b>确定性结构缺陷</b>的特征，不是随机损耗。
+  与 <code>detail_state</code> §Q.1 的 N-2 判定（<code>mvcd&gt;0</code> 时全体保命档被 <code>return</code> 短路、静默 150 帧）吻合。
+</div>
+
+<h3>5.3 快照自救（OJ 补丁）健康度：无异常</h3>
+<div class="card">
+  <pre>cur1..cur12 全部： [SNAP f=NNNNN] main=&gt;17000  <span class="ok">fallback=0</span>  <span class="ok">skip=0</span>   累计脏快照拦截=<span class="ok">0</span></pre>
+  12/12 局 fallback 与 skip 均为 0，主线程代取路径 <code>main</code> 计数 ≈ 帧数 × 0.494（每两帧取一次快照，符合设计）。
+  <b>⇒ OJ 自救机制没有引入降级</b>，本批胜率与它无关。（这是唯一一项尚未跑过批的行为改动，现已排除嫌疑。）
+</div>
+
+<h3>5.4 方案 B（Tier-2 推进偏置）仍在生效但量很小</h3>
+<div class="card">
+  <code>[TOWER-APPROACH]</code> 12 局合计 <b>143</b> 条（0~45/局，中位 9.5），机制活着；但与 09-20 的判定一致 ——
+  它对胜率没有可测影响（真约束是拉扯状态机独占远程兵整个敌波窗口）。<b>建议维持「留/撤」的待拍板状态，不要拿它当提胜率的杠杆。</b>
+</div>
+
+<h2>6 档案勘误</h2>
+<div class="card">
+  <code>detail_state.md:1908</code> 与 <code>2026-09-22.md:146</code> 记 §4m 的 A 臂（gsk）＝ <b>4 胜 4 负 4 未决</b>；
+  按盘上 <code>vf_gsk_1..12</code> 逐文件重数（AIText ＋ jsonl 双向核）＝ <b>5 胜 4 负 3 未决</b>，<b class="bad">差 1 局</b>。
+  B(kb) / C(kb2) 两臂与档案逐字吻合，只有 A 行需更正。
+</div>
+
+<h2>7 待办 / 建议</h2>
+<div class="card">
+  <ul>
+    <li><b>★ 最高杠杆仍是 N-2</b>：8/8 负局是这个死因，且死亡窗口扎堆在反攻后 2~4.6 分钟。
+        推荐 A 方案「节流闸加保命豁免」（在 <code>if (priestMoveCooldown &gt; 0)</code> 的 <code>return</code> 前插入濒死逃命判断）。</li>
+    <li><b>胜负判定改口径</b>：以 <code>jsonl</code> 的 <code>win</code> 字段为准。建议同步修 <code>_tests</code> / 报告脚本里所有「只 grep AIText」的判胜逻辑（本轮已发现并修 <code>_win_recount.py</code>）。</li>
+    <li><b>要判定「现行版 vs kb2」的胜负</b>：补 ≥24 局/臂 ＋ 同源码重跑臂（预计 24 局 ≈ 40 分钟）。</li>
+    <li><code>WAVE1_TIME=6000</code> 待拍板项已有旁证：反攻发起帧 12/12 恒为 <b>33001</b>，与 <code>WAVE1_TIME</code> 无关 ⇒ 该常量的改动不会移动反攻时点，但会整体推后 12 处阶段闸 40 秒，仍需单独一批判影响。</li>
+  </ul>
+</div>
+
+<div class="sub" style="margin-top:34px">
+  产物：<code>cur1..cur12.{ait,jsonl}</code>｜跑批脚本 <code>cur_verify.sh</code>｜分析 <code>_win_recount.py</code> / <code>_cur_analyze.py</code>｜
+  上游基线 <code>vf_kb2_*</code>
+</div>
+
+</div>
+</body>
+</html>

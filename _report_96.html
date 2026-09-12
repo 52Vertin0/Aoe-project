@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>fixI 96 局结构化诊断 · 2026-10-06</title>
+<style>
+  :root{--bg:#f7f8fa;--card:#fff;--ink:#1b1f24;--dim:#5b6470;--line:#e3e6ea;
+        --win:#c62828;--lose:#2e7d32;--warn:#ef6c00;--accent:#1565c0;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin-bottom:16px}
+  h2{font-size:16px;margin:0 0 12px;padding-left:9px;border-left:4px solid var(--accent)}
+  h2.bad{border-color:var(--win)} h2.ok{border-color:var(--lose)} h2.no{border-color:var(--dim)}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--dim);font-weight:600;background:#fafbfc}
+  tr.hl td{background:#fff8e1}
+  .k{font-weight:700;color:var(--win)} .g{font-weight:700;color:var(--lose)}
+  .note{background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;
+        padding:10px 12px;font-size:13px;margin-top:10px}
+  .no-list li{margin:4px 0}
+  .flex{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+  .flex>div{flex:1 1 320px;min-width:300px}
+</style>
+</head>
+<body><div class="wrap">
+<h1>fixI（2887e006·7596）96 局结构化诊断</h1>
+<div class="sub">四图各 24 局 · 全程零改码 · 结论全部来自既有 <code>.ait</code> 日志 · 2026-10-06 夜</div>
+
+<div class="card">
+<h2 class="bad">① 分图胜率 —— 无一图达到"稳定"</h2>
+<table>
+<tr><th>图</th><th>n</th><th>胜</th><th>祭死</th><th>超时</th><th>胜率</th><th>起手率</th><th>发现WS</th><th>mil_end 中位</th></tr>
+<tr><td>map</td><td>24</td><td>7</td><td>14</td><td>3</td><td class="k">29%</td><td>38%</td><td>16/24</td><td class="k">2</td></tr>
+<tr><td>map1</td><td>24</td><td>12</td><td>10</td><td>2</td><td>50%</td><td>67%</td><td>18/24</td><td>23</td></tr>
+<tr><td>map2</td><td>24</td><td>12</td><td>10</td><td>2</td><td>50%</td><td>75%</td><td>19/24</td><td>22</td></tr>
+<tr><td>map3</td><td>24</td><td>14</td><td>5</td><td>5</td><td class="g">58%</td><td>71%</td><td>21/24</td><td>12</td></tr>
+<tr class="hl"><td>合计</td><td>96</td><td>45</td><td>39</td><td>12</td><td>47%</td><td>62%</td><td>74/96</td><td>—</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2 class="bad">② 主因：军队曲线与波次严重错配</h2>
+<div class="flex">
+<div>
+<table>
+<tr><th>分钟</th><th>Mil 中位</th><th>事件</th></tr>
+<tr><td>5</td><td>1</td><td></td></tr>
+<tr><td>9</td><td class="k">4</td><td>← W2 波（f=13500）</td></tr>
+<tr><td>11</td><td class="k">4</td><td></td></tr>
+<tr><td>13</td><td>6</td><td></td></tr>
+<tr><td>14</td><td>9</td><td>← W3 波（f=21000）</td></tr>
+<tr><td>17</td><td>15</td><td></td></tr>
+<tr><td>19</td><td>21</td><td></td></tr>
+<tr><td>21</td><td class="g">27</td><td>首次满编</td></tr>
+</table>
+</div>
+<div>
+<svg viewBox="0 0 420 240" width="100%" height="230">
+  <line x1="42" y1="200" x2="400" y2="200" stroke="#c9ced6"/>
+  <line x1="42" y1="20" x2="42" y2="200" stroke="#c9ced6"/>
+  <text x="36" y="204" text-anchor="end" font-size="10" fill="#5b6470">0</text>
+  <text x="36" y="125" text-anchor="end" font-size="10" fill="#5b6470">14</text>
+  <text x="36" y="24" text-anchor="end" font-size="10" fill="#5b6470">28</text>
+  <text x="42" y="216" font-size="10" fill="#5b6470">1</text>
+  <text x="220" y="216" font-size="10" fill="#5b6470">15</text>
+  <text x="390" y="216" font-size="10" fill="#5b6470">29 分</text>
+  <line x1="76" y1="20" x2="76" y2="200" stroke="#ef6c00" stroke-dasharray="3,3"/>
+  <text x="80" y="32" font-size="10" fill="#ef6c00">W1</text>
+  <line x1="198" y1="20" x2="198" y2="200" stroke="#ef6c00" stroke-dasharray="3,3"/>
+  <text x="202" y="32" font-size="10" fill="#ef6c00">W2</text>
+  <line x1="300" y1="20" x2="300" y2="200" stroke="#ef6c00" stroke-dasharray="3,3"/>
+  <text x="304" y="32" font-size="10" fill="#ef6c00">W3</text>
+  <polyline fill="none" stroke="#c62828" stroke-width="2.4"
+    points="42,200 90,200 115,193 140,172 165,172 190,172 215,157 240,135 265,93 290,50 315,20 340,20 365,50 390,72"/>
+  <circle cx="190" cy="172" r="3.5" fill="#c62828"/>
+  <circle cx="240" cy="135" r="3.5" fill="#c62828"/>
+  <text x="120" y="60" font-size="11" fill="#c62828">Mil 中位曲线</text>
+  <text x="150" y="188" font-size="10" fill="#5b6470">W2/W3 落在 Mil=4~9 的窗口</text>
+</svg>
+</div>
+</div>
+<div class="note"><b>成因（代码事实）</b>：<code>EARLY_CLUBMAN_TARGET 4</code>（用户 2026-09-08 亲定）
+＋ <code>DISABLE_CLUBMAN_TRAIN true</code> ⇒ 工具时代唯一兵源 = 4 个棍棒兵，直到铜器才继续产兵。
+实测 9.3 分：<code>Frm=16 / Mil=4 / nMy=21</code> —— <b>人口 50 完全没顶到（空 29 个）</b>，不是经济问题、不是人口问题。</div>
+</div>
+
+<div class="card">
+<h2 class="bad">③ 败因四桶</h2>
+<table>
+<tr><th>桶</th><th>n</th><th>结局</th><th>机制</th></tr>
+<tr><td>C1 前期崩盘（mil_max&lt;16）</td><td class="k">18 (18.8%)</td><td class="k">P18 → 0 胜</td><td>祭司死在<b>我方基地旁</b>（距基地 8~17 格），同时 Mil 4→0 ⇒ W2/W3 把家打穿</td></tr>
+<tr><td>C2 脱困阶梯活锁（escA+B≥30）</td><td class="k">6 (6.3%)</td><td class="k">T6 → 0 胜</td><td>推进令 ⇄ 侧移令交替，净位移 0 ⇒ 到点超时</td></tr>
+<tr><td>C3 反攻期祭司死</td><td>25</td><td>P25</td><td>含"擦着 12 格圈掠过却不 起手"12 局</td></tr>
+<tr><td>C4 超时（非 C2）</td><td>6</td><td>T6</td><td>adv≥40 的 5 局 + 1</td></tr>
+</table>
+<div class="note"><b>崩盘率 = map 的胜率主因</b>：
+<code>map 29%(7/24)</code> ｜ map1 21% ｜ map2 17% ｜ map3 8% ⇒ map 是 map3 的 <b>3.6 倍</b>。
+剔除崩盘桶后其余局胜率：map 41% / map1 63% / map2 60% / map3 64%。</div>
+</div>
+
+<div class="card">
+<h2>④ <code>adv</code> = 反攻段最强单点预测器</h2>
+<div class="sub" style="margin:-4px 0 10px"><code>adv</code>＝<code>Priest ADVANCE to Siege</code> 次数＝推进段<b>成功下发</b>移动令的次数（脱困档不计）</div>
+<table>
+<tr><th>adv 分档</th><th>n</th><th>胜</th><th>祭死</th><th>超时</th><th>胜率</th></tr>
+<tr><td>&lt; 2</td><td>24</td><td>0</td><td>21</td><td>3</td><td class="k">0%</td></tr>
+<tr><td>2 – 4</td><td>1</td><td>0</td><td>0</td><td>1</td><td class="k">0%</td></tr>
+<tr><td>5 – 15</td><td>29</td><td>13</td><td>13</td><td>3</td><td>45%</td></tr>
+<tr class="hl"><td>16 – 39</td><td>25</td><td>21</td><td>4</td><td>0</td><td class="g">84%</td></tr>
+<tr><td>≥ 40</td><td>17</td><td>11</td><td>1</td><td>5</td><td>65%</td></tr>
+</table>
+<div class="note"><b>因果性已检</b>：45 个胜局<b>全部</b>来自"祭司活到反攻起点"的 81 局。
+在该子集内 adv≥16 的 42 局胜率 <b>76%</b>，adv&lt;2 的 9 局 <b>0%</b> ⇒ 不是"结果"。
+按结局中位：<b>W 19 ｜ P 0 ｜ T 12</b>；<code>adv/(escA+escB)</code>：W 19.0 ｜ P 0 ｜ T <b>0.63</b>（超时局推进与脱困各半互抢）。</div>
+</div>
+
+<div class="card">
+<h2 class="no">⑤ 本轮被<b>实测否证</b>的三条候选（避免"加闸前不验证"）</h2>
+<ol class="no-list">
+<li><b>扩大 Fix I 抑制</b>（去掉 <code>enemySiegeSN != -1</code>）→ <b class="k">否决</b>。<br>
+反攻起点→发现武器厂前的窗口，祭司净位移朝武器厂 <b>+67~74 格</b>，且三组结局几乎相同
+（W +67.6 / P +73.6 / T +67.8，n=81）⇒ 该窗口不是分界，而这 68 格前进<b>正是</b> <code>priestApproachMove</code> 带出来的 ⇒ 抑制它会抽掉动力。</li>
+<li><code>nearT</code> 硬闸（"塔距&gt;7 才准 起手"）→ <b class="k">否决</b>：会否掉现有 5~6 个胜局。</li>
+<li>"距基地 R 格召回闸" → <b class="k">否决</b>：96/96 局祭司非反攻期都出过 12 格、80/96 过 18 格。</li>
+</ol>
+<div class="note">另有两条<b>指控被排除</b>：① <code>[SIEGE-WAIT]/[SIEGE-HOLD]/[PRST-NOARMY]/[PRST-REAR]</code> 四路探针 <b>96 局全 0</b>
+⇒ 塔闸死锁已解、<code>[PRST-NOARMY]</code> 是死代码；② <code>pm/HM = 92~99%</code> ⇒ 不存在"隐藏下令者"。</div>
+</div>
+
+<div class="card">
+<h2 class="ok">⑥ 建议的下一刀（未落地 · 待拍板）</h2>
+<table>
+<tr><th>候选</th><th>改动</th><th>理由</th><th>风险 / 护栏</th></tr>
+<tr class="hl"><td><b>A（推荐）</b></td><td><code>EARLY_CLUBMAN_TARGET 4 → 8~10</code></td>
+<td>直击 C1 桶 18 局（18.8%）零胜；map 崩盘率最高</td>
+<td>⚠ 该常量由用户 2026-09-08 亲定 ⇒ 需拍板；挤 <code>FOOD_PAUSE_TECH_TRAIN(60)</code> 食物。<br>
+<b>护栏</b>：<code>Mil</code> 首 &gt;4 的帧（基线 <b>14102 / 9.4 分</b>）、首 ≥12（22950）、崩盘率</td></tr>
+<tr><td>B（低成本）</td><td>脱困阶梯设<b>总预算上限</b>：<code>escA+B</code> 累计≥N 后永久放弃脱困</td>
+<td><code>escA+B≥30</code> 的 6 局 <b>100% 超时</b>；风险面窄</td>
+<td>现 <code>[PRIEST-ESCAPE-BREAK]</code> 每 3 次就归零重来 ⇒ 必须改成"拒绝重置"</td></tr>
+<tr><td>C</td><td>反攻期给推进段<b>独立冷却</b>，不再共用 <code>priestMoveCooldown</code></td>
+<td>12 局"擦边不进"（<code>adv</code> 仅 1~11 而 <code>ca</code> 40~343）</td>
+<td>改动面大（跨函数互斥语义）⇒ 建议先验 B</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2 class="no">⑦ 工程状态</h2>
+<div>工作副本 <code>UsrAI.cpp</code> = <code>2887e006</code>·7596（fixI）｜<code>UsrAI.h</code> = <code>996fc2c6</code>｜
+<code>release/newAOE.exe</code> = <code>537ce91f</code>｜<b>本轮零改动、无新增备份、无启动跑局</b>。</div>
+<div class="sub" style="margin:8px 0 0">新增只读分析脚本：<code>_all96.py</code>(→<code>_all96.tsv</code>) <code>_gate.py</code> <code>_who.py</code>
+<code>_q.py</code> <code>_mil2.py</code> <code>_why2.py</code> <code>_pre.py</code> <code>_collapse.py</code> <code>_dth.py</code></div>
+</div>
+
+</div></body></html>

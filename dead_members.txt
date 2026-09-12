@@ -1,0 +1,35 @@
+=== UsrAI.h 成员（按引用数升序；refs==0 = 只声明未使用）===
+refs=4     h:261   kiteSkipSort               std::map<int,int>
+refs=14    h:265   towerBiasSN                std::map<int,int>
+refs=160   h:110   debugTimer                 int
+refs=160   h:159   marketFarmUpgraded         bool
+refs=160   h:161   marketPlowUpgraded         bool
+refs=160   h:162   useToolDone                bool
+refs=160   h:104   wave2Defeated              bool
+refs=160   h:154   wheelResearched            bool
+refs=177   h:258   towerSkipSN                std::map<int,int>
+refs=182   h:280   elephantBanUntil           std::map<int,int>
+refs=233   h:142   depositFarmers             std::set<int>
+refs=238   h:230   lastRetreatFrame           std::map<int,int>
+refs=262   h:93    townCenterSN               int
+refs=274   h:103   wave3Started               bool wave1Started, wave2Started,
+refs=284   h:143   depositStartFrame          std::map<int,int>
+refs=313   h:200   priestSiegeApproach        int
+refs=316   h:107   buildCooldown              int
+refs=373   h:109   trainCooldown              int
+refs=437   h:224   marchIssueDist             std::map<int,double>
+refs=517   h:155   broadswordResearched       bool
+refs=578   h:151   priestCounterCooldown      int
+refs=596   h:114   waveBlockers               std::set<int>
+refs=619   h:98    hasUpgraded                bool
+refs=619   h:108   techCooldown               int
+refs=842   h:113   triedBuildPositions        std::set<int>
+refs=1037  h:95    enemySiegeSN               int
+refs=1038  h:156   compositeBowResearched     bool
+refs=1106  h:115   buildingFarmerType         std::map<int,int>
+refs=1576  h:148   priestMoveCooldown         int
+refs=2196  h:94    priestSN                   int
+refs=12693 h:76    frame                      int
+refs=21384 h:75    info                       tagInfo
+
+成员总数 32；refs==0 共 0

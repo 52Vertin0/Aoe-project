@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AoE3 UsrAI 四项修复实测报告 · 2026-10-04</title>
+<style>
+  :root{
+    --bg:#0f1319; --panel:#151b24; --panel2:#1b232e; --line:#26303d;
+    --fg:#dfe7f0; --fg2:#9fb0c4; --dim:#6b7d92;
+    --ok:#4cc98a; --warn:#e8b04b; --bad:#e06c75; --acc:#61a8ff; --acc2:#b98cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+       padding:32px 20px 64px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  h2{font-size:16px;margin:34px 0 12px;padding-left:10px;
+     border-left:3px solid var(--acc);letter-spacing:.3px}
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:8px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .card .t{font-size:12px;color:var(--dim);margin-bottom:6px}
+  .card .v{font-size:15px;font-weight:600;margin-bottom:4px}
+  .card .d{font-size:12px;color:var(--fg2);line-height:1.55}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .acc{color:var(--acc)} .acc2{color:var(--acc2)}
+  table{width:100%;border-collapse:collapse;margin:10px 0 6px;font-size:13px}
+  th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--fg2);font-weight:600;font-size:12.5px}
+  td code,p code,li code{background:#0b0f14;border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font-family:Consolas,"Courier New",monospace;font-size:12px;color:#9ad3ff}
+  pre{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:12px;
+      overflow-x:auto;font-family:Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.6}
+  .k{color:#7fd3a8} .c{color:#7d8a9c} .hl{color:#ffd479}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:12px 0}
+  .box.w{border-color:#5a4620;background:#1c1810}
+  .box.g{border-color:#20543a;background:#0f1d17}
+  ul{margin:6px 0 6px 18px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;
+       border:1px solid currentColor;margin-right:6px;vertical-align:1px}
+  .foot{margin-top:38px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:14px}
+  .num{font-family:Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>AoE3 UsrAI · 四项缺陷修复实测报告</h1>
+<div class="sub">
+  2026-10-04 · 工作副本 <code>3fd8c1a5</code>·7219（第二版）／<code>5520ce5a</code>·7214（第一版）／基线 <code>f1ab0647</code>·7147<br>
+  语法 0 error / 16 warning（与基线一致）· map3 · <code>-exam -offscreen -freq MAX</code> · 30 局实测
+</div>
+
+<h2>结论速览</h2>
+<div class="cards">
+  <div class="card">
+    <div class="t">② 反攻期农民误判卡死</div>
+    <div class="v ok">✅ 已修复</div>
+    <div class="d">改前 6 条 → 改后 <b>0</b> 条<br>（14 局，反攻期攻塔令 155 条）</div>
+  </div>
+  <div class="card">
+    <div class="t">③ 经济改派覆盖攻塔令</div>
+    <div class="v ok">✅ 已修复</div>
+    <div class="d">受令后 300 帧内被改派：<br>改前 10/72 → 第一版 9/35 → 二版 <b>0/155</b></div>
+  </div>
+  <div class="card">
+    <div class="t">④ 浆果每丛上限不一致</div>
+    <div class="v ok">✅ 已统一</div>
+    <div class="d">主路径 3 / 冷路径 2 → <b>统一 2</b><br>删除双份实现，派工量未降</div>
+  </div>
+  <div class="card">
+    <div class="t">① 末段钉死（锚退化）</div>
+    <div class="v warn">⚠ 未验证</div>
+    <div class="d">30 局中 <b>0 局</b>出现「反攻后 Mil=0」<br>局面罕见，代码已改但未触发</div>
+  </div>
+</div>
+
+<h2>一、改动内容</h2>
+
+<table>
+  <tr><th style="width:26px">#</th><th style="width:150px">问题</th><th style="width:200px">落点</th><th>做法</th></tr>
+  <tr>
+    <td>①</td><td>末段钉死<br><span style="color:var(--dim);font-size:12px">锚点退化</span></td>
+    <td><code>counterPriestGuard</code><br><span class="dim">≈ :5038 起</span></td>
+    <td>
+      <code>nArmy==0</code> 时<b>不再退回基地 TC</b>（旧写法使 <code>tcDR-armyDR==0</code> ⇒ 单位向量退化 ⇒ 每帧派向同一固点），
+      改为<b>朝反攻目标推进到感化射程内 1 格</b>，并豁免 <code>PRIEST_MIN_DIST_TARGET</code>。<br>
+      保命闸：<code>PRIEST_GUARD_ALERT</code> 内有活敌 ⇒ 原地（<code>hold</code> 标志，本帧不发移动令）。新增日志 <code>[PRST-NOARMY]</code>。
+    </td>
+  </tr>
+  <tr>
+    <td>②</td><td>反攻期农民<br>被误判采集卡死</td>
+    <td><code>detectStuckGatherers</code></td>
+    <td>在「空手 + 非空闲」累计<b>之前</b>加闸：<code>frame ≥ COUNTER_FARMER_ATTACK_FRAME</code> 且
+      <code>WorkObjectSN ∈ enemy_buildings ∪ enemy_armies</code> ⇒ <b>跳过</b>（战斗非采集）。仅反攻期检查 ⇒ 前期零开销。</td>
+  </tr>
+  <tr>
+    <td>③</td><td>经济改派<br>覆盖攻塔令</td>
+    <td>文件级 <code>g_farmerAtkFrame</code><br>+ <code>counterAtkExempt</code> λ</td>
+    <td>台账从 <code>counterFarmerAttack</code> 的<b>函数内 static 提升为文件级</b>（单一真源）；
+      <code>assignIdleSimple</code> 内 <b>三条挪岗路径</b>各自调用同一 λ 豁免（窗口 <code>FARMER_ATK_EXEMPT_FRAMES 300</code>）。<br>
+      <span class="warn">⚠ 第一版只盖了主循环 ⇒ 实测仍漏 9 条，二次修补才补齐。</span></td>
+  </tr>
+  <tr>
+    <td>④</td><td>浆果每丛<br>上限不一致</td>
+    <td>两路径</td>
+    <td>删除主路径局部的 <code>assignedBush</code>（与成员 <code>frameBushCount</code> <b>双份实现</b>，导致判据低估已派人数），
+      两路径统一 <code>BUSH_MAX_PER_PATCH 2</code>。</td>
+  </tr>
+</table>
+
+<div class="box w">
+  <b>③ 的关键教训：只盖一条路径 = 没修</b><br>
+  第一版给 <code>assignIdleSimple</code> <b>主循环</b>加了豁免，同帧覆盖（≤2 帧）确实归零；
+  但实测 <code>_qf_9.ait</code> 里 22 个受令农民仍有 <b>9 个</b>在 9~213 帧后被抢回金矿。<br>
+  真凶是该函数内另外两条独立挪岗路径：
+  <ul>
+    <li><code>GOLD-REBAL</code>（food→gold 再平衡，≈:3466）—— 农民被派去攻塔后 <code>ResourceSort</code> <b>仍保留上一次的食物分类</b> ⇒ 被判成"食物工"抢去采金；</li>
+    <li>资源达上限回撤（<code>reassignToDeficit</code>，≈:3512）—— 同为「<code>NowState∈{WORKING,WALKING}</code> + 按 <code>ResourceSort</code> 判类别」的同一形态。</li>
+  </ul>
+  ⇒ 修法：把判据抽成一个 lambda，三条路径各自 <code>if (exempt(f)) continue;</code>，让"漏一处"在 review 时肉眼可见。
+</div>
+
+<h2>二、实测证据（map3）</h2>
+
+<h3 style="font-size:14px;margin:18px 0 8px;color:var(--acc2)">② 反攻期农民被误判采集卡死</h3>
+<pre><span class="c"># 改前 · 10-03 实机局 —— 反攻期 6 条误判，目标全是敌箭塔（11xxx 段）</span>
+[STUCK f=40816] 村民SN=41597 state=2 空手1503帧 目标SN=<span class="hl">11416</span>(资源) 在采<span class="hl">21人</span> 距TC=89.9格
+[STUCK f=41110] 村民SN=41459 state=2 空手1502帧 目标SN=<span class="hl">11416</span>(资源) 在采<span class="hl">14人</span> 距TC=88.1格
+[STUCK f=41730] 村民SN=41425 state=2 空手1501帧 目标SN=<span class="hl">11424</span>(资源) 在采<span class="hl">14人</span> 距TC=32.9格
+[STUCK f=41904] 村民SN=41587 state=2 空手1503帧 目标SN=<span class="hl">11424</span>(资源) 在采<span class="hl">15人</span> 距TC=46.9格
+[STUCK f=41972] 村民SN=41437 state=2 空手1503帧 目标SN=<span class="hl">11424</span>(资源) 在采<span class="hl">14人</span> 距TC=84.7格
+[STUCK f=42756] 村民SN=41723 state=2 空手1502帧 目标SN=<span class="hl">11424</span>(资源) 在采<span class="hl">6人</span>  距TC=78.7格
+
+<span class="c"># 改后 · 第二版 14 局 —— 反攻期 STUCK 目标为敌建筑/敌单位 = <span class="k">0 条</span></span>
+<span class="c"># 同期非反攻期 STUCK 照常出现（3~21 条/局）⇒ 检测机制本身未被削</span></pre>
+<p style="font-size:12.5px;color:var(--fg2);margin:6px 0">
+  ⚠ <code>在采14人/21人</code> 这类荒谬值正是"这不是采集场景"的信号 —— 但该判据<b>不可单独使用</b>：
+  21xxx 段混有<b>金矿</b>（多人共采是设计，实测同一金矿 5 人）。判定必须看目标<b>中文名</b>，不是 SN 段。
+</p>
+
+<h3 style="font-size:14px;margin:22px 0 8px;color:var(--acc2)">③ 经济改派覆盖攻塔令</h3>
+<table>
+  <tr><th>日志</th><th>版本</th><th>反攻期攻塔令</th><th>受令后 300 帧内被改派</th><th>典型明细</th></tr>
+  <tr>
+    <td><code>AIText.log.bak_20261003_priest_rate</code></td>
+    <td>改前</td><td class="num">72</td><td class="num bad">10</td>
+    <td style="font-size:12px">村民41723 f=41252 攻箭塔 → <b>1 帧</b>后改浆果丛<br>村民41725 f=42261 → 1 帧后改金矿</td>
+  </tr>
+  <tr>
+    <td><code>_qf_9.ait</code></td><td>第一版</td><td class="num">35</td><td class="num bad">9</td>
+    <td style="font-size:12px">村民41165 f=40503 攻箭塔 → <b>9 帧</b>后改金矿<br>村民41142 → 169 帧后改金矿（<b>GOLD-REBAL 抢人</b>）</td>
+  </tr>
+  <tr>
+    <td><code>_qh_2 / _qh_3 / _qh_10</code></td><td><b>第二版</b></td><td class="num">34 / 34 / 87</td>
+    <td class="num ok">0 / 0 / 0</td><td style="font-size:12px">—</td>
+  </tr>
+</table>
+<p style="font-size:12.5px;color:var(--fg2);margin:6px 0">
+  <b>第二版合计：14 局、155 条反攻期攻塔令、0 条被改派。</b>
+  第一版与第二版的区别只在"挪岗路径是否全部同闸"，两版都跑在同一 map / 同一参数 ⇒ 对照有效。
+</p>
+
+<h3 style="font-size:14px;margin:22px 0 8px;color:var(--acc2)">① 末段钉死（锚退化）—— 根因铁证，但改动未触发</h3>
+<pre><span class="c"># 改前 · 10-03 实机局（唯一出现该场面的样本）</span>
+末段 Mil=0 自 f=42772 持续到局末 f=44873（14 个采样）
+祭司最后 6 次 Move：
+  f=44849  → (3219.94, 608.21)
+  f=44879  → (3219.94, 608.21)
+  f=44909  → (3219.94, 608.21)
+  f=44939  → (3219.94, 608.21)
+  f=44969  → (3219.94, 608.21)
+  f=44999  → (3219.94, 608.21)
+<span class="hl">⇒ 同一条坐标被下发 58 次（f43139~44999）—— 这就是"零位移"的真实形态：不是不发令，是每帧发向同一个点。</span>
+
+<span class="c"># 改后 · 30 局（第一版 16 + 第二版 14）</span>
+出现「反攻后 Mil=0」的局数 = <span class="bad">0 / 30</span>
+[PRST-NOARMY] 命中 = 0 条
+⇒ 新分支从未被执行，<b>无法判定修复效果</b>。</pre>
+<div class="box w">
+  <b>为什么验证不到：</b><code>Mil=0</code> 指"除祭司外我军军事单位全灭"，且需"局仍在继续、祭司存活"——
+  10-03 那局恰好是拖到 45000 上限的未决局。本批 30 局全部在 42000 帧前分出胜负（或早败），
+  末段 <code>Mil</code> 均为 1~24。要复现需专门构造该局面（见 §四）。
+</div>
+
+<h3 style="font-size:14px;margin:22px 0 8px;color:var(--acc2)">④ 浆果每丛上限</h3>
+<ul>
+  <li>代码事实：主路径判据 <code>totalOnBush &gt;= 3</code>、冷路径 <code>realCount + frameBushCount &gt;= 2</code> ⇒ 已统一为 <code>BUSH_MAX_PER_PATCH 2</code>。</li>
+  <li>副作用检查：派往浆果次数 改前 97 次（<code>_tg5_4</code>）→ 改后 135 / 138 次（<code>_qf_3</code> / <code>_qf_6</code>）⇒ <b>无减产迹象</b>。</li>
+  <li>改后 30 局 <code>[STUCK]</code> 目标全为真实资源（树 5xxxx / 浆果 21xxx / 农场 11334），无"超派到第 3 人"的记录。</li>
+  <li class="warn">⚠ 旧记录"<code>在采2人</code> ⇒ 超派为真"的推断已<b>推翻</b>：<code>在采N人</code> 是目标上总人数（<b>含卡死者自己</b>），上限本就是 2 时"在采2人"属<b>正常满员</b>。</li>
+</ul>
+
+<h2>三、验证方法上的三个坑（本轮踩到，已写进技能）</h2>
+<table>
+  <tr><th style="width:30px">#</th><th>坑</th><th>后果与对策</th></tr>
+  <tr>
+    <td>1</td>
+    <td>ait 的 <code>message</code> 字段带 <code>UsrAI打印：</code> 前缀</td>
+    <td><code>startswith('[STUCK')</code> 类判据<b>静默恒 0</b>，与"现象没发生/修复生效"无法区分 —— 本轮差点据此误判 ②已修复。
+      <br>⇒ 解析后立即 <code>re.sub(r'^UsrAI打印[：:]','',msg)</code> 或改用 <code>in</code>；<b>判据恒 0 时必须先 <code>grep -c</code> 交叉验证</b>。</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>锚退化的真实形态是"每帧发<b>同一坐标</b>"，不是"无移动令"</td>
+    <td>首版判据用"末次 Move 到局末的间隔" ⇒ 把 <code>_tg5_4</code>（祭司已进射程正常静止、Mil=5）误当现场。
+      <br>⇒ 正确判据 = <b><code>Mil==0</code> 区间内连续同坐标 Move 的次数</b>（10-03 局：58 次全指向 (3220,608)）。</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><code>replace_all</code> 的新名若含旧名子串会被二次替换</td>
+    <td><code>farmerAtkFrame → g_farmerAtkFrame</code> 把已写好的 <code>g_farmerAtkFrame</code> 变成 <code>g_g_farmerAtkFrame</code>。
+      <br>⇒ 批量替换前确认<b>新名不含旧名子串</b>，替换后必须 <code>grep</code> 复核。</td>
+  </tr>
+</table>
+
+<h2>四、遗留与下一步</h2>
+<ul>
+  <li><b>① 需要专门复现</b>：要验证必须拿到「反攻期后 <code>Mil=0</code> + 祭司存活」的局。
+    最快路径 = 反攻期(<code>40500</code>)之后再跑一批并挑出末段 <code>Mil=0</code> 的局；判据已写进 <code>_quadfix_verify.py</code>。
+    <span class="warn">在此之前，①的效果未经实测，不建议与 ②③ 等同看待。</span></li>
+  <li><b>风险面</b>：① 让"无兵护卫的祭司朝目标前出"。已加保命闸（15 格内有活敌则原地），
+    但该闸本身也是本轮的未验证分支 —— 保守起见，若后续在实机看到"祭司死于前出"，第一优先回退此项。</li>
+  <li><b>提交件仍失配</b>：<code>_submit/</code> 停在 <code>f425fcb1</code>·7199／507，本轮 .cpp 又变了 5 次；提交前必须重跑 <code>mk_submit.py</code> 且 <code>.cpp</code>＋<code>.h</code> 成对。</li>
+</ul>
+
+<h2>五、回退</h2>
+<pre><span class="c"># 回到本批改动之前（基线 f1ab0647·7147）</span>
+cp UsrAI.cpp.bak_20261004_2035_pre_quadfix UsrAI.cpp &amp;&amp; md5sum UsrAI.cpp
+
+<span class="c"># 回到"四修第一版"（5520ce5a·7214，②③只盖主循环）</span>
+cp UsrAI.cpp.bak_20261004_2105_pre_quadfix2 UsrAI.cpp &amp;&amp; md5sum UsrAI.cpp
+
+<span class="c"># 当前（第二版 3fd8c1a5·7219）</span>
+md5sum UsrAI.cpp   <span class="c"># 应得 3fd8c1a5fc3e5365f1977676636d6dc7</span></pre>
+
+<div class="foot">
+  证据文件：<code>_qh_{1..14}.ait</code>（第二版逐局 AIText）、<code>_qf_{1..16}.ait</code>（第一版）、
+  <code>_tg5_{3,4,5,6}.ait</code>（改前短局）、<code>AIText.log.bak_20261003_priest_rate</code>（改前实机局，含 ①②③ 全部铁证）<br>
+  验证脚本：<code>_quadfix_verify.py</code>
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,483 @@
+====================================================================================================
+pre_shrink 全部 tryBuild(BUILDING_*) 调用点: 28 个
+====================================================================================================
+--- [PRE] L1833  BUILDING_STOCK
+      L1823   for (auto &b : info.buildings)
+      L1824   if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
+      L1825   calDistance(cl.dr, cl.ur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
+      L1826   < GAZELLE_HUNT_RANGE * gBL) {
+      L1827   covered = true; break;
+      L1828   }
+      L1829   if (covered) continue;   // 已覆盖则跳过本簇、继续下一簇（多重覆盖无意义）
+      L1830   int tBlockDR = (int)(cl.dr / gBL) - 1;
+      L1831   int tBlockUR = (int)(cl.ur / gBL) - 1;
+      >> if(tryBuild(BUILDING_STOCK,3,false,tBlockDR,tBlockUR,false,true)){
+--- [PRE] L1894  BUILDING_HOME
+      L1877   }
+      L1883   if (storageNearGazelleBuilt == 0 && frame >= GAZELLE_STOCK_WINDOW_END) {
+      L1884   storageNearGazelleBuilt = 1;
+      L1885   DebugText(QString("[GAZELLE-STOCK f=%1] 建造窗口已关 → 硬解锁农场阈").arg(frame));
+      L1886   }
+      L1889   if (preW1) {
+      L1891   bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+      L1892   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
+      L1893   info.Wood >= BUILD_HOUSE_WOOD) {
+      >> BTF=tryBuild(BUILDING_HOME,2);
+--- [PRE] L1899  BUILDING_ARMYCAMP
+      L1886   }
+      L1889   if (preW1) {
+      L1891   bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+      L1892   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
+      L1893   info.Wood >= BUILD_HOUSE_WOOD) {
+      L1894   builtThisFrame = tryBuild(BUILDING_HOME, 2);
+      L1895   }
+      L1897   if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+      L1898   houseCount >= 1 && info.Wood >= BUILD_ARMYCAMP_WOOD) {
+      >> BTF=tryBuild(BUILDING_ARMYCAMP,3);
+--- [PRE] L1904  BUILDING_RANGE
+      L1893   info.Wood >= BUILD_HOUSE_WOOD) {
+      L1894   builtThisFrame = tryBuild(BUILDING_HOME, 2);
+      L1895   }
+      L1897   if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+      L1898   houseCount >= 1 && info.Wood >= BUILD_ARMYCAMP_WOOD) {
+      L1899   builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
+      L1900   }
+      L1902   if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L1903   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+      >> BTF=tryBuild(BUILDING_RANGE,3);
+--- [PRE] L1919  BUILDING_ARMYCAMP
+      L1903   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+      L1904   builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+      L1905   }
+      L1906   }
+      L1909   if (postW1) {
+      L1910   bool rushMilitary = (upgradeStarted && frame < 16500 && !wave2Defeated);  // 升级已启动即可建兵营
+      L1915   if (rushMilitary) {
+      L1917   if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+      L1918   info.Wood >= BUILD_ARMYCAMP_WOOD) {
+      >> BTF=tryBuild(BUILDING_ARMYCAMP,3);
+--- [PRE] L1923  BUILDING_RANGE
+      L1909   if (postW1) {
+      L1910   bool rushMilitary = (upgradeStarted && frame < 16500 && !wave2Defeated);  // 升级已启动即可建兵营
+      L1915   if (rushMilitary) {
+      L1917   if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+      L1918   info.Wood >= BUILD_ARMYCAMP_WOOD) {
+      L1919   builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
+      L1920   }
+      L1921   if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L1922   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+      >> BTF=tryBuild(BUILDING_RANGE,3);
+--- [PRE] L1929  BUILDING_HOME
+      L1919   builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
+      L1920   }
+      L1921   if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L1922   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+      L1923   builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+      L1924   }
+      L1926   bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+      L1927   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
+      L1928   info.Wood >= BUILD_HOUSE_WOOD) {
+      >> BTF=tryBuild(BUILDING_HOME,2);
+--- [PRE] L1944  BUILDING_GRANARY
+      L1926   bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+      L1927   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
+      L1928   info.Wood >= BUILD_HOUSE_WOOD) {
+      L1929   builtThisFrame = tryBuild(BUILDING_HOME, 2);
+      L1930   }
+      L1940   bool canAffordEcon = (info.Meat >= 80 && info.Wood >= 50);
+      L1941   if (!builtThisFrame && canAffordEcon &&
+      L1942   countBuildingsExisting(BUILDING_MARKET) == 0 && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+      L1943   info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
+      >> BTF=tryBuild(BUILDING_GRANARY,3);
+--- [PRE] L1949  BUILDING_MARKET
+      L1940   bool canAffordEcon = (info.Meat >= 80 && info.Wood >= 50);
+      L1941   if (!builtThisFrame && canAffordEcon &&
+      L1942   countBuildingsExisting(BUILDING_MARKET) == 0 && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+      L1943   info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
+      L1944   builtThisFrame = tryBuild(BUILDING_GRANARY, 3);
+      L1945   }
+      L1946   if (!builtThisFrame && canAffordEcon &&
+      L1947   countBuildingsExisting(BUILDING_MARKET) == 0 &&
+      L1948   countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {
+      >> BTF=tryBuild(BUILDING_MARKET,3);
+--- [PRE] L1972  BUILDING_GRANARY
+      L1962   double btcDR = bCenter ? (bCenter->BlockDR + 1) * bBL : 0;
+      L1963   double btcUR = bCenter ? (bCenter->BlockUR + 1) * bBL : 0;
+      L1964   for (auto &r : info.resources)
+      L1965   if (r.Type == RESOURCE_BUSH && r.Cnt > 0)
+      L1966   if (calDistance(btcDR, btcUR, r.DR, r.UR) < 30 * bBL) nearBushFood += r.Cnt;
+      L1967   }
+      L1969   if (!builtThisFrame && canAffordBuilding &&
+      L1970   countBuildingsExisting(BUILDING_MARKET) == 0 && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+      L1971   info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
+      >> BTF=tryBuild(BUILDING_GRANARY,3);
+--- [PRE] L1980  BUILDING_MARKET
+      L1967   }
+      L1969   if (!builtThisFrame && canAffordBuilding &&
+      L1970   countBuildingsExisting(BUILDING_MARKET) == 0 && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+      L1971   info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
+      L1972   builtThisFrame = tryBuild(BUILDING_GRANARY, 3);
+      L1973   }
+      L1974   if (!builtThisFrame && canAffordBuilding &&
+      L1975   countBuildingsExisting(BUILDING_MARKET) == 0 &&
+      L1976   countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {  // 造市场
+      >> BTF=tryBuild(BUILDING_MARKET,3);
+--- [PRE] L1989  BUILDING_ARROWTOWER
+      L1974   if (!builtThisFrame && canAffordBuilding &&
+      L1975   countBuildingsExisting(BUILDING_MARKET) == 0 &&
+      L1976   countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {  // 造市场
+      L1980   builtThisFrame = tryBuild(BUILDING_MARKET, 3);
+      L1981   if (builtThisFrame)
+      L1982   DebugText(QString("[MARKET f=%1] postW1 经济期建市场 wood=%2").arg(frame).arg((int)info.Wood));
+      L1983   }
+      L1987   if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME &&
+      L1988   info.Stone >= 150) {
+      >> BTF=tryBuild(BUILDING_ARROWTOWER,2);
+--- [PRE] L1997  BUILDING_RANGE
+      L1983   }
+      L1987   if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME &&
+      L1988   info.Stone >= 150) {
+      L1989   builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
+      L1990   if (builtThisFrame) towerCount++;
+      L1991   }
+      L1994   if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L1995   countBuildings(BUILDING_ARMYCAMP) >= 1 &&
+      L1996   info.Wood >= BUILD_RANGE_WOOD) {
+      >> BTF=tryBuild(BUILDING_RANGE,3);
+--- [PRE] L2007  BUILDING_STABLE
+      L1991   }
+      L1994   if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L1995   countBuildings(BUILDING_ARMYCAMP) >= 1 &&
+      L1996   info.Wood >= BUILD_RANGE_WOOD) {
+      L1997   builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+      L1998   }
+      L2004   if (!builtThisFrame && countBuildingsExisting(BUILDING_STABLE) == 0 &&
+      L2005   info.civilizationStage >= CIVILIZATION_TOOLAGE &&
+      L2006   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD && !DISABLE_STABLE_BUILD) {
+      >> BTF=tryBuild(BUILDING_STABLE,3);
+--- [PRE] L2037  BUILDING_FARM
+      L2028   (compositeBowResearched || compositeBowQueued || frame >= FARM_WAIT_CB_FRAME) &&
+      L2029   info.Wood >= farmWoodNeed2 && info.Meat >= 100) {
+      L2030   int currentFarms = countFarmsForCap();
+      L2031   int farmerCount = 0;
+      L2032   for (auto &f : info.farmers)
+      L2033   if (f.FarmerSort == FARMERTYPE_FARMER) farmerCount++;
+      L2034   int targetFarms = std::max(0, farmerCount - 2);
+      L2035   targetFarms = std::min(targetFarms, MAX_FARMS);
+      L2036   if (currentFarms < targetFarms) {
+      >> BTF=tryBuild(BUILDING_FARM,3);
+--- [PRE] L2044  BUILDING_HOME
+      L2034   int targetFarms = std::max(0, farmerCount - 2);
+      L2035   targetFarms = std::min(targetFarms, MAX_FARMS);
+      L2036   if (currentFarms < targetFarms) {
+      L2037   builtThisFrame = tryBuild(BUILDING_FARM, 3);
+      L2038   }
+      L2039   }
+      L2041   bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+      L2042   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
+      L2043   info.Wood >= BUILD_HOUSE_WOOD) {
+      >> BTF=tryBuild(BUILDING_HOME,2);
+--- [PRE] L2056  BUILDING_HOME
+      L2043   info.Wood >= BUILD_HOUSE_WOOD) {
+      L2044   builtThisFrame = tryBuild(BUILDING_HOME, 2);
+      L2045   }
+      L2046   }
+      L2047   }
+      L2050   if (postW2) {
+      L2053   bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+      L2054   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
+      L2055   info.Wood >= BUILD_HOUSE_WOOD) {
+      >> BTF=tryBuild(BUILDING_HOME,2);
+--- [PRE] L2062  BUILDING_GRANARY
+      L2047   }
+      L2050   if (postW2) {
+      L2053   bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+      L2054   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
+      L2055   info.Wood >= BUILD_HOUSE_WOOD) {
+      L2056   builtThisFrame = tryBuild(BUILDING_HOME, 2);
+      L2057   }
+      L2060   if (!builtThisFrame && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+      L2061   info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
+      >> BTF=tryBuild(BUILDING_GRANARY,3);
+--- [PRE] L2174  BUILDING_STOCK
+      L2164   if (calDistance(seed.first, seed.second, g.first, g.second) < 6 * BL) {
+      L2165   sumDR += g.first; sumUR += g.second; cnt++;
+      L2166   }
+      L2167   if (cnt > bestCnt) { bestCnt = cnt; bestSumDR = sumDR; bestSumUR = sumUR; }
+      L2168   }
+      L2169   if (bestCnt > 0 && info.Wood >= BUILD_STOCK_WOOD) {
+      L2170   double centerDR = bestSumDR / bestCnt, centerUR = bestSumUR / bestCnt;
+      L2171   int tBlockDR = (int)(centerDR / BL) - 1;
+      L2172   int tBlockUR = (int)(centerUR / BL) - 1;
+      >> BTF=tryBuild(BUILDING_STOCK,3,false,tBlockDR,tBlockUR);
+--- [PRE] L2194  BUILDING_GRANARY
+      L2175   }
+      L2176   }
+      L2177   }
+      L2186   if (!builtThisFrame && !needSecondStock && !DISABLE_GRANARY_BUILD &&
+      L2187   countBuildingsExisting(BUILDING_GRANARY) >= 1 &&
+      L2188   countBuildingsExisting(BUILDING_GRANARY) < MAX_GRANARY &&
+      L2189   info.Wood >= BUILD_GRANARY_WOOD) {
+      L2190   int clX = -1, clY = -1, clCnt = 0;
+      L2191   if (findRemoteBushCluster(clX, clY, clCnt)) {
+      >> BTF=tryBuild(BUILDING_GRANARY,3,false,clX,clY,true);
+--- [PRE] L2208  BUILDING_MARKET
+      L2189   info.Wood >= BUILD_GRANARY_WOOD) {
+      L2190   int clX = -1, clY = -1, clCnt = 0;
+      L2191   if (findRemoteBushCluster(clX, clY, clCnt)) {
+      L2194   builtThisFrame = tryBuild(BUILDING_GRANARY, 3, false, clX, clY, true);
+      L2195   }
+      L2196   }
+      L2205   if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME) &&
+      L2206   countBuildingsExisting(BUILDING_MARKET) == 0 &&
+      L2207   countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {  // 造市场（已去掉11分钟时间限制）
+      >> BTF=tryBuild(BUILDING_MARKET,3);
+--- [PRE] L2215  BUILDING_ARMYCAMP
+      L2196   }
+      L2205   if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME) &&
+      L2206   countBuildingsExisting(BUILDING_MARKET) == 0 &&
+      L2207   countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {  // 造市场（已去掉11分钟时间限制）
+      L2208   builtThisFrame = tryBuild(BUILDING_MARKET, 3);
+      L2209   if (builtThisFrame) DebugText(QString("[MARKET f=%1] 下令建造市场 wood=%2").arg(frame).arg((int)info.Wood));
+      L2210   }
+      L2213   if (!builtThisFrame && upgradeStarted && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+      L2214   info.Wood >= BUILD_ARMYCAMP_WOOD) {
+      >> BTF=tryBuild(BUILDING_ARMYCAMP,3);
+--- [PRE] L2227  BUILDING_RANGE
+      L2209   if (builtThisFrame) DebugText(QString("[MARKET f=%1] 下令建造市场 wood=%2").arg(frame).arg((int)info.Wood));
+      L2210   }
+      L2213   if (!builtThisFrame && upgradeStarted && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+      L2214   info.Wood >= BUILD_ARMYCAMP_WOOD) {
+      L2215   builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
+      L2216   }
+      L2224   if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME) &&
+      L2225   countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L2226   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+      >> BTF=tryBuild(BUILDING_RANGE,3);
+--- [PRE] L2235  BUILDING_ARROWTOWER
+      L2216   }
+      L2224   if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME) &&
+      L2225   countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L2226   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+      L2227   builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+      L2228   if (builtThisFrame) DebugText(QString("[RANGE f=%1] 下令建造首座靶场 wood=%2").arg(frame).arg((int)info.Wood));
+      L2229   }
+      L2233   if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME &&
+      L2234   info.Stone >= 150) {
+      >> BTF=tryBuild(BUILDING_ARROWTOWER,2);
+--- [PRE] L2244  BUILDING_RANGE
+      L2229   }
+      L2233   if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME &&
+      L2234   info.Stone >= 150) {
+      L2235   builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
+      L2236   if (builtThisFrame) towerCount++;
+      L2237   }
+      L2241   if (!builtThisFrame && frame >= WAVE3_TIME &&
+      L2242   countBuildingsExisting(BUILDING_RANGE) < MAX_RANGES &&
+      L2243   info.Wood >= BUILD_RANGE_WOOD + 80) {
+      >> BTF=tryBuild(BUILDING_RANGE,3);
+--- [PRE] L2250  BUILDING_STABLE
+      L2236   if (builtThisFrame) towerCount++;
+      L2237   }
+      L2241   if (!builtThisFrame && frame >= WAVE3_TIME &&
+      L2242   countBuildingsExisting(BUILDING_RANGE) < MAX_RANGES &&
+      L2243   info.Wood >= BUILD_RANGE_WOOD + 80) {
+      L2244   builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+      L2245   }
+      L2248   if (!builtThisFrame && countBuildingsExisting(BUILDING_STABLE) == 0 &&
+      L2249   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD && !DISABLE_STABLE_BUILD) {
+      >> BTF=tryBuild(BUILDING_STABLE,3);
+--- [PRE] L2276  BUILDING_COLLAGE
+      L2251   if (builtThisFrame)
+      L2252   DebugText(QString("[STABLE f=%1] postW2 建马厩(学院前置) wood=%2").arg(frame).arg((int)info.Wood));
+      L2253   }
+      L2270   if (!builtThisFrame && countBuildingsExisting(BUILDING_COLLAGE) == 0 && !DISABLE_COLLAGE_BUILD &&
+      L2271   postBronze &&
+      L2272   (state >= DEFENSE_WAVE3 || frame >= WAVE3_TIME) &&
+      L2273   countBuildings(BUILDING_ARMYCAMP) >= 1 &&
+      L2274   countBuildingsExisting(BUILDING_STABLE) >= 1 &&   // ★ 学院前置：必须先建好马厩
+      L2275   info.Wood >= BUILD_COLLAGE_WOOD + 30) {
+      >> BTF=tryBuild(BUILDING_COLLAGE,3);
+--- [PRE] L2303  BUILDING_FARM
+      L2294   bool farmBowWoodOk = (compositeBowResearched || compositeBowQueued ||
+      L2295   frame >= FARM_WAIT_CB_FRAME);
+      L2296   bool cbSkillPending2 = (!compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
+      L2297   int farmWoodNeed = FARM_WOOD_NEED(storageNearGazelleBuilt == 1)
+      L2298   + (cbSkillPending2 ? COMPOSITE_BOW_WOOD_RESERVE : 0);
+      L2299   if (!builtThisFrame && storageNearGazelleBuilt == 1 && farmWoodTechOk && farmBowWoodOk) {
+      L2300   int currentFarms = countFarmsForCap();
+      L2301   if (currentFarms < farmTarget &&
+      L2302   info.Wood >= farmWoodNeed) {
+      >> BTF=tryBuild(BUILDING_FARM,3);
+
+====================================================================================================
+当前版 全部 tryBuild(BUILDING_*) 调用点: 14 个
+====================================================================================================
+--- [CUR] L1703  BUILDING_HOME
+      L1683   bool upgradeStarted = (state == UPGRADING || postBronze);
+      L1685   bool preW1 = (frame < WAVE1_TIME);
+      L1686   bool postW1 = (frame >= WAVE1_TIME && frame < WAVE2_TIME);
+      L1687   bool postW2 = (frame >= WAVE2_TIME);
+      L1698   const bool popHeadroomLowNow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+      L1699   const bool canAffordEconNow  = (info.Meat >= 80 && info.Wood >= 50);
+      L1700   auto tryBuildHouse = [&]() {
+      L1701   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLowNow &&
+      L1702   info.Wood >= BUILD_HOUSE_WOOD)
+      >> BTF=tryBuild(BUILDING_HOME,2);
+--- [CUR] L1714  BUILDING_GRANARY
+      L1701   if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLowNow &&
+      L1702   info.Wood >= BUILD_HOUSE_WOOD)
+      L1703   builtThisFrame = tryBuild(BUILDING_HOME, 2);
+      L1704   };
+      L1709   auto tryBuildGranary = [&](bool requireAfford, bool requireNoMarket) {
+      L1710   if (!builtThisFrame && (!requireAfford || canAffordEconNow) &&
+      L1711   (!requireNoMarket || countBuildingsExisting(BUILDING_MARKET) == 0) &&
+      L1712   countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+      L1713   info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD)
+      >> BTF=tryBuild(BUILDING_GRANARY,3);
+--- [CUR] L1720  BUILDING_MARKET
+      L1711   (!requireNoMarket || countBuildingsExisting(BUILDING_MARKET) == 0) &&
+      L1712   countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+      L1713   info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD)
+      L1714   builtThisFrame = tryBuild(BUILDING_GRANARY, 3);
+      L1715   };
+      L1716   auto tryBuildMarket = [&](const char *tag) {
+      L1717   if (!builtThisFrame &&
+      L1718   countBuildingsExisting(BUILDING_MARKET) == 0 &&
+      L1719   countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {
+      >> BTF=tryBuild(BUILDING_MARKET,3);
+--- [CUR] L1728  BUILDING_ARMYCAMP
+      L1719   countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {
+      L1720   builtThisFrame = tryBuild(BUILDING_MARKET, 3);
+      L1721   if (builtThisFrame)
+      L1722   DebugText(QString("[MARKET f=%1] %2 wood=%3").arg(frame).arg(tag).arg((int)info.Wood));
+      L1723   }
+      L1724   };
+      L1725   auto tryBuildArmyCamp = [&](bool requireHouse) {
+      L1726   if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+      L1727   (!requireHouse || houseCount >= 1) && info.Wood >= BUILD_ARMYCAMP_WOOD)
+      >> BTF=tryBuild(BUILDING_ARMYCAMP,3);
+--- [CUR] L1733  BUILDING_RANGE
+      L1724   };
+      L1725   auto tryBuildArmyCamp = [&](bool requireHouse) {
+      L1726   if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+      L1727   (!requireHouse || houseCount >= 1) && info.Wood >= BUILD_ARMYCAMP_WOOD)
+      L1728   builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
+      L1729   };
+      L1730   auto tryBuildRange = [&](const char *tag) {
+      L1731   if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L1732   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+      >> BTF=tryBuild(BUILDING_RANGE,3);
+--- [CUR] L1740  BUILDING_ARROWTOWER
+      L1731   if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
+      L1732   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+      L1733   builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+      L1734   if (builtThisFrame && tag)
+      L1735   DebugText(QString("[RANGE f=%1] %2 wood=%3").arg(frame).arg(tag).arg((int)info.Wood));
+      L1736   }
+      L1737   };
+      L1738   auto tryBuildTower = [&]() {
+      L1739   if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME && info.Stone >= 150) {
+      >> BTF=tryBuild(BUILDING_ARROWTOWER,2);
+--- [CUR] L1748  BUILDING_STABLE
+      L1739   if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME && info.Stone >= 150) {
+      L1740   builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
+      L1741   if (builtThisFrame) towerCount++;
+      L1742   }
+      L1743   };
+      L1744   auto tryBuildStable = [&](bool requireToolAge, const char *tag) {
+      L1745   if (!builtThisFrame && countBuildingsExisting(BUILDING_STABLE) == 0 &&
+      L1746   (!requireToolAge || info.civilizationStage >= CIVILIZATION_TOOLAGE) &&
+      L1747   countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD && !DISABLE_STABLE_BUILD) {
+      >> BTF=tryBuild(BUILDING_STABLE,3);
+--- [CUR] L1846  BUILDING_STOCK
+      L1834   };
+      L1835   int existingStocks = countBuildingsExisting(BUILDING_STOCK);
+      L1837   for (auto &cl : clusters) {
+      L1838   if (builtThisFrame) break;
+      L1839   if (info.Wood < BUILD_STOCK_WOOD) break;
+      L1840   if (existingStocks >= MAX_STOCK) break;
+      L1842   if (clusterCovered(cl.dr, cl.ur)) continue;
+      L1843   int tBlockDR = (int)(cl.dr / gBL) - 1;
+      L1844   int tBlockUR = (int)(cl.ur / gBL) - 1;
+      >> if(tryBuild(BUILDING_STOCK,3,false,tBlockDR,tBlockUR,false,true)){
+--- [CUR] L1961  BUILDING_FARM
+      L1942   bool marketReady = (countBuildings(BUILDING_MARKET) >= 1);
+      L1953   int farmWoodNeed2 = farmWoodNeedNow();
+      L1954   if (!builtThisFrame && marketReady && storageNearGazelleBuilt == 1 &&
+      L1955   (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME) &&
+      L1956   (compositeBowResearched || compositeBowQueued || frame >= FARM_WAIT_CB_FRAME) &&
+      L1957   info.Wood >= farmWoodNeed2 && info.Meat >= 100) {
+      L1958   int currentFarms = countFarmsForCap();
+      L1959   int targetFarms = std::min(std::max(0, farmerCountNow() - 2), MAX_FARMS);
+      L1960   if (currentFarms < targetFarms) {
+      >> BTF=tryBuild(BUILDING_FARM,3);
+--- [CUR] L2061  BUILDING_STOCK
+      L2051   if (calDistance(seed.first, seed.second, g.first, g.second) < 6 * BL) {
+      L2052   sumDR += g.first; sumUR += g.second; cnt++;
+      L2053   }
+      L2054   if (cnt > bestCnt) { bestCnt = cnt; bestSumDR = sumDR; bestSumUR = sumUR; }
+      L2055   }
+      L2056   if (bestCnt > 0 && info.Wood >= BUILD_STOCK_WOOD) {
+      L2057   double centerDR = bestSumDR / bestCnt, centerUR = bestSumUR / bestCnt;
+      L2058   int tBlockDR = (int)(centerDR / BL) - 1;
+      L2059   int tBlockUR = (int)(centerUR / BL) - 1;
+      >> BTF=tryBuild(BUILDING_STOCK,3,false,tBlockDR,tBlockUR);
+--- [CUR] L2078  BUILDING_GRANARY
+      L2062   }
+      L2063   }
+      L2064   }
+      L2070   if (!builtThisFrame && !needSecondStock && !DISABLE_GRANARY_BUILD &&
+      L2071   countBuildingsExisting(BUILDING_GRANARY) >= 1 &&
+      L2072   countBuildingsExisting(BUILDING_GRANARY) < MAX_GRANARY &&
+      L2073   info.Wood >= BUILD_GRANARY_WOOD) {
+      L2074   int clX = -1, clY = -1, clCnt = 0;
+      L2075   if (findRemoteBushCluster(clX, clY, clCnt)) {
+      >> BTF=tryBuild(BUILDING_GRANARY,3,false,clX,clY,true);
+--- [CUR] L2107  BUILDING_RANGE
+      L2080   }
+      L2086   if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME)) tryBuildMarket("下令建造市场");
+      L2089   if (!builtThisFrame && upgradeStarted) tryBuildArmyCamp(false);
+      L2095   if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME))
+      L2096   tryBuildRange("下令建造首座靶场");
+      L2100   tryBuildTower();
+      L2104   if (!builtThisFrame && frame >= WAVE3_TIME &&
+      L2105   countBuildingsExisting(BUILDING_RANGE) < MAX_RANGES &&
+      L2106   info.Wood >= BUILD_RANGE_WOOD + 80) {
+      >> BTF=tryBuild(BUILDING_RANGE,3);
+--- [CUR] L2125  BUILDING_COLLAGE
+      L2107   builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+      L2108   }
+      L2111   tryBuildStable(false, "postW2 建马厩(学院前置)");
+      L2119   if (!builtThisFrame && countBuildingsExisting(BUILDING_COLLAGE) == 0 && !DISABLE_COLLAGE_BUILD &&
+      L2120   postBronze &&
+      L2121   (state >= DEFENSE_WAVE3 || frame >= WAVE3_TIME) &&
+      L2122   countBuildings(BUILDING_ARMYCAMP) >= 1 &&
+      L2123   countBuildingsExisting(BUILDING_STABLE) >= 1 &&   // ★ 学院前置：必须先建好马厩
+      L2124   info.Wood >= BUILD_COLLAGE_WOOD + 30) {
+      >> BTF=tryBuild(BUILDING_COLLAGE,3);
+--- [CUR] L2150  BUILDING_FARM
+      L2129   }
+      L2142   bool farmWoodTechOk = (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME);
+      L2143   bool farmBowWoodOk = (compositeBowResearched || compositeBowQueued ||
+      L2144   frame >= FARM_WAIT_CB_FRAME);
+      L2145   int farmWoodNeed = farmWoodNeedNow();
+      L2146   if (!builtThisFrame && storageNearGazelleBuilt == 1 && farmWoodTechOk && farmBowWoodOk) {
+      L2147   int currentFarms = countFarmsForCap();
+      L2148   if (currentFarms < farmTarget &&
+      L2149   info.Wood >= farmWoodNeed) {
+      >> BTF=tryBuild(BUILDING_FARM,3);
+
+====================================================================================================
+按建筑类型分组计数（看哪些类型的块被合并了）
+====================================================================================================
+  BUILDING_ARMYCAMP            PRE=3  CUR=1    <== 数量变化
+  BUILDING_ARROWTOWER          PRE=2  CUR=1    <== 数量变化
+  BUILDING_COLLAGE             PRE=1  CUR=1  
+  BUILDING_FARM                PRE=2  CUR=2  
+  BUILDING_GRANARY             PRE=4  CUR=2    <== 数量变化
+  BUILDING_HOME                PRE=4  CUR=1    <== 数量变化
+  BUILDING_MARKET              PRE=3  CUR=1    <== 数量变化
+  BUILDING_RANGE               PRE=5  CUR=2    <== 数量变化
+  BUILDING_STABLE              PRE=2  CUR=1    <== 数量变化
+  BUILDING_STOCK               PRE=2  CUR=2  
