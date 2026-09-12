@@ -125,6 +125,12 @@ ins UsrIns;
 // ★ 祭司感化目标选取范围(格)：从 20 扩到 28，让祭司更主动地去感化远处的投石车等高价值目标。
 //   (投石车射程10格、感化射程14格；28格仍在护驾召回半径 PRIEST_GUARD_RECALL=30 内，不会脱离保护。)
 #define PRIEST_CONVERT_RANGE 28.0
+// ★ 2026-09-12 反攻期祭司安全距离（用户需求"祭司反攻不要太靠前，尽量在安全距离"）：
+//   旧版把祭司推到 target(敌基地)-5格(仅沿 DR 轴退5格)，祭司几乎与大军一起冲到敌基地外5格 → 前线一崩即被秒。
+//   新方案：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格；
+//   且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
+#define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
+#define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 #define DISABLE_STABLE_BUILD  true    // 2026-09-04 用户要求：暂时不建马厩（与 DISABLE_CAVALRY_TRAIN=true 配合：纯步战阵线）
 #define DISABLE_COLLAGE_BUILD true    // 2026-09-04 用户要求：暂时不建学院（方阵兵依赖学院 → 反攻期只剩复合弓兵）
@@ -4535,17 +4541,55 @@ void UsrAI::manageCounterAttack() {
         int priestEnemy = findNearestEnemySN(priest->DR, priest->UR, PRIEST_CONVERT_RANGE * BL);
         // 注: priestEnemy 暂不直接使用——managePriest 已独立感化,本段只关心武器厂 + 推进
 
-        if (siege && pDist < 12 * BL && priest->ConvertCooldown <= 0 && priestCounterCooldown <= 0) {
+        // ★ 2026-09-12 安全距离优先（用户需求"祭司反攻不要太靠前，尽量在安全距离"）：
+        //   旧版把祭司推到 target-5格，且"感化武器厂"(pDist<12)会把祭司长期钉在武器厂旁=太靠前。
+        //   新方案：祭司冲到反攻目标 PRIEST_MIN_DIST_TARGET 格内(太靠前)→本帧强制后撤到【大队后方安全距离】，
+        //   不感化武器厂(避免被钉在前线送命)；只有已在安全范围才允许【被动】感化武器厂(不主动前出)。
+        bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
+
+        if (siege && pDist < 12 * BL && priest->ConvertCooldown <= 0) {
             // 在感化范围内→感化武器厂！
             HumanAction(priestSN, siege->SN);
             priestCounterCooldown = 60;
             DebugText(">> Priest converting Siege Workshop!");
-        } else if (priestCounterCooldown <= 0) {
-            // 安全，向目标后方推进（保持距离）
-            double targetX = max(0.0, min((double)MAP_L * BL, targetDR - 5 * BL));
-            double targetY = max(0.0, min((double)MAP_U * BL, targetUR - 5 * BL));
-            // ★ 直接引擎全图寻路直奔（7e 起 HumanMove 可穿越未探索区，不再逐格摸索）；保持 5 格缓冲避免贴脸
-            HumanMove(priestSN, targetX, targetY);
+        } else if (priestCounterCooldown <= 0 || priestTooClose) {
+            // ★ 2026-09-12 改（用户需求"祭司反攻不要太靠前，尽量在安全距离"）：
+            //   旧版把祭司推到 target(敌基地)-5格(仅沿 DR 轴退5格)——祭司几乎与大军一起冲到敌基地外5格，
+            //   前线一崩、祭司暴露在敌塔/敌兵火力下 = 立即失败。
+            //   新方案：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格；
+            //   且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，
+            //   不单独前出、不冲进敌基地射程。感化武器厂那段(上方 if)保留但改为【被动】：只有祭司随大队推进后
+            //   自然进入感化范围才感化，不再主动前出到武器厂。
+            double tcDR = rallyCtrDR, tcUR = rallyCtrUR;   // ★ 后方锚点 = 集结 TC（己方基地方向），祭司朝此方向退
+            double sumDR = 0, sumUR = 0; int nArmy = 0;
+            for (auto &a : info.armies) {
+                if (a.SN == priestSN) continue;       // 重心不算祭司自己
+                sumDR += a.DR; sumUR += a.UR; nArmy++;
+            }
+            double armyDR = (nArmy > 0) ? sumDR / nArmy : tcDR;
+            double armyUR = (nArmy > 0) ? sumUR / nArmy : tcUR;
+            // 大队→TC 方向单位向量（即"大队身后"方向）
+            double ux = tcDR - armyDR, uy = tcUR - armyUR;
+            double ul = std::sqrt(ux * ux + uy * uy) + 1e-6;
+            ux /= ul; uy /= ul;
+            // 祭司目标 = 大队重心 朝 TC 退 SAFE_BEHIND 格
+            double px = armyDR + ux * PRIEST_SAFE_BEHIND * BL;
+            double py = armyUR + uy * PRIEST_SAFE_BEHIND * BL;
+            // 安全距离约束：距反攻目标 ≥ MIN_DIST_TARGET（不满足则沿身后方向继续退，直到满足）
+            double dTgt = calDistance(px, py, targetDR, targetUR);
+            if (dTgt < PRIEST_MIN_DIST_TARGET * BL) {
+                double need = (PRIEST_MIN_DIST_TARGET * BL - dTgt) + 2.0 * BL;
+                px += ux * need; py += uy * need;
+            }
+            px = max(0.0, min((double)MAP_L * BL, px));
+            py = max(0.0, min((double)MAP_U * BL, py));
+            if (isPassableAt(px, py))
+                HumanMove(priestSN, px, py);
+            if (frame % 100 == 0)
+                DebugText(QString("[PRST-REAR f=%1] army=(%2,%3) tgt=(%4,%5) dTgt=%6 tooClose=%7")
+                          .arg(frame).arg(armyDR / BL, 0, 'f', 0).arg(armyUR / BL, 0, 'f', 0)
+                          .arg(targetDR / BL, 0, 'f', 0).arg(targetUR / BL, 0, 'f', 0)
+                          .arg(dTgt / BL, 0, 'f', 1).arg(priestTooClose ? 1 : 0));
             priestCounterCooldown = 30;
         }
     }
