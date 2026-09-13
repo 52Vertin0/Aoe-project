@@ -199,6 +199,7 @@ ins UsrIns;
 //   新方案：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格；
 //   且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
+#define PRIEST_COUNTER_FLEE_HP 0.6  // 2026-09-13 保祭司：反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
@@ -854,6 +855,28 @@ void UsrAI::managePriest() {
             if (dot > 0) baseAng = std::atan2(std::sin(baseAng) + toAY/alen*0.9,
                                               std::cos(baseAng) + toAX/alen*0.9);
         }
+        // ★★ 2026-09-13 保祭司（本轮第 1 瓶颈：祭司死亡率 43.8%）· 落点粘滞 ★★
+        //   旧逻辑每 18 帧(cooldown)用【当前】威胁集合重算 baseAng(斥力合力方向)与落点；
+        //   敌人一移动，合力方向就可能整体翻转 → 落点从地图一侧跳到另一侧 → 祭司 A→B→A 往返，
+        //   净位移≈0，被多个远程单位围在原地打死（tw4 f=15909 / sg2 f=43165 均为此型：
+        //   500 帧内落点在 (472~1138, 453~1291) 反复横跳，最后满血被 4 个敌人围殴致死）。
+        //   修：上次落点【仍安全】(不在任何威胁射程+1 格内、未被占用) 且祭司【尚未抵达】(>3 格)
+        //   → 直接沿用，不重算。只有落点变不安全 / 已抵达 / 卡住不动，才走下方重算换扇区。
+        if (priestFleeLastFrame > -999999) {
+            double dLast = calDistance(pDR, pUR, priestFleeLastX, priestFleeLastY);
+            // 卡在旧落点上(IDLE 且远离)不算粘滞对象，交给下方死锁检测换扇区
+            bool stuckAtLast = (priest->NowState == HUMAN_STATE_IDLE && dLast > 2.0 * BL);
+            if (!stuckAtLast && dLast > 3.0 * BL) {
+                bool lastSafe = true;
+                for (int t = 0; t < nT; ++t)
+                    if (calDistance(priestFleeLastX, priestFleeLastY, thX[t], thY[t]) < thR[t] + 1.0 * BL) { lastSafe = false; break; }
+                if (lastSafe && !occupiedLanding(priestFleeLastX, priestFleeLastY)) {
+                    HumanMove(priestSN, priestFleeLastX, priestFleeLastY);
+                    priestMoveCooldown = 18;
+                    return;   // 沿用旧落点：不再重算，杜绝方向翻转导致的原地抖动
+                }
+            }
+        }
         // 死锁检测(基于"下发点是否被引擎拒收"):上一帧下发 flee 点后,本帧祭司仍是 IDLE 且离该点>2格
         //   → 说明该落点不可达/被占(引擎拒收、祭司原地不动)→换下一扇区重试;若已抵达/正在接近→重置。
         if (priestFleeLastFrame > -999999) {
@@ -1135,11 +1158,30 @@ void UsrAI::managePriest() {
                     double bx = (b.BlockDR + 1) * BL, by = (b.BlockUR + 1) * BL;
                     if (calDistance(pDR, pUR, bx, by) < 14.0 * BL) { fleeLag = true; break; }
                 }
-        if (priestMode == 1 && fleeLag && !healOverFlee) {
+        // ★★ 2026-09-13 保祭司 · mustFlee 计算【提前】：下方迟滞锁复位需要用到它 ★★
+        bool mustFlee = (threatDist <= nearestThreatR + 2.0 * BL);
+        if (inCounter) {
+            // ★★ 2026-09-13 保祭司：旧版反攻期【只有近战贴身才逃】(mustFlee = meleeAdj)，
+            //   于是祭司被多个远程单位(弓/战车弓/复合弓 12 格射程)集火时完全不撤 -> 满血被秒
+            //   (sg2 f=43165 被 Prof.Lu 击杀、tw3 f=24136 被 3 个远程单位围殴均属此型)。
+            //   保留"不因远程威胁就缩回基地"的原意(否则祭司永远待在箭塔旁不反攻)，
+            //   但增加【掉血退出】条件：已掉到 PRIEST_COUNTER_FLEE_HP 以下且仍在敌人射程内 -> 立即撤。
+            double pBRc = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
+            mustFlee = meleeAdj || (pBRc <= PRIEST_COUNTER_FLEE_HP && threatDist <= nearestThreatR);
+        }
+        // 迟滞延续：已处于撤退态且威胁仍在(近战贴身 / 箭塔 / 远程射程) → 继续逃
+        if (priestMode == 1 && (fleeLag || mustFlee) && !healOverFlee) {
             double feDR = 0, feUR = 0; locateNearest(feDR, feUR);
             priestFlee(feDR, feUR); return;
         }
-        priestMode = 0;
+        // ★★ 2026-09-13 保祭司：原 `priestMode = 0;` 是【无条件】执行 → 迟滞锁形同虚设 ★★
+        //   撤退中(priestMode=1)只要本帧 fleeLag 不成立(无近战贴身/无箭塔)就立刻解锁；
+        //   而 mustFlee 用的是【含远程】的 threatDist ⇒ 形成逐帧交替：
+        //   "flee(远程威胁) → 解锁 → 走到【待命回塔】分支 → 再 mustFlee → flee"
+        //   实测 pv2 f=15611~15929：落点在固定待命点 (581.611,653.02) 与 flee 落点之间
+        //   每 30 帧翻转一次，祭司原地抖动，f=15997 被 3 个远程单位打死。
+        //   修：只有【真正脱离全部威胁】才解锁撤退迟滞锁。
+        if (priestMode == 1 && !fleeLag && !mustFlee) priestMode = 0;
         // 4) 有威胁且无法感化(冷却中/无目标)→保命撤退
         //   ★ 再修 2026-09-11：原闸"任意敌在射程+2内→无条件逃"会压制下方治疗档，
         //     造成"祭司只有脱离威胁(和平期满血)才治友军"的观感。改为：自身非濒死+无近战贴身+
@@ -1148,8 +1190,7 @@ void UsrAI::managePriest() {
         // ★ 2026-09-11 修"反攻期祭司在家箭塔附近转圈不反攻"：反攻期祭司须跟随大军推进，
         //   不因子弹/箭塔等远程威胁就缩回基地(那会让它永远待在箭塔旁)；只在"近战贴身(<4格)"这种
         //   会瞬秒祭司的死亡威胁下才逃命(meleeAdj)，远程威胁下仍随军前进(军队已在前方提供掩护)。
-        bool mustFlee = (threatDist <= nearestThreatR + 2.0 * BL);
-        if (inCounter) mustFlee = meleeAdj;
+        //   (mustFlee 的计算已上移至本节开头)
         if (mustFlee && !healOverFlee) {
             double feDR = 0, feUR = 0; locateNearest(feDR, feUR);
             priestMode = 1; priestFlee(feDR, feUR); return;
@@ -1274,7 +1315,9 @@ void UsrAI::managePriest() {
                     }
             }
             double dAnchor = calDistance(pDR, pUR, anchorX, anchorY);
-            if (priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0 && dAnchor > 6 * BL) {
+            // ★★ 2026-09-13 保祭司：加 `priestMode == 0` —— 撤退中(priestMode=1)绝不能走【回塔待命】，
+            //   否则与 flee 逐帧交替成原地抖动(pv2 死因)。待命是和平行为，撤退态禁止。
+            if (priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0 && dAnchor > 6 * BL && priestMode == 0) {
                 // 卡死检测：记录点只在祭司真正挪窝后刷新——否则每次重发都刷新时间戳，
                 // 45帧窗口永远走不满→priestNearTCTry 永不递增→永远重发同一被占落点。
                 double pIssueMoved = calDistance(pDR, pUR, priestIssueDR, priestIssueUR);
@@ -5185,6 +5228,15 @@ void UsrAI::manageCounterAttack() {
             return;
         }
 
+        // ★★ 2026-09-13 保祭司 · 跨块互斥闸 ★★
+        //   managePriest(379) 与 manageCounterAttack(410) 在同一主循环里先后调用，旧代码两者用
+        //   【两套独立冷却】(priestMoveCooldown / priestCounterCooldown) ⇒ 同一帧可给祭司下发两个
+        //   相反的移动令（本段前出武器厂 vs managePriest 后撤）⇒ 祭司原地抖动、净位移 0。
+        //   实测 sg2 f=42668~42868：落点在固定武器厂点 (2156.85,2055.22) 与平滑后撤点之间每 10 帧
+        //   翻转一次，f=43165 祭司被 Prof.Lu 击杀。
+        //   修：统一到同一闸 —— managePriest 本帧已给祭司发过令，本段整体跳过。
+        if (priestMoveCooldown > 0) return;
+
         // 有伤兵时把祭司留给 managePriest 治疗，推进下帧再继续
         bool anyInjuredAlly = false;
         for (auto &a : info.armies) {
@@ -5256,7 +5308,7 @@ void UsrAI::manageCounterAttack() {
             if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
                 // 已在感化射程内 → 直接感化武器厂
                 HumanAction(priestSN, siege->SN);
-                priestCounterCooldown = 60;
+                priestCounterCooldown = 60; priestMoveCooldown = 60;
                 if (frame % 50 == 0)
                     DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 敌已清场(mil=%3 twr=%4)")
                               .arg(frame).arg(dSiege / BL, 0, 'f', 1).arg(enemyMil).arg(enemyTowers));
@@ -5272,7 +5324,7 @@ void UsrAI::manageCounterAttack() {
                 ty = max(0.0, min((double)MAP_U * BL, ty));
                 if (isPassableAt(tx, ty)) {
                     HumanMove(priestSN, tx, ty);
-                    priestCounterCooldown = 30;
+                    priestCounterCooldown = 30; priestMoveCooldown = 30;
                     if (frame % 100 == 0)
                         DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 enemy_cleared")
                                   .arg(frame).arg(dSiege / BL, 0, 'f', 1));
@@ -5284,7 +5336,7 @@ void UsrAI::manageCounterAttack() {
         if (siege && pDist < 12 * BL && priest->ConvertCooldown <= 0) {
             // 在感化范围内→感化武器厂！
             HumanAction(priestSN, siege->SN);
-            priestCounterCooldown = 60;
+            priestCounterCooldown = 60; priestMoveCooldown = 60;
             DebugText(">> Priest converting Siege Workshop!");
         } else if (priestCounterCooldown <= 0 || priestTooClose) {
             // ★ 2026-09-12 改（用户需求"祭司反攻不要太靠前，尽量在安全距离"）：
@@ -5324,7 +5376,7 @@ void UsrAI::manageCounterAttack() {
                           .arg(frame).arg(armyDR / BL, 0, 'f', 0).arg(armyUR / BL, 0, 'f', 0)
                           .arg(targetDR / BL, 0, 'f', 0).arg(targetUR / BL, 0, 'f', 0)
                           .arg(dTgt / BL, 0, 'f', 1).arg(priestTooClose ? 1 : 0));
-            priestCounterCooldown = 30;
+            priestCounterCooldown = 30; priestMoveCooldown = 30;
         }
     }
 
