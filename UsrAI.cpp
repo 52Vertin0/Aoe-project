@@ -5274,7 +5274,7 @@ void UsrAI::manageCounterAttack() {
                     HumanMove(priestSN, tx, ty);
                     priestCounterCooldown = 30;
                     if (frame % 100 == 0)
-                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 敌已清场")
+                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 enemy_cleared")
                                   .arg(frame).arg(dSiege / BL, 0, 'f', 1));
                 }
             }
