@@ -43,6 +43,17 @@ ins UsrIns;
 //   ★ 必须配超时兜底：市场未建成 / 长期缺木 / 市场被摧毁 → 科技永不完成 → 农场永久冻结 → 食物崩盘。
 //     兜底取 18000(12min)，比实测最晚研究帧 15395 留 2600 帧余量；触发后本闸自动失效。
 #define FARM_WAIT_WOOD_TECH_FRAME 18000
+// ★★★ 2026-09-13 用户要求「复合弓兵科技解锁太慢」——农场给复合弓科技让木 ★★★
+//   实测根因：12 座农场（每座 75 木）从 f≈13500 连续建造，把木材长期压在 2~112 区间
+//   （k1: f=16380 wood=15 / f=20070 wood=2 / f=20970 wood=2），而复合弓科技要求 wood≥100
+//   ⇒ 木闸成为真实瓶颈（食物早已 208→621 远超 180），科技被拖到 f=24759（16.5 分钟）才发令。
+//   修复：复合弓科技【尚未研究/排队】期间，农场建造额外要求"造完仍留得住 100 木"，
+//   即 info.Wood >= FARM_WOOD_NEED + COMPOSITE_BOW_WOOD_RESERVE。
+//   ★ 超时兜底：靶场长期被占/被拆 / 木头长期枯竭 → 科技永不完成 → 农场永久冻结 → 食物崩盘。
+//     兜底帧取 21000（= WAVE3_TIME，反攻线；实测最晚科技帧 24759 之前的保守值），
+//     触发后本闸自动失效，农场恢复正常节奏。
+#define FARM_WAIT_CB_FRAME 21000
+#define COMPOSITE_BOW_WOOD_RESERVE 100   // = BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD
 // ★ 打猎瞪羚选取范围（2026-09-04 用户要求"扩大一些"）：30→50 格，覆盖远距未建仓库的瞪羚群。
 //   仓库覆盖判断（1547/1705 nearStock）也用此常量同步，避免猎人跑出去 50 格打、仓库仍卡 30 格内。
 #define GAZELLE_HUNT_RANGE  50
@@ -1876,9 +1887,14 @@ void UsrAI::manageBuildings() {
         // ★ 农场前置用地图上【任意】一座我方仓库解锁（不限 AI 自建）：地图初始已存在仓库时，
         //   1547 段会算"30格内有库存→tryBuild 跳过" → storageNearGazelleBuilt 永远停在 0 → 农场闸永远卡死。
         //   ★ 2026-09-13 加闸（用户要求"木材加工科技解锁排在建农场之前"）：见 FARM_WAIT_WOOD_TECH_FRAME 注释。
+        //   ★★ 2026-09-13 再加闸（用户要求"复合弓兵科技解锁太慢"）：见 COMPOSITE_BOW_WOOD_RESERVE 宏注释。
+        bool cbSkillPending = (!compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
+        int farmWoodNeed2 = FARM_WOOD_NEED(storageNearGazelleBuilt == 1)
+                          + (cbSkillPending ? COMPOSITE_BOW_WOOD_RESERVE : 0);
         if (!builtThisFrame && marketReady && storageNearGazelleBuilt == 1 &&
                 (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME) &&
-                info.Wood >= FARM_WOOD_NEED(storageNearGazelleBuilt == 1) && info.Meat >= 100) {
+                (compositeBowResearched || compositeBowQueued || frame >= FARM_WAIT_CB_FRAME) &&
+                info.Wood >= farmWoodNeed2 && info.Meat >= 100) {
             int currentFarms = countFarmsForCap();
                 int farmerCount = 0;
                 for (auto &f : info.farmers)
@@ -2139,11 +2155,19 @@ void UsrAI::manageBuildings() {
         //     故补上与 1487 段一致的双重闸：瞪羚仓库已建 + 木材预留
         //     （★ 预留仅仓库【未】建成时生效，仓库已建则恢复原阈值，见 FARM_WOOD_NEED 宏注释）。
         //   ★ 2026-09-13 加闸（用户要求"木材加工科技解锁排在建农场之前"）：见 FARM_WAIT_WOOD_TECH_FRAME 注释。
+        //   ★★ 2026-09-13 再加闸（用户要求"复合弓兵科技解锁太慢"）：复合弓科技未就绪时农场须再让出 100 木
+        //       （见 COMPOSITE_BOW_WOOD_RESERVE 宏注释）。farmWoodTechOk 与 farmBowWoodOk 两道闸并联，
+        //       任一超时兜底触发即放行，防食物崩盘。
         bool farmWoodTechOk = (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME);
-        if (!builtThisFrame && storageNearGazelleBuilt == 1 && farmWoodTechOk) {
+        bool farmBowWoodOk = (compositeBowResearched || compositeBowQueued ||
+                              frame >= FARM_WAIT_CB_FRAME);
+        bool cbSkillPending2 = (!compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
+        int farmWoodNeed = FARM_WOOD_NEED(storageNearGazelleBuilt == 1)
+                         + (cbSkillPending2 ? COMPOSITE_BOW_WOOD_RESERVE : 0);
+        if (!builtThisFrame && storageNearGazelleBuilt == 1 && farmWoodTechOk && farmBowWoodOk) {
             int currentFarms = countFarmsForCap();
             if (currentFarms < farmTarget &&
-                info.Wood >= FARM_WOOD_NEED(storageNearGazelleBuilt == 1)) {
+                info.Wood >= farmWoodNeed) {
                 builtThisFrame = tryBuild(BUILDING_FARM, 3);
             }
         } else if (!builtThisFrame && !marketWoodUpgraded && frame < FARM_WAIT_WOOD_TECH_FRAME &&
@@ -3269,6 +3293,67 @@ void UsrAI::manageTechUpgrade() {
     }
 
     // ==================================================================
+    // ★★★ 2026-09-13 用户要求：【复合弓科技与护甲科技同一解锁窗口，不再互相阻塞】★★★
+    //   用户观察：「复合弓兵科技解锁得太慢」——实测 8 局复合弓科技发令帧
+    //   13768 / 14928 / 16954 / 17234 / 18255 / 18815 / 19212 / 20317 / 20407 / 24759，
+    //   **中位数 ≈ 19000 帧（12.7 分钟）**，最晚 24759（16.5 分钟，已过 WAVE3=21000 反攻线）
+    //   ⇒ 反攻期前半段靶场只能产【普通弓兵】（射程 5、无科技），正是"复合弓科技慢"的体感来源。
+    //
+    //   ★ 根因（不是本块的位置问题，而是【两道顺序锁】把复合弓压在了伐木科技之后）：
+    //     ① 本块原在 `if (!done && ...)` 门控内，且排在【伐木科技块之后】——
+    //        伐木块一旦本帧发令就 `done = true`，本块当帧被跳过；而伐木科技(120食+75木)
+    //        与复合弓(180食+100木) 都要木/肉，两者在同一资源池里【串行排队】。
+    //     ② 更致命的是**木材供给**：12 座农场（每座 75 木）从 f≈13500 连续建造，
+    //        实测把木材长期压在 2~112 区间（k1: f=16380 wood=15 / f=20070 wood=2 /
+    //        f=20970 wood=2），而复合弓科技要求 wood≥100 ⇒ 木闸成为真实瓶颈，
+    //        食物反而早已满足（同期 meat 一路 208→621，远超 180）。
+    //        ⇒ 本块从 f=13500 开始每 30 帧空转（[CB] 日志 232~367 行），一直等到
+    //          农场铺完（f≈21078 最后一座农场）+ 木材回血，才在 f=24759 发令。
+    //
+    //   ★ 修复思路：**解锁类科技（复合弓 / 护甲链）不看 `done`，各发各的**——
+    //     它们分属不同建筑（靶场 / 仓库），本项目既有"同帧多建筑下发"先例（tryBuild 段），
+    //     且 `done` 只用于 `techCooldown` 节流目的，对"解锁类"没有必要串行。
+    //     保留的闸门：`!postBronze` 铜器前置（上方已 return）/ 靶场自身 Project 忙闲 /
+    //     资源成本 / 函数首的 techCooldown 与 FOOD_PAUSE_TECH_TRAIN。
+    //     ⇒ 效果：靶场空闲且木肉够的那一刻立即发令，不再等伐木科技让路。
+    //   ★ 与伐木科技（WOOD_TECH_ABSOLUTE_FIRST）的关系**不变**：伐木仍在其块内、仍是
+    //     "铜器后第一个被检查"的科技（本块发令**不影响**伐木块——它只 `done=true` 自己）；
+    //     但若本帧伐木与复合弓同时可下单，伐木会先被检查、先执行，保持用户既定优先序。
+    // ==================================================================
+    // ★ 引擎真实成本（Development.cpp:739-740）：只需「铜器时代 + 木材 + 食物」，**不需要黄金**，
+    //   且引擎层无阔剑前置 → 旧代码的 info.Gold>=40 是伪门槛，黄金不足时复合弓永远研究不了。
+    //   （构造函数签名 (civ, building, time, wood, food, stone, gold)，见 GlobalVariate.h:346）
+    // --- Range: 复合弓科技（解锁类：不被 done 阻塞）---
+    if (!compositeBowResearched && !compositeBowQueued) {
+        auto r = findBuilding(BUILDING_RANGE);
+        // ★ 复合弓科技诊断：每 30 帧打印一次闸门状态，定位"为什么不立刻升级"
+        if (frame % 30 == 0) {
+            int rngPct = -1, rngProj = -2;
+            auto rngAll = findBuildingIncludingUnderConstruction(BUILDING_RANGE);
+            if (rngAll) { rngPct = rngAll->Percent; rngProj = rngAll->Project; }
+            bool meatOK = (info.Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD);
+            bool woodOK = (info.Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD);
+            bool readyOK = (r && r->Project == ACT_NULL && meatOK && woodOK);
+            DebugText(QString("[CB f=%1] rngFound=%2 rngPct=%3 rngProj=%4 meat=%5(%6) wood=%7(%8) techCD=%9 ready=%10")
+                .arg(frame)
+                .arg(r ? 1 : 0).arg(rngPct).arg(rngProj)
+                .arg((int)info.Meat).arg(meatOK ? 1 : 0)
+                .arg((int)info.Wood).arg(woodOK ? 1 : 0)
+                .arg(techCooldown)
+                .arg(readyOK ? 1 : 0));
+        }
+        if (r && r->Project == ACT_NULL &&
+            info.Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD &&
+            info.Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD) {
+            BuildingAction(r->SN, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW);
+            compositeBowQueued = true;
+            done = true;
+            DebugText(QString("!! TECH CompositeBow f=%1 meat=%2 wood=%3")
+                .arg(frame).arg((int)info.Meat).arg((int)info.Wood));
+        }
+    }
+
+    // ==================================================================
     // ★★★ 2026-09-12 用户要求：【伐木科技 = 解锁类科技最优先】★★★
     //   市场·木材加工（120食物+75木材 → 伐木+2 / 远程攻击距离+1）
     //   原位置在 TIER3 末尾，且被两道锁压住：
@@ -3318,44 +3403,8 @@ void UsrAI::manageTechUpgrade() {
             .arg(WOOD_TECH_ABSOLUTE_FIRST ? 1 : 0));
     }
 
-    // ==================================================================
-    // ★ TIER 1：军事解锁（复合弓优先，不等阔剑）
-    //   （伐木科技已提前至本段上方，见"伐木科技 = 解锁类科技最优先"）
-    // ==================================================================
-    // ★ 引擎真实成本（Development.cpp:739-740）：只需「铜器时代 + 木材 + 食物」，**不需要黄金**，
-    //   且引擎层无阔剑前置 → 旧代码的 info.Gold>=40 是伪门槛，黄金不足时复合弓永远研究不了。
-    //   （构造函数签名 (civ, building, time, wood, food, stone, gold)，见 GlobalVariate.h:346）
 
-    // --- Range: 复合弓科技（最高优先，不受阔剑阻塞）---
-    if (!done && !compositeBowResearched && !compositeBowQueued) {
-        auto r = findBuilding(BUILDING_RANGE);
-        // ★ 复合弓科技诊断：每 30 帧打印一次 5 个闸门状态，定位"为什么不立刻升级"
-        if (frame % 30 == 0) {
-            int rngPct = -1, rngProj = -2;
-            auto rngAll = findBuildingIncludingUnderConstruction(BUILDING_RANGE);
-            if (rngAll) { rngPct = rngAll->Percent; rngProj = rngAll->Project; }
-            bool meatOK = (info.Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD);
-            bool woodOK = (info.Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD);
-            bool readyOK = (r && r->Project == ACT_NULL && meatOK && woodOK);
-            DebugText(QString("[CB f=%1] rngFound=%2 rngPct=%3 rngProj=%4 meat=%5(%6) wood=%7(%8) techCD=%9 ready=%10")
-                .arg(frame)
-                .arg(r ? 1 : 0).arg(rngPct).arg(rngProj)
-                .arg((int)info.Meat).arg(meatOK ? 1 : 0)
-                .arg((int)info.Wood).arg(woodOK ? 1 : 0)
-                .arg(techCooldown)
-                .arg(readyOK ? 1 : 0));
-        }
-        if (r && r->Project == ACT_NULL &&
-            info.Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD &&
-            info.Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD) {
-            BuildingAction(r->SN, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW);
-            compositeBowQueued = true;
-            done = true;
-            DebugText(QString("!! TECH CompositeBow f=%1 meat=%2 wood=%3")
-                .arg(frame).arg((int)info.Meat).arg((int)info.Wood));
-        }
-    }
-
+    // ==================================================================
     // --- Army camp: 阔剑科技（封禁中，见 DISABLE_BROADSWORD_TECH）---
     //   引擎条件已修正：阔剑科技现真扣 食物+黄金（need_Stone=0）。若解禁：把开关改 false，
     //   且下方判据应改回 info.Gold（而非当前 info.Stone）。
@@ -4684,9 +4733,26 @@ void UsrAI::manageCounterAttack() {
                 //   （vs 原 SHOOT_FRAMES=30 帧 1.2 秒更激进——弓兵过度频繁切换，撤不到位)
                 const int RETREAT_FRAMES = 60;             // RETREAT 相位兜底切回 SHOOT 时长 ≈2.4 秒@25fps（撤得更远更久）
                 int phase = kitingPhase.count(a.SN) ? kitingPhase[a.SN] : 0;
-                // ★【修 2026-09-08】原哨兵 -999999 让 `phaseAged` 恒为 0 → SHOOT_FRAMES 触发永不到达
-                //   → 复合弓反攻期一直站桩。改：phaseFrame 默认即 frame（首次进入 SHOOT 时计龄）。
-                int phaseFrame = kitingPhaseFrame.count(a.SN) ? kitingPhaseFrame[a.SN] : frame;
+                // ============ ★★★【修 2026-09-13 · 拉扯从未生效的第一性根因】★★★ ============
+                //   2026-09-08 那次"修复"是错的：`phaseFrame 默认即 frame` 只保证"本帧不取到 -999999",
+                //   但【从未把进入帧写回 map】→ 下一帧 count 仍为 0 → 又取 frame → **phaseAged 恒等于 0**。
+                //   后果：三个"依赖 phaseAged"的相位转移全部恒不成立 ——
+                //     • 4733 敌近提前撤(需 phaseAged>=6)  ✗
+                //     • 4742 SHOOT 满 30 帧切 RETREAT(需 phaseAged>=30)  ✗ ← 【主症状】
+                //     • 4753 RETREAT 兜底 60 帧(需 phaseAged>=60)  ✗
+                //   于是弓兵一旦进入射程就【永远停在 SHOOT 站桩输出、一次 HumanMove 都不发】,
+                //   只有当敌人贴到 0.5R(=3.5 格)时,由 4725 那条【无 phaseAged 条件】的终止触发
+                //   强制写一次 map,phaseAged 才"复活",撤退才开始 —— 这正是用户观察到的
+                //   「反攻时从没见复合弓成功拉扯过」。实测铁证(AIText.log)：
+                //     复合弓 91658 在 f=37051~37521 连续 470 帧内 0 次 HumanMove、全程开火;
+                //     同场 91654/91674 的 HumanMove 落点每 30 帧单调变化(=真的在走) —— 差别只在
+                //     它们曾跌到 0.5R 以内被强制"点火"过。
+                //   ✅ 正解:首次进入即把进入帧写回 map,此后 phaseAged 正常累加,
+                //     "射 30 帧 → 撤 60 帧 → 再射"的 kiting 循环才真正启动。
+                if (!kitingPhase.count(a.SN)) kitingPhase[a.SN] = 0;
+                if (!kitingPhaseFrame.count(a.SN)) kitingPhaseFrame[a.SN] = frame;
+                phase = kitingPhase[a.SN];
+                int phaseFrame = kitingPhaseFrame[a.SN];
                 int phaseAged = frame - phaseFrame;
                 int kEnemy = findNearestEnemyNoStone(a.DR, a.UR, 20 * BL);
                 double kEX = 0, kEY = 0; bool kGot = false;
@@ -4721,8 +4787,11 @@ void UsrAI::manageCounterAttack() {
                 }
                 double dK = kGot ? calDistance(a.DR, a.UR, kEX, kEY) : 1e12;
 
-                // —— 终止触发(无条件、无节流):任何相位下贴身<0.5R 立即切 RETREAT ——
-                if (kGot && dK <= 0.5 * R) {
+                // —— 终止触发(无条件、无节流):从 SHOOT 贴身<0.5R 立即切 RETREAT ——
+                // ★【修 2026-09-13】加 `phase != 1` 守卫。原实现每帧都执行 => kitingPhaseFrame 被
+                //   反复重置为当前帧 => 贴身对峙期间 phaseAged 恒 0 => 4753 的 RETREAT 60 帧兜底
+                //   永不触发 => 相位被永久钉死在 1(弓兵一直撤、不再输出)。只在"从 0 切 1"时重置一次。
+                if (kGot && dK <= 0.5 * R && phase != 1) {
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
                 }
@@ -4780,8 +4849,24 @@ void UsrAI::manageCounterAttack() {
                     bool kitMoved = false;
                     double kitX = 0, kitY = 0;
                     int kitStage = 0;  // 1=远离敌 2=朝TC 3=朝祭司 0=失败
-                    // —— 第 1 档:沿"远离敌"方向撤 ——
-                    for (int ai = 0; ai < 5 && !kitMoved; ++ai) {
+                    // ★【修 2026-09-13】撤退有效性校验（"点可走 ≠ 路径可达"）：
+                    //   isPassableAt 只判【落点所在格】(非海/非林)，不判【单位→落点的路径】。
+                    //   反攻期弓兵多在敌方基地附近，落点本身可走却常被海/林/建筑隔断 →
+                    //   HumanMove 被引擎静默丢弃 → 弓兵原地站桩挨打。
+                    //   度量用"与最近敌的距离 dK"：本窗口若未比上一窗口拉开 ≥0.3 格，判该方向撤不动。
+                    //   ⚠ 不用"单位是否有位移"：引擎的攻击令同样驱动位移，会把"撤不动"误判成"在撤"
+                    //     （实测 run1：20 次撤退令全被引擎丢弃 MM_move=0、dK 4.6→0.7，位移判据却始终清零）。
+                    //   连续撤不动 → 累计 stuck → 下一轮跳过第 1 档，直接朝己方 TC 撤（路径必然可达）。
+                    if (kitingRetPrevDK.count(a.SN)) {
+                        if (dK < kitingRetPrevDK[a.SN] + 0.3 * BL)
+                            kitingRetStuck[a.SN] = (kitingRetStuck.count(a.SN) ? kitingRetStuck[a.SN] : 0) + 1;
+                        else
+                            kitingRetStuck[a.SN] = 0;                 // 确实拉开了 → 复位
+                    }
+                    kitingRetPrevDK[a.SN] = dK;
+                    bool skipAwayStage = (kitingRetStuck.count(a.SN) && kitingRetStuck[a.SN] > 0);
+                    // —— 第 1 档:沿"远离敌"方向撤（上一轮撤不动则跳过，改走第 2 档） ——
+                    for (int ai = 0; ai < 5 && !kitMoved && !skipAwayStage; ++ai) {
                         double ca = std::cos(angs[ai]), sa = std::sin(angs[ai]);
                         double rx = kEX + (ux*ca - uy*sa) * R * KITING_RETREAT_MULT;
                         double ry = kEY + (uy*ca + ux*sa) * R * KITING_RETREAT_MULT;
@@ -4845,10 +4930,17 @@ void UsrAI::manageCounterAttack() {
                         }
                     }
                     // —— 终极兜底:三档全失败 → 本帧不下令,让相位机下一帧再试,不让单位往海里走 ——
-                    if (frame % 50 == 0)
-                        DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 tgt=(%6,%7)")
+                    // ★【2026-09-13 观测增强】原 `frame % 50 == 0` 采样率仅 1/50，反攻期常整段漏掉
+                    //   RETREAT 窗口 → 无法判断"拉扯到底有没有拉开距离"。改为每次进入撤退窗口必打；
+                    //   该块已被 canReissue(30 帧节流)限制，每弓兵每 30 帧最多一条，不会刷屏。
+                    //   字段含 aged(相位已持续帧数)/stuck/self/tgt，可直接验证 phaseAged 是否恢复累加。
+                    if (true)
+                        DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 stuck=%6 aged=%7 self=(%8,%9) tgt=(%10,%11)")
                                   .arg(frame).arg(a.SN).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1)
-                                  .arg(kitStage).arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1));
+                                  .arg(kitStage).arg(kitingRetStuck.count(a.SN) ? kitingRetStuck[a.SN] : 0)
+                                  .arg(phaseAged)
+                                  .arg(a.DR / BL, 0, 'f', 1).arg(a.UR / BL, 0, 'f', 1)
+                                  .arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1));
                     marchCmds++;
                     continue;   // RETREAT 段不落站桩/推进
                 }

@@ -209,6 +209,16 @@ private:
     //   替代旧版"贴脸才撤(被动)"模式——新模式主动制造距离窗口，让敌"出射程外"再压制。
     std::map<int,int> kitingPhase;        // SN → 0=SHOOT/IDLE, 1=RETREAT
     std::map<int,int> kitingPhaseFrame;   // SN → 进入当前相位的帧号(相位内不重发指令)
+    // ★ 2026-09-13 加：撤退落点"路径可达性"校验（"点可走 ≠ 路径可达"）。
+    //   反攻期弓兵常在敌方基地附近，撤退落点本身可走、但被海/林/建筑隔断 →
+    //   HumanMove 被引擎静默丢弃 → 弓兵原地站桩挨打。
+    //   度量方式：以"与最近敌的距离 dK"为准——本撤退窗口 dK 若未比上一窗口拉开
+    //   （< +0.3 格），判定该方向撤不动，累计 kitingRetStuck；下一轮跳过"远离敌"档、
+    //   直接朝己方 TC 撤（TC 在开阔腹地，路径必然可达）。
+    //   ⚠ 不用"单位是否有位移"做判据：引擎的攻击令也会驱动位移，会把"撤不动"误判成"在撤"
+    //     （实测 run1：20 次撤退令全被丢弃、单位零撤退位移，位移判据却始终清零）。
+    std::map<int,int>    kitingRetStuck;     // SN → 连续"发令却没拉开距离"的次数(>0 则跳过第 1 档)
+    std::map<int,double> kitingRetPrevDK;    // SN → 上一个撤退窗口的 dK（本窗口据此判断是否拉开）
     std::set<int> huntingGroup; // 正在打猎的村民SN
     std::set<int> frameFoodTargets; // 本帧已分配的食物目标SN（防同帧重复分配）
     std::map<int,int> frameBushCount; // 本帧每丛浆果已分配人数（浆果每丛≤2人，防同帧挤爆单丛）
