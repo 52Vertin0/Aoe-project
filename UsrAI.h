@@ -31,8 +31,11 @@ public:
               marketWoodUpgraded(false),
               marketPlowUpgraded(false),
               useToolDone(false),
-              craftResearched(false), infantryArmorDone(false),
-              archerArmorDone(false), bronzeTowerUpgraded(false),
+              craftResearched(false),
+              infArmorLevel(0), arcArmorLevel(0),
+              armorPendingKind(0), armorPendingFrame(-999999), prevStockProject(0),
+              armorStockSN(-1),
+              bronzeTowerUpgraded(false),
               scoutBuilt(false),
               rallyDR(0), rallyUR(0),
               towerTechResearched(false), towerCount(0),
@@ -144,8 +147,12 @@ private:
     bool marketPlowUpgraded;
     bool useToolDone;
     bool craftResearched;          // 工艺科技（铜器木材加工）
-    bool infantryArmorDone;        // 步兵护甲
-    bool archerArmorDone;          // 弓兵护甲
+    int  infArmorLevel;            // 步兵护甲链：0=未研 1=护甲已研 2=鳞甲已研（级数=引擎已受理的发令数）
+    int  arcArmorLevel;            // 弓兵护甲链：0=未研 1=护甲已研 2=鳞甲已研
+    int  armorPendingKind;         // 待确认发令：0=无 1=步兵链 2=弓兵链（下帧用 Project 确认受理，超时回滚重试）
+    int  armorPendingFrame;        // 待确认发令的帧号
+    int  prevStockProject;         // 上一帧仓库 Project（观测"仓库科技完成"边沿，用于验证）
+    int  armorStockSN;             // ★ 锁定用于研究护甲的仓库 SN（多仓库下 findBuilding 会跨帧返回不同仓库）
     bool bronzeTowerUpgraded;      // 铜器箭塔升级
 
     // 新增：完整版策略变量

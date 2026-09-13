@@ -192,10 +192,27 @@ ins UsrIns;
 //   (BUILDING_GRANARY_ARROWTOWE_UPGRADE，120食物+50石头)——用户要求：解锁即可，不升级。
 //   恢复升级：改 false 即可（两处调用点均已用此开关封禁）。
 #define DISABLE_TOWER_UPGRADE true
-// ★ 2026-09-06 用户定案：只研究 4 项科技 —— 铜器时代 / 箭塔解锁 / 复合弓 / 弓兵护甲，其余全部封禁。
-//   三个开关与上方 DISABLE_BROADSWORD_TECH / DISABLE_TOWER_UPGRADE 同风格，单独恢复只需改回 false。
-#define DISABLE_USETOOL_TECH true         // 仓库·工具使用（100食物，近战+2）—— 封禁
-#define DISABLE_INFANTRY_ARMOR_TECH true  // 仓库·步兵护甲（75食物，近战防御+2）—— 封禁
+// ★ 2026-09-06 用户定案：只研究少数几项科技，其余全部封禁。
+//   ★ 2026-09-13 用户要求：解锁【步兵护甲+鳞甲、弓兵护甲+鳞甲】共四项护甲科技（见下方 ARMOR_* 成本宏）。
+//   各开关与上方 DISABLE_BROADSWORD_TECH / DISABLE_TOWER_UPGRADE 同风格，单独恢复只需改回 false。
+#define DISABLE_USETOOL_TECH true         // 仓库·工具使用（100食物，近战+2）—— 仍封禁（用户未要求；其二柄为金属加工 200食+120金）
+#define DISABLE_INFANTRY_ARMOR_TECH false // 仓库·步兵护甲链（护甲→鳞甲）—— ★ 2026-09-13 解锁
+#define DISABLE_ARCHER_ARMOR_TECH   false // 仓库·弓兵护甲链（护甲→鳞甲）—— ★ 2026-09-13 解锁（此前无独立开关，恒开）
+// ---------------------------------------------------------------------------
+// ★ 仓库护甲链成本（对齐 config.json:126-143，引擎实际扣费口径）
+//   引擎事实：BUILDING_STOCK_UPGRADE_DEFENSE_INFANTRY / _ARCHER 都是"两柄动作"——
+//   第 1 次调用 = 护甲(+2 近战防御)，第 2 次调用 = 鳞甲(再 +2)，同一建筑动作 ID 共用。
+//   （见 AI接口使用指南.md:352、Building.h:137-158、Development.cpp:158-180）
+//   顺序（用户 2026-09-13 定案）：一级先铺满 —— 步兵护甲 → 弓兵护甲 → 步兵鳞甲 → 弓兵鳞甲。
+// ---------------------------------------------------------------------------
+#define ARMOR_INF_T1_FOOD   75    // 步兵护甲：近战单位近战防御 +2
+#define ARMOR_INF_T2_FOOD   100   // 步兵鳞甲：再 +2
+#define ARMOR_INF_T2_GOLD   50
+#define ARMOR_ARC_T1_FOOD   100   // 弓兵护甲：弓兵近战防御 +2
+#define ARMOR_ARC_T2_FOOD   125   // 弓兵鳞甲：再 +2
+#define ARMOR_ARC_T2_GOLD   50
+// 发令后等多少帧仍未"仓库变忙"即判定引擎拒令 → 回滚级数、下帧重试（铁律：绝不"发令即置真"）
+#define ARMOR_ACCEPT_TIMEOUT 120
 #define DISABLE_MARKET_TECH true          // 市场其余 4 项经济科技（驯养/车轮/犁/工艺）—— 封禁
 #define DISABLE_MARKET_WOOD_TECH false    // 市场·木材加工（120食物+75木材，伐木+50%）—— 已解禁(能解锁就解锁)
 //   ⚠ 注意：市场【建筑本身】不能停建！1483 行 `marketReady` 是农场建造的前置闸门，
@@ -3407,21 +3424,93 @@ void UsrAI::manageTechUpgrade() {
         }
     }
 
-    // --- 仓库：步兵护甲（近战防御+2） ---
-    if (!DISABLE_INFANTRY_ARMOR_TECH && !done && !infantryArmorDone && info.Meat >= 75) {
-        auto s = findBuilding(BUILDING_STOCK);
-        if (s && s->Project == ACT_NULL) {
-            BuildingAction(s->SN, BUILDING_STOCK_UPGRADE_DEFENSE_INFANTRY);
-            infantryArmorDone = true; done = true;
+    // --- 仓库：护甲科技链（步兵/弓兵 各两级：护甲 → 鳞甲）★ 2026-09-13 用户要求解锁 ---
+    //   ① 引擎两柄机制：同一动作 ID 调两次 = 一级护甲 → 二级鳞甲；靠 `Project` 闸门天然串行
+    //      （研究期间 Project != ACT_NULL ⇒ 不可能同帧连发两级，也不会重复发令）。
+    //   ② 顺序（用户定案）：一级先铺满 —— 步兵护甲 → 弓兵护甲 → 步兵鳞甲 → 弓兵鳞甲。
+    //   ③ 防"发令即置真"卡死（同铜器升级铁律）：发令只记 pending，下一帧看仓库是否变忙来确认
+    //      引擎已受理；ARMOR_ACCEPT_TIMEOUT 帧内仓库仍空闲 ⇒ 回滚刚加的级数，下帧重试。
+    //   ④ ★ 必须【锁定仓库 SN】：多仓库阵型（MAX_STOCK=4）下 `findBuilding(BUILDING_STOCK)`
+    //      在不同帧可能返回不同仓库 —— 实测 2 座仓库时 Project 会在"研究中(15)/空闲(0)"
+    //      之间抖动，制造大量伪"完成"边沿（run2 曾误报 144 条 [ARMOR-DONE]）。
+    //      锁定后只读同一座仓库的 Project，边沿才真实。
+    if (!done) {
+        //   ⑤ ⚠ 完成度过滤不可省：`findBuilding` 的真实过滤是 `Percent == 100`；若按裸 Type
+        //      选到【在建地基】的仓库，引擎会拒研（实测 run2/run4 因此回滚 11~12 次，
+        //      直到地基完工才受理，白等 ~1450 帧）。故两处选择都要求 Percent==100。
+        //   ⑥ 注意：① 锁定查找【不能】加 Percent==100 过滤 —— 研究期间该仓库的 Percent
+        //      可能短暂 !=100，若加过滤会导致整块被跳过（实测 run1 [ARMOR-ACK] 因此迟了 421 帧）。
+        //      过滤只用在②初始挑选（此时必须完工才能接研究令）。
+        tagBuilding *armSt = nullptr;
+        // ① 优先沿用已锁定的仓库（只要还存在就用它，不加完成度过滤）
+        if (armorStockSN >= 0) {
+            for (auto &b : info.buildings)
+                if (b.Type == BUILDING_STOCK && b.SN == armorStockSN) { armSt = &b; break; }
         }
-    }
-
-    // --- 仓库：弓兵护甲（远程防御+2） ---
-    if (!done && !archerArmorDone && info.Meat >= 100) {
-        auto s = findBuilding(BUILDING_STOCK);
-        if (s && s->Project == ACT_NULL) {
-            BuildingAction(s->SN, BUILDING_STOCK_UPGRADE_DEFENSE_ARCHER);
-            archerArmorDone = true; done = true;
+        // ② 未锁定 / 已失效（被拆）/ 未完工 → 取第一座【已完工且空闲】仓库并锁定
+        if (!armSt) {
+            armorStockSN = -1;   // 清掉旧锁，避免下次又选中同一座坏目标
+            for (auto &b : info.buildings)
+                if (b.Type == BUILDING_STOCK && b.Percent == 100 && b.Project == ACT_NULL) {
+                    armSt = &b; armorStockSN = b.SN; break;
+                }
+        }
+        if (armSt) {
+            // ① 确认受理 / 超时回滚
+            if (armorPendingKind != 0) {
+                if (armSt->Project != ACT_NULL) {
+                    DebugText(QString("[ARMOR-ACK f=%1] 链=%2 引擎已受理，开始研究(~40s)")
+                        .arg(frame).arg(armorPendingKind == 1 ? "步兵" : "弓兵"));
+                    armorPendingKind = 0;
+                } else if (frame - armorPendingFrame > ARMOR_ACCEPT_TIMEOUT) {
+                    if (armorPendingKind == 1) { if (infArmorLevel > 0) infArmorLevel--; }
+                    else                       { if (arcArmorLevel > 0) arcArmorLevel--; }
+                    DebugText(QString("[ARMOR-RETRY f=%1] 链=%2 引擎未受理→回滚级数 inf=%3 arc=%4 meat=%5 gold=%6")
+                        .arg(frame).arg(armorPendingKind == 1 ? "步兵" : "弓兵")
+                        .arg(infArmorLevel).arg(arcArmorLevel)
+                        .arg((int)info.Meat).arg((int)info.Gold));
+                    armorPendingKind = 0;
+                    armorStockSN = -1;   // 换一座仓库重试（坏目标不重复锁）
+                }
+            }
+            // ② 逐级下发（同一帧最多一项；仓库忙则整段跳过）
+            if (armorPendingKind == 0 && armSt->Project == ACT_NULL) {
+                int wantKind = 0, wantID = 0, wantLvl = 0;
+                if (!DISABLE_INFANTRY_ARMOR_TECH && infArmorLevel == 0 &&
+                    info.Meat >= ARMOR_INF_T1_FOOD) {
+                    wantKind = 1; wantLvl = 1; wantID = BUILDING_STOCK_UPGRADE_DEFENSE_INFANTRY;
+                } else if (!DISABLE_ARCHER_ARMOR_TECH && arcArmorLevel == 0 &&
+                           info.Meat >= ARMOR_ARC_T1_FOOD) {
+                    wantKind = 2; wantLvl = 1; wantID = BUILDING_STOCK_UPGRADE_DEFENSE_ARCHER;
+                } else if (!DISABLE_INFANTRY_ARMOR_TECH && infArmorLevel == 1 &&
+                           info.Meat >= ARMOR_INF_T2_FOOD && info.Gold >= ARMOR_INF_T2_GOLD) {
+                    wantKind = 1; wantLvl = 2; wantID = BUILDING_STOCK_UPGRADE_DEFENSE_INFANTRY;
+                } else if (!DISABLE_ARCHER_ARMOR_TECH && arcArmorLevel == 1 &&
+                           info.Meat >= ARMOR_ARC_T2_FOOD && info.Gold >= ARMOR_ARC_T2_GOLD) {
+                    wantKind = 2; wantLvl = 2; wantID = BUILDING_STOCK_UPGRADE_DEFENSE_ARCHER;
+                }
+                if (wantKind != 0) {
+                    BuildingAction(armSt->SN, wantID);
+                    if (wantKind == 1) infArmorLevel = wantLvl; else arcArmorLevel = wantLvl;
+                    armorPendingKind = wantKind;
+                    armorPendingFrame = frame;
+                    done = true;
+                    DebugText(QString("[ARMOR f=%1] 研发 %2%3 meat=%4 gold=%5 wood=%6")
+                        .arg(frame)
+                        .arg(wantKind == 1 ? "步兵" : "弓兵")
+                        .arg(wantLvl == 1 ? "护甲(近战防御+2)" : "鳞甲(再+2)")
+                        .arg((int)info.Meat).arg((int)info.Gold).arg((int)info.Wood));
+                }
+            }
+            // ③ 观测：仓库科技完成边沿（验证"确实研成"）
+            int curStockProj = (int)armSt->Project;
+            if (prevStockProject != ACT_NULL && curStockProj == ACT_NULL) {
+                DebugText(QString("[ARMOR-DONE f=%1] 上一条仓库科技完成(prevID=%2) meat=%3 gold=%4 infLvl=%5 arcLvl=%6")
+                    .arg(frame).arg(prevStockProject)
+                    .arg((int)info.Meat).arg((int)info.Gold)
+                    .arg(infArmorLevel).arg(arcArmorLevel));
+            }
+            prevStockProject = curStockProj;
         }
     }
 
