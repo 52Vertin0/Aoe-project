@@ -54,6 +54,21 @@ ins UsrIns;
 //     触发后本闸自动失效，农场恢复正常节奏。
 #define FARM_WAIT_CB_FRAME 21000
 #define COMPOSITE_BOW_WOOD_RESERVE 100   // = BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD
+// ★★★ 2026-09-13 用户要求：「我方军队不要攻击敌方武器厂」★★★
+//   现状：全军（近战/远程/投石车）在建筑选择里都写 `siege ? siege->SN : ...`——
+//   一旦侦察到敌方武器厂，**全军一律优先轰武器厂**（实测 k8 局 347 条"设置攻击目标为 攻城武器厂"）。
+//   用户要求改成：军队**不**把武器厂当攻击目标（武器厂留给祭司感化）。
+//   ⇒ 把武器厂从"军队建筑目标选择"里剔除，军队改打【箭塔 → 其它任意敌建筑】。
+//   ⚠ 仍保留 seize 作为【反攻推进锚点】(targetDR/targetUR/rallyDR/rallyUR/directMarch)，
+//     否则 `directMarch` 失去依据 → 军队退回"对角角落猜测"（见 tower_nearest 轮 run4 的教训）。
+#define ARMY_IGNORE_SIEGE_WORKSHOP true
+// ★★★ 2026-09-13 用户要求：「敌方军队全灭且箭塔全拆后，祭司应去感化敌方武器厂」★★★
+//   根因：祭司"安全距离 PRIEST_MIN_DIST_TARGET=18 格"与"感化武器厂需 pDist<12 格"**互相矛盾**，
+//   实测 [PRST-REAR] 的 dTgt 恒在 22.6~36.4 格 ⇒ 祭司永远够不到 12 格 ⇒ 感化武器厂 0 次。
+//   修复：当【敌方已无军事威胁】(敌方军队+敌方箭塔均为 0) 时解除安全距离约束，
+//   祭司允许主动前出到武器厂旁感化（此时无威胁，前出不会送命——这正是用户描述的场景）。
+#define PRIEST_CONVERT_SIEGE_WHEN_CLEAR true
+#define PRIEST_CONVERT_SIEGE_RANGE 12.0  // 引擎感化射程口径（DIS_PRIEST=12），须 ≤ 此值才能感化
 // ★ 打猎瞪羚选取范围（2026-09-04 用户要求"扩大一些"）：30→50 格，覆盖远距未建仓库的瞪羚群。
 //   仓库覆盖判断（1547/1705 nearStock）也用此常量同步，避免猎人跑出去 50 格打、仓库仍卡 30 格内。
 #define GAZELLE_HUNT_RANGE  50
@@ -5048,7 +5063,8 @@ void UsrAI::manageCounterAttack() {
                     //   否则每帧重发同一目标（箭塔/敌投石车不变时 atkSN 恒同）→ 日志刷屏
                     //   "HumanAction:投石车 ... 设置攻击目标为 箭塔 ..."（用户实测 24:24 每 4 帧刷一次）。
                     if (a.WorkObjectSN != atkSN) HumanAction(a.SN, atkSN);   // 已在射程内→原地攻击不前进(引擎不再逼近)
-                } else if (siege && calDistance(a.DR, a.UR, targetDR, targetUR) <= CAT_RANGE) {
+                } else if (ARMY_IGNORE_SIEGE_WORKSHOP ? false
+                                                      : (siege && calDistance(a.DR, a.UR, targetDR, targetUR) <= CAT_RANGE)) {
                     if (a.WorkObjectSN != siege->SN) HumanAction(a.SN, siege->SN);   // 武器厂进入最大射程→轰炸(不贴近，去重防刷屏)
                 } else if (stuckTry <= 0 && canReissue) {
                     // ★ 直接引擎全图寻路直奔目标（7e 起 HumanMove 可穿越未探索区，不再逐格摸索）。
@@ -5089,7 +5105,11 @@ void UsrAI::manageCounterAttack() {
                                   .arg(frame).arg(a.SN).arg(towerSN).arg(TOWER_TARGET_RANGE));
                     }
                 } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
-                    int ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+                    // ★ 2026-09-13 用户要求「军队不要攻击敌方武器厂」：不再优先选武器厂(ARMY_IGNORE_SIEGE_WORKSHOP)，
+                    //   改打【最近任意敌建筑】（箭塔已在上面 towerSN 分支优先命中）。
+                    int ebSN = ARMY_IGNORE_SIEGE_WORKSHOP
+                             ? findNearestEnemyBuilding(a.DR, a.UR, 12 * BL)
+                             : (siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL));
                     if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);
                     else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);
                 } else {
@@ -5121,8 +5141,11 @@ void UsrAI::manageCounterAttack() {
                                   .arg(frame).arg(a.SN).arg(towerSN).arg(TOWER_TARGET_RANGE));
                     }
                 } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
-                    // ★ 已到已知敌方基地附近：主动拆最近的敌方建筑(武器厂优先，否则任意敌建筑)
-                    int ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+                    // ★ 2026-09-13 用户要求「军队不要攻击敌方武器厂」：不再优先选武器厂(ARMY_IGNORE_SIEGE_WORKSHOP)，
+                    //   改拆【最近任意敌建筑】（箭塔已在上方 towerSN 分支优先命中）。武器厂留给祭司感化。
+                    int ebSN = ARMY_IGNORE_SIEGE_WORKSHOP
+                             ? findNearestEnemyBuilding(a.DR, a.UR, 12 * BL)
+                             : (siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL));
                     // ★ 拆建筑攻击令去重（同 4117）
                     if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);   // 有建筑可打→拆基地
                     else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);  // 无建筑→继续推进
@@ -5173,6 +5196,30 @@ void UsrAI::manageCounterAttack() {
         }
 
         double pDist = calDistance(priest->DR, priest->UR, targetDR, targetUR);
+        // ★★★ 2026-09-13 用户需求：「敌方军队全灭且箭塔全拆后，祭司应去感化敌方武器厂」★★★
+        //   根因：本段原有两个互斥条件 ——
+        //     ① `siege && pDist < 12*BL` 才能感化武器厂（引擎感化射程 DIS_PRIEST=12）；
+        //     ② 下方 else 分支强制祭司"距反攻目标 ≥ PRIEST_MIN_DIST_TARGET(18) 格"。
+        //   12 < 18 ⇒ 二者**永远不可能同时成立**！实测 k8/cb8 的 [PRST-REAR] dTgt 恒在 22.6~36.4 格，
+        //   祭司被安全距离钉死在后方 ⇒ 感化武器厂 0 次（全部 9 局 352 条转换令**无一条是建筑**）。
+        //   修复：当祭司【自身周边无军事威胁】时，解除 18 格安全距离约束，允许祭司主动前出感化武器厂。
+        //   ★ 判据用【祭司周边 20 格内无敌方军队 + 无敌方箭塔】（局部清场），而非"全局敌全灭"——
+        //     实测 8 局里"全局敌全灭"从未出现的概率极高（7/8 局敌军队一直存在），
+        //     而用户描述的场景本质是"祭司身边已经安全了，就该去干活"。
+        //     ⇒ 局部清场判据既覆盖用户场景，又不会让祭司在有兵有塔时莽撞前出。
+        int enemyMil = 0;
+        for (auto &e : info.enemy_armies) if (e.Blood > 0) enemyMil++;
+        int enemyTowers = 0;
+        for (auto &b : info.enemy_buildings) if (b.Type == BUILDING_ARROWTOWER) enemyTowers++;
+        // 局部清场：祭司 20 格内无活敌军队、无箭塔
+        bool localClear = true;
+        for (auto &e : info.enemy_armies)
+            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < 20.0 * BL) { localClear = false; break; }
+        if (localClear)
+            for (auto &b : info.enemy_buildings)
+                if (b.Type == BUILDING_ARROWTOWER &&
+                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 20.0 * BL) { localClear = false; break; }
+        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear;
         // ★【2026-09-08 二次修】原"扩到 28 格后 priestEnemy>=0 return"——WRONG-LAYER return 又踩坑:
         //   反攻期祭司前出后 28 格内**恒有敌** → return 几乎每帧触发 → 祭司段永远跑不到 → 停在 TC 不动。
         //   改为：只查询,不 return——managePriest 仍独立按"投石车→近战→远程→村民"优先级感化
@@ -5185,6 +5232,41 @@ void UsrAI::manageCounterAttack() {
         //   新方案：祭司冲到反攻目标 PRIEST_MIN_DIST_TARGET 格内(太靠前)→本帧强制后撤到【大队后方安全距离】，
         //   不感化武器厂(避免被钉在前线送命)；只有已在安全范围才允许【被动】感化武器厂(不主动前出)。
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
+        // ★ 2026-09-13：敌方已清场(enemyMil==0 && enemyTowers==0)时，安全距离约束失效 ——
+        //   否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂（这就是"不感化"的根因）。
+        if (allowConvertSiege) priestTooClose = false;
+
+        // ★★★ 2026-09-13 用户需求：敌方军队全灭 + 箭塔全拆 → 祭司主动前出感化武器厂 ★★★
+        //   优先级高于"后撤保命"（清场后无威胁，前出不会送命）。
+        if (allowConvertSiege && siege && priest->ConvertCooldown <= 0) {
+            double dSiege = calDistance(priest->DR, priest->UR, targetDR, targetUR);
+            if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
+                // 已在感化射程内 → 直接感化武器厂
+                HumanAction(priestSN, siege->SN);
+                priestCounterCooldown = 60;
+                if (frame % 50 == 0)
+                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 敌已清场(mil=%3 twr=%4)")
+                              .arg(frame).arg(dSiege / BL, 0, 'f', 1).arg(enemyMil).arg(enemyTowers));
+            } else if (priestCounterCooldown <= 0) {
+                // 在射程外 → 主动朝武器厂推进（清场状态，不怕前出）
+                double ux2 = (targetDR - priest->DR), uy2 = (targetUR - priest->UR);
+                double ul2 = std::sqrt(ux2 * ux2 + uy2 * uy2) + 1e-6;
+                ux2 /= ul2; uy2 /= ul2;
+                double stopD = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;   // 停在感化射程内 1 格处
+                double tx = targetDR - ux2 * stopD;
+                double ty = targetUR - uy2 * stopD;
+                tx = max(0.0, min((double)MAP_L * BL, tx));
+                ty = max(0.0, min((double)MAP_U * BL, ty));
+                if (isPassableAt(tx, ty)) {
+                    HumanMove(priestSN, tx, ty);
+                    priestCounterCooldown = 30;
+                    if (frame % 100 == 0)
+                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 敌已清场")
+                                  .arg(frame).arg(dSiege / BL, 0, 'f', 1));
+                }
+            }
+            return;   // 清场期：本帧祭司任务就是感化武器厂，不走下方后撤逻辑
+        }
 
         if (siege && pDist < 12 * BL && priest->ConvertCooldown <= 0) {
             // 在感化范围内→感化武器厂！
