@@ -144,8 +144,13 @@ ins UsrIns;
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
-#define DISABLE_STABLE_BUILD  true    // 2026-09-04 用户要求：暂时不建马厩（与 DISABLE_CAVALRY_TRAIN=true 配合：纯步战阵线）
-#define DISABLE_COLLAGE_BUILD true    // 2026-09-04 用户要求：暂时不建学院（方阵兵依赖学院 → 反攻期只剩复合弓兵）
+// ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
+//   马厩 = 学院前置（Development.cpp:804 addPreCondition(STABLE.buildCon)），不解马厩则学院永远建不出。
+//   学院 = 方阵兵唯一产线（Development.cpp:807-810，BRONZEAGE + 60食+40金，无额外科技依赖）。
+//   骑兵训练仍由 DISABLE_CAVALRY_TRAIN=true 独立封禁 → 建马厩不会偷吃复合弓的黄金。
+//   回滚：两个宏改回 true 即可。
+#define DISABLE_STABLE_BUILD  false   // 2026-09-13 解封：恢复马厩建造（作学院前置；骑兵仍不训练）
+#define DISABLE_COLLAGE_BUILD false   // 2026-09-13 解封：恢复学院建造（方阵兵产线，后期即可投产）
 #define DISABLE_GRANARY_BUILD false   // 已解封(2026-09-03)：恢复谷仓建造，实现"瞪羚群中间建仓库优先于农场"
 // ★ 暂时封禁阔剑科技：引擎解锁条件有 bug——Development.cpp:602-603 把
 //   历史上的引擎 bug（黄金被错传进石头槽）已修正：Development.cpp:602-603/607-608 现写为
@@ -1738,9 +1743,15 @@ void UsrAI::manageBuildings() {
             }
 
             // ★ 马厩（postW1 经济阶段即可建：兵营已有 + 木材≥150 就建；学院前置需马厩，故早于学院）
+            //   2026-09-13 解封（DISABLE_STABLE_BUILD=false）：建马厩只作学院前置，骑兵仍不训练。
+            //   ★ 时代闸（引擎 Development.cpp:696 buildCon 要求 CIVILIZATION_TOOLAGE）：缺此闸时
+            //     时代未达 → 引擎拒绝建造、countBuildingsExisting 的 90 帧防重窗口一过就归零 → 无限重试扫格。
             if (!builtThisFrame && countBuildingsExisting(BUILDING_STABLE) == 0 &&
+                info.civilizationStage >= CIVILIZATION_TOOLAGE &&
                 countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD && !DISABLE_STABLE_BUILD) {
                 builtThisFrame = tryBuild(BUILDING_STABLE, 3);
+                if (builtThisFrame)
+                    DebugText(QString("[STABLE f=%1] postW1 建马厩(学院前置) wood=%2").arg(frame).arg((int)info.Wood));
             }
 
             bool marketReady = (countBuildings(BUILDING_MARKET) >= 1);
@@ -1975,16 +1986,35 @@ void UsrAI::manageBuildings() {
         if (!builtThisFrame && countBuildingsExisting(BUILDING_STABLE) == 0 &&
             countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD && !DISABLE_STABLE_BUILD) {
             builtThisFrame = tryBuild(BUILDING_STABLE, 3);
+            if (builtThisFrame)
+                DebugText(QString("[STABLE f=%1] postW2 建马厩(学院前置) wood=%2").arg(frame).arg((int)info.Wood));
         }
 
-        // ★ 学院：后期/反攻爆近战核心兵种(方阵兵=强力近战)。铜器后、兵营已建、且**马厩已建**(前置)才建，
+        // ★ 学院：后期/反攻核心近战兵种(方阵兵=强力近战)。铜器后、兵营已建、且**马厩已建**(前置)才建，
         //   与靶场并列；建好后训练块检测学院存在即自动产方阵兵，配合"爆近战"反攻。
-        //   2026-09-04 用户要求"暂时不建学院"：加 DISABLE_COLLAGE_BUILD 闸（同时方阵兵产线失效 → 反攻只剩复合弓兵）。
+        //   ★ 2026-09-13 用户要求"解锁学院 + 后期建造方阵兵"：
+        //     ① DISABLE_COLLAGE_BUILD 已解封(false)；
+        //     ② 建造时机由 `state >= COUNTERATTACK` 放宽为【后期即可】：state>=DEFENSE_WAVE3
+        //        或 frame>=WAVE3_TIME(14min)。旧闸要求先进入反攻态，而反攻态门槛是全军≥12人
+        //        (COUNTER_ATTACK_MIN_ARMY)，前期军队长期不足 → 学院迟迟建不出 → 方阵兵产线整条空转
+        //        （这正是"方阵兵在后期完全没出现"的主因之一）。
+        //     ③ 引擎侧确认（Development.cpp:803-811）：学院 BRONZEAGE + 180木、前置马厩；
+        //        产方阵兵 BRONZEAGE + 60食+40金，无额外科技依赖 ⇒ 建成即可投产。
+        //   ★★ 2026-09-13 实测补闸（必须）：引擎 buildCon 要求 CIVILIZATION_BRONZEAGE，
+        //     缺 postBronze 闸时若铜器未升完，引擎拒绝建造而 countBuildingsExisting 的 90 帧防重窗口
+        //     一过就归零 → AI 沿坐标轴逐格扫描重试（o3_r180 实证：22581~45002 帧连发 235 次，
+        //     坐标 (71,11)→(71,12)→…→(73,11)），每次吞掉 builtThisFrame → 饿死 postW2 后续建造
+        //     （该局农场只有 3 座）。加时代闸后时代未达即完全跳过。
         if (!builtThisFrame && countBuildingsExisting(BUILDING_COLLAGE) == 0 && !DISABLE_COLLAGE_BUILD &&
-            state >= COUNTERATTACK && countBuildings(BUILDING_ARMYCAMP) >= 1 &&
+            postBronze &&
+            (state >= DEFENSE_WAVE3 || frame >= WAVE3_TIME) &&
+            countBuildings(BUILDING_ARMYCAMP) >= 1 &&
             countBuildingsExisting(BUILDING_STABLE) >= 1 &&   // ★ 学院前置：必须先建好马厩
             info.Wood >= BUILD_COLLAGE_WOOD + 30) {
             builtThisFrame = tryBuild(BUILDING_COLLAGE, 3);
+            if (builtThisFrame)
+                DebugText(QString("[COLLAGE f=%1] 建学院(方阵兵产线) wood=%2 state=%3")
+                          .arg(frame).arg((int)info.Wood).arg((int)state));
         }
 
         // 农场
@@ -3399,6 +3429,9 @@ void UsrAI::manageMilitary() {
                     info.Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD + goldKeep) {
                     BuildingAction(colC->SN, BUILDING_COLLAGE_CREATE_HOPLITE);
                     trained = true;
+                    DebugText(QString("[HOPLITE-ATK f=%1] 反攻期产方阵兵 现役hop=%2 comp=%3 meat=%4 gold=%5(kept%6)")
+                              .arg(frame).arg(nHopNow).arg(nCompNow)
+                              .arg((int)info.Meat).arg((int)info.Gold).arg(goldKeep));
                 }
 
                 // ③ 诊断打印（每 600 帧）：反攻期兵种构成，用于验证"复合弓兵为主、无骑兵/棍棒混入"
@@ -3486,15 +3519,46 @@ void UsrAI::manageMilitary() {
                 }
             }
 
+            // 优先级2.8：★ 2026-09-13 新增「后期方阵兵产线」（用户要求"在后期建造方阵兵"）
+            //   ★ 为何与优先级3 分开：优先级3 的进入门槛是"食物溢出 MELEE_OVERFLOW_FOOD=150"，
+            //     而方阵兵本身只需 60 食 —— 没有理由等到食物溢出才敢产，肉盾应当提前积攒。
+            //     独立块把门槛降到 Meat >= HOPLITE_FOOD+60(=120)，让【14 分钟后】(lateGame) 即投产。
+            //   ★ 沿用反攻期同款双保险（保证"复合弓为主、方阵为辅"，不抢复合弓资源）：
+            //     a) 黄金预留：付完方阵后，黄金仍须够【所有空闲靶场各产一个复合弓】(方阵40金 vs 复合弓20金)；
+            //     b) 数量比例闸：现役方阵 < (复合弓数+4)/2，长期趋近 2:1，开局零弓兵时也先出 2 个方阵顶前排。
+            //   ★ 与优先级1(复合弓) 并行：不同建筑(靶场/学院)各产各的，共用"逐栋下发"风格不检查 trained。
+            if (lateGame) {
+                int idleRanges2 = 0;
+                for (auto &b : info.buildings)
+                    if (b.Type == BUILDING_RANGE && b.Project == ACT_NULL) idleRanges2++;
+                int goldKeep2 = BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD * std::max(1, idleRanges2);
+                int nComp2 = 0, nHop2 = 0;
+                for (auto &a : info.armies) {
+                    if (a.Sort == AT_COMPOSITE_BOWMAN)      nComp2++;
+                    else if (a.Sort == AT_HOPLITE)          nHop2++;
+                }
+                auto colLate = findBuilding(BUILDING_COLLAGE);
+                if (colLate && colLate->Project == ACT_NULL &&
+                    nHop2 < (nComp2 + 4) / 2 &&
+                    info.Meat >= BUILDING_COLLAGE_CREATE_HOPLITE_FOOD + 60 &&
+                    info.Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD + goldKeep2) {
+                    BuildingAction(colLate->SN, BUILDING_COLLAGE_CREATE_HOPLITE);
+                    trained = true;
+                    DebugText(QString("[HOPLITE-LATE f=%1] 后期(lateGame)产方阵兵 现役hop=%2 comp=%3 meat=%4 gold=%5(kept%6)")
+                              .arg(frame).arg(nHop2).arg(nComp2)
+                              .arg((int)info.Meat).arg((int)info.Gold).arg(goldKeep2));
+                }
+            }
+
             // 优先级3：后期/反攻「爆近战」——食物溢出时主攻近战兵，与弓兵混编反攻。
             //   ★ 不依赖全局 trained 闸门(否则单次只能产1弓、近战被饿死)：改为按"建筑空闲"逐栋下发，
             //     与弓兵并行产出；每下发一次置 trained=true 触发 trainCooldown，避免同帧对同建筑重复下令。
             //   - 兵营→棍棒兵(50食物,纯近战填线,无石头/黄金依赖,溢出首选)
-            //   - 学院→方阵兵(60食物+40黄金,强力近战,需先建学院)
-            //   - 马厩→骑兵(70食物+80黄金;当前 DISABLE_STABLE_BUILD 时无马厩不触发,留作恢复马厩后自动生效)
+            //   - 马厩→骑兵(70食物+80黄金;受 DISABLE_CAVALRY_TRAIN 门禁，当前不训练)
+            //   ★ 2026-09-13：学院→方阵兵 已上移为独立块"优先级2.8"（门槛更低、更早投产），此处不再重复下发。
             if (lateGame && info.Meat >= MELEE_OVERFLOW_FOOD) {
                 // 兵营→棍棒兵：★ 2026-09-03 用户要求"不训棍棒兵"，DISABLE_CLUBMAN_TRAIN 关掉，
-                //   近战肉盾改由学院方阵兵(下方)承担。
+                //   近战肉盾由优先级2.8 的学院方阵兵承担。
                 if (!DISABLE_CLUBMAN_TRAIN) {
                     auto acMelee = findBuilding(BUILDING_ARMYCAMP);
                     if (acMelee && acMelee->Project == ACT_NULL &&
@@ -3502,13 +3566,6 @@ void UsrAI::manageMilitary() {
                         BuildingAction(acMelee->SN, BUILDING_ARMYCAMP_CREATE_CLUBMAN);
                         trained = true;
                     }
-                }
-                auto col = findBuilding(BUILDING_COLLAGE);
-                if (col && col->Project == ACT_NULL &&
-                    info.Meat >= BUILDING_COLLAGE_CREATE_HOPLITE_FOOD &&
-                    info.Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD) {
-                    BuildingAction(col->SN, BUILDING_COLLAGE_CREATE_HOPLITE);
-                    trained = true;
                 }
                 // 马厩→骑兵：★ 受 DISABLE_CAVALRY_TRAIN 门禁（2026-09-02 用户要求不训练骑兵）
                 if (!DISABLE_CAVALRY_TRAIN) {
