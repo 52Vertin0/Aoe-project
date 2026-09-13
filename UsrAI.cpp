@@ -1531,7 +1531,26 @@ void UsrAI::manageBuildings() {
                     if (allCovered) storageNearGazelleBuilt = 1;
                 }
             }   // ★★★ 闭合 !gaz.empty()（2026-09-12 多聚类版）
+            // ★ 2026-09-13 兜底 A：TC 猎场(GAZELLE_HUNT_RANGE=50 格)内【始终没有存活瞪羚】。
+            //   本局根本不会派猎人出发 ⇒ 近距仓库永远建不出 ⇒ storageNearGazelleBuilt 永远停在 0
+            //   ⇒ 农场闸(cpp:1637 / 1856 两处均要求 ==1) 永久卡死，食物只能靠浆果/猎象。
+            //   口径复用 gazelleDropoffReady() 的超时兜底 GAZELLE_STOCK_GATE_DEADLINE(9000 帧 = 6 游戏分)：
+            //   到点仍未找到近距瞪羚就解锁农场阈，不再陪等一个不会发生的仓库。
+            else if (frame >= GAZELLE_STOCK_GATE_DEADLINE) {
+                storageNearGazelleBuilt = 1;
+                if (frame % 300 == 0)
+                    DebugText(QString("[GAZELLE-STOCK f=%1] 近场无存活瞪羚 → 兜底解锁农场阈").arg(frame));
+            }
         }
+    }
+
+    // ★ 2026-09-13 兜底 B（硬保证）：建造窗口已关(11 分钟)时若仍未解锁，直接解锁。
+    //   上方块整体带 `frame < GAZELLE_STOCK_WINDOW_END(16500)` 闸，窗口一过就再也不会执行；
+    //   若窗口期内因木材不足 / 房屋不足等原因一次都没跑到，标志会永久停在 0 → 农场闸同样卡死。
+    //   窗口关闭后本标志已无任何"等待仓库"的意义（仓库也不会再建），故无条件解锁。
+    if (storageNearGazelleBuilt == 0 && frame >= GAZELLE_STOCK_WINDOW_END) {
+        storageNearGazelleBuilt = 1;
+        DebugText(QString("[GAZELLE-STOCK f=%1] 建造窗口已关 → 硬解锁农场阈").arg(frame));
     }
 
     // ====== 第一波前：房屋→兵营（工具时代就能建），不建其他 ======
@@ -1680,13 +1699,19 @@ void UsrAI::manageBuildings() {
         //   ★ 无瞪羚闸门：① 远距瞪羚不足 MIN_GAZELLE_FOR_SECOND_STOCK 只 → 不建、也不让位；
         //     ② gazelleAlive==0（一只存活瞪羚都没有）→ needSecondStock 恒 false，市场/靶场让位闸同步失效，
         //        否则会被一个永远建不出来的仓库饿死。
+        //   ★ 木料闸门（2026-09-13 补）：本判据必须与下方【实际建造块】的木材前置同步
+        //     （建造块 gate = `info.Wood >= BUILD_STOCK_WOOD + 30`，见 1727 段）。
+        //     ⚠ 旧的致命不对称：needSecondStock 只看"该不该建"、不看"建不建得起"，
+        //       木材落在 [BUILD_STOCK_WOOD, BUILD_STOCK_WOOD+30) 区间时判定为"让位"、
+        //       而建造块却因木材不足整块跳过 ⇒ 市场被永久冻结、靶场冻结到 14 分钟。
+        //       同源原则早已在 gazelleDropoffReady()(5767 段) 落地（建不起就放行猎人），此处补齐。
         //   性能：单帧扫完瞪羚即止（瞪羚≤30 / 仓库≤3 / 单帧成本 O(90)）。
         int gazelleAlive = 0;
         for (auto &r : info.resources)
             if (r.Type == RESOURCE_GAZELLE && r.Cnt > 0) gazelleAlive++;
 
         bool needSecondStock = false;
-        if (gazelleAlive > 0 &&
+        if (gazelleAlive > 0 && info.Wood >= BUILD_STOCK_WOOD + 30 &&
             countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK && frame > WAVE2_TIME) {
             int farGazCnt = 0;
             auto centerP = findBuilding(BUILDING_CENTER);
@@ -1714,6 +1739,17 @@ void UsrAI::manageBuildings() {
                 }
             }
         }
+
+        // ★ 2026-09-13 闸门可观测性（新增，用于实证"市场/靶场是否被让位闸饿死"）：
+        //   每 300 帧打印一次让位闸全量状态。needStock=1 且 market/range 长期=0 ⇒ 就是被饿死。
+        if (frame % 300 == 0)
+            DebugText(QString("[GATE f=%1] needStock=%2 gazAlive=%3 stock=%4 wood=%5 | market=%6 range=%7 granary=%8 | snGB=%9")
+                      .arg(frame).arg(needSecondStock ? 1 : 0).arg(gazelleAlive)
+                      .arg(countBuildingsExisting(BUILDING_STOCK)).arg((int)info.Wood)
+                      .arg(countBuildingsExisting(BUILDING_MARKET))
+                      .arg(countBuildingsExisting(BUILDING_RANGE))
+                      .arg(countBuildingsExisting(BUILDING_GRANARY))
+                      .arg(storageNearGazelleBuilt));
 
         // ★ 第二仓库：为"距现有 Stock 均>20格的远距瞪羚群"建一座，仓库落在群中心。
         //   ⚠ 三要素缺一不可（旧版缺陷导致贴 TC 多建 3 座）：① MAX_STOCK 闸；
@@ -1790,10 +1826,15 @@ void UsrAI::manageBuildings() {
         // 市场
         //   ★ 2026-09-05 加前置 !needSecondStock：远距瞪羚存在 + 仓库未满时不让市场抢 builtThisFrame
         //     （修"市场先于第二仓库落地"——同源问题：前置条件严苛→目标建筑被下游接力建出）
-        if (!builtThisFrame && !needSecondStock &&
+        //   ★ 2026-09-13 改：由 `!needSecondStock`（无时间上界）→ `!(needSecondStock && frame < WAVE3_TIME)`。
+        //     原因：原写法在"远距瞪羚≥2 但仓库迟迟建不出（位置冲突）"时会把市场【无限期】冻在 0%，
+        //     而仓库的解禁条件（瞪羚死光 / 仓库数达 MAX_STOCK）可能整局都不成立。
+        //     现在与靶场(1811 段)口径完全对齐——让位只在 14 分钟反攻期前有效，进入反攻期市场优先级反超。
+        if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME) &&
             countBuildingsExisting(BUILDING_MARKET) == 0 &&
             countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {  // 造市场（已去掉11分钟时间限制）
             builtThisFrame = tryBuild(BUILDING_MARKET, 3);
+            if (builtThisFrame) DebugText(QString("[MARKET f=%1] 下令建造市场 wood=%2").arg(frame).arg((int)info.Wood));
         }
 
         // 兵营
@@ -1812,6 +1853,7 @@ void UsrAI::manageBuildings() {
             countBuildingsExisting(BUILDING_RANGE) == 0 &&
             countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
             builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+            if (builtThisFrame) DebugText(QString("[RANGE f=%1] 下令建造首座靶场 wood=%2").arg(frame).arg((int)info.Wood));
         }
 
         // 箭塔：石头够就造（已解除 铜器/箭塔科技/兵营/靶场 前置；数量上限 MAX_TOWERS 保留）。
