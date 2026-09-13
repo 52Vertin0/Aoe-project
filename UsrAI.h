@@ -16,6 +16,7 @@ public:
     UsrAI() : frame(0), state(INIT), townCenterSN(-1), priestSN(-1),
               enemySiegeSN(-1), enemyBaseScouted(false), enemyBaseDR(0), enemyBaseUR(0),
               hasUpgraded(false),
+              bronzeIssuedFrame(-999999), bronzeAttemptCount(0), bronzeStallFrames(0),
               wave1Started(false), wave2Started(false), wave3Started(false),
               wave2Defeated(false),
               buildCooldown(0), techCooldown(0), trainCooldown(0),
@@ -91,6 +92,10 @@ private:
     bool enemyBaseScouted;        // ★ 敌方基地已被探到过(持久化：一旦探明即便暂失视野也记得方位)
     double enemyBaseDR, enemyBaseUR;  // 已探明敌方基地坐标(区块中心→细节坐标)，供反攻直奔
     bool hasUpgraded;
+    // ★★ 2026-09-13 铜器升级防卡死状态（引擎有"工具时代需市场/靶场/马厩≥2座"硬前置）
+    int bronzeIssuedFrame;        // 最近一次铜器升级发令帧
+    int bronzeAttemptCount;       // 累计发令次数
+    int bronzeStallFrames;        // UPGRADING 中连续"引擎未确认施工"的帧数（超时兜底基准）
     bool wave1Started, wave2Started, wave3Started;
     bool wave2Defeated;
 
@@ -255,6 +260,9 @@ private:
 
     // ---- 核心策略函数 ----
     void updateState();            // 阶段切换
+    // ★ 铜器升级统一入口（含引擎前置检查+幂等）；返回 true = 本帧确实发出了升级令
+    int  countAgeUpgradeBuildings();   // 市场/靶场/马厩 已存在数（引擎升级硬前置）
+    bool tryStartBronzeUpgrade();
     void manageEconomy();          // 经济（农民生产+分配+科技）
     void manageBuildings();        // 建造管理
     void assignIdleFarmers();      // 空闲村民分配

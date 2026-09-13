@@ -208,6 +208,14 @@ ins UsrIns;
                                 //     设 800 = 2 矿堆满额 = 实际反攻所需黄金(800)安全储备。
 #define FOOD_CAP_STOP  650   // ★ 铜器后：食物≥650 不再派新食物工（2026-09-12 500→650：解 65% 食物 rebalance 后过囤）
 #define FOOD_CAP_STOP_PREBRONZE 850 // ★ 铜器前：食物停采阈值提到 850(>800升级费)，否则食物到500就停采、永远攒不够800升铜器
+// ★★ 2026-09-13 铜器升级防卡死（修 o3 局整局 UPGRADING / score=224 的根因）
+//   引擎侧 Development::get_isBuildActionAble() 对 BUILDING_CENTER_UPGRADE 有硬前置：
+//   工具时代须已【建成】MARKET/RANGE/STABLE 中至少 2 座（hasAgeUpgradeBuildings），
+//   否则返回 false 直接拒令。旧代码只查 Meat>=800 就发令并立刻 hasUpgraded=true，
+//   被拒后所有升级入口的 !hasUpgraded 守卫全失效 → 永不重试、整局停在 UPGRADING。
+#define BRONZE_MIN_AGE_BUILDINGS 2     // 引擎前置：市场/靶场/马厩 已存在数（缺则必然被拒，勿发令）
+#define BRONZE_RETRY_INTERVAL 120      // UPGRADING 中指令未被引擎接受时的重试间隔（帧）
+#define BRONZE_GIVEUP_FRAMES  3600     // 连续未确认施工超时（帧）→ 退出 UPGRADING 回 DEFENSE_PREP（继续发育/补前置）
 #define WOOD_LOW_LINE  100   // 木头<100 判定"缺木"，临时提高伐木工目标
 #define WOOD_TARGET_BASE 4   // 常态伐木工目标人数（优先食物，木头只保底）
 #define WOOD_TARGET_LOW  8   // 缺木(<WOOD_LOW_LINE)时的伐木工目标人数
@@ -332,21 +340,55 @@ void UsrAI::processData() {
 }
 
 // ============================================================
+// ★★ 铜器升级辅助（2026-09-13 防卡死）
+// ============================================================
+// 引擎 Development::hasAgeUpgradeBuildings(CIVILIZATION_TOOLAGE) 要求
+// MARKET/RANGE/STABLE 中至少 BRONZE_MIN_AGE_BUILDINGS 座【已建成】，否则
+// get_isBuildActionAble() 直接拒令。此处用 AI 侧 countBuildingsExisting 逼近该前置
+// （它把在建地基/90帧内新下发的建造令也算入，故属"乐观"判据，仅作发令前预检，
+//   真正的成功判据仍是引擎回写 tc->Project == BUILDING_CENTER_UPGRADE）。
+int UsrAI::countAgeUpgradeBuildings() {
+    int n = 0;
+    if (countBuildingsExisting(BUILDING_MARKET) > 0) n++;
+    if (countBuildingsExisting(BUILDING_RANGE)  > 0) n++;
+    if (countBuildingsExisting(BUILDING_STABLE) > 0) n++;
+    return n;
+}
+
+// 铜器升级统一发起入口：所有状态（EARLY_ECONOMY / DEFENSE_PREP / WAVE1 / WAVE2）与
+// UPGRADING 重试共用。返回 true = 本帧确实发出了升级令（或引擎已在施工）。
+// ★ 绝不在此处置 hasUpgraded=true —— 只有确认引擎施工/已达铜器才由调用点锁定。
+bool UsrAI::tryStartBronzeUpgrade() {
+    if (info.civilizationStage >= CIVILIZATION_BRONZEAGE) return false;
+    if (hasUpgraded) return false;                                     // 已确认在执行/已达成
+    if (info.Meat < BUILDING_CENTER_UPGRADE_BRONZEAGE_FOOD) return false;
+    auto tc = findBuilding(BUILDING_CENTER);
+    if (!tc) return false;
+    if (tc->Project == BUILDING_CENTER_UPGRADE) {                      // 引擎已在升级 → 视为成功
+        hasUpgraded = true;
+        return true;
+    }
+    if (tc->Project != ACT_NULL) return false;                         // TC 忙（造村民/研究），本帧不发
+    if (countAgeUpgradeBuildings() < BRONZE_MIN_AGE_BUILDINGS) return false;  // 引擎硬前置未满足
+    BuildingAction(tc->SN, BUILDING_CENTER_UPGRADE);
+    bronzeIssuedFrame = frame;
+    bronzeAttemptCount++;
+    return true;
+}
+
+// ============================================================
 // 阶段切换（改进版：更稳健的状态转换）
 // ============================================================
 void UsrAI::updateState() {
     switch (state) {
     case EARLY_ECONOMY: {
-        // ★ 食物够800立刻升铜器（一满足条件就升级，无建筑前置）
-        if (info.Meat >= BUILDING_CENTER_UPGRADE_BRONZEAGE_FOOD) {
-            auto tc = findBuilding(BUILDING_CENTER);
-            if (tc && tc->Project == ACT_NULL) {
-                BuildingAction(tc->SN, BUILDING_CENTER_UPGRADE);
-                hasUpgraded = true;
-                state = UPGRADING;
-                DebugText(QString(">> Upgrading to Bronze Age! Frame=%1, Meat=%2, Farmers=%3")
-                    .arg(frame).arg((int)info.Meat).arg((int)info.farmers.size()));
-            }
+        // ★ 食物够800且引擎前置(市场/靶场/马厩≥2座)满足 → 统一入口发令
+        //   （旧版只查 Meat>=800 就发令并立刻 hasUpgraded=true，被引擎拒后永不重试 → 整局卡 UPGRADING）
+        if (tryStartBronzeUpgrade()) {
+            state = UPGRADING;
+            DebugText(QString(">> Upgrading to Bronze Age! Frame=%1, Meat=%2, Farmers=%3, ageBld=%4")
+                .arg(frame).arg((int)info.Meat).arg((int)info.farmers.size())
+                .arg(countAgeUpgradeBuildings()));
         }
         // 超时保护：frame > WAVE1_TIME → 进入第一波防御准备
         if (frame > WAVE1_TIME && state == EARLY_ECONOMY) {
@@ -355,28 +397,57 @@ void UsrAI::updateState() {
         }
         break;
     }
-    case UPGRADING:
+    case UPGRADING: {
+        auto tc = findBuilding(BUILDING_CENTER);
+        // ① 达成铜器 → 完成
         if (info.civilizationStage >= CIVILIZATION_BRONZEAGE) {
+            hasUpgraded = true;
+            bronzeIssuedFrame = -999999; bronzeAttemptCount = 0; bronzeStallFrames = 0;
             state = DEFENSE_PREP;
             DebugText(">> Bronze Age reached!");
+            break;
         }
-        // 升级完成前保持 UPGRADING 状态，自然等待 civilizationStage 变化
+        // ② 引擎确认正在施工 → 正常等待（复位卡顿计时）
+        if (tc && tc->Project == BUILDING_CENTER_UPGRADE) {
+            hasUpgraded = true;
+            bronzeStallFrames = 0;
+            break;
+        }
+        // ③ 引擎未在施工：指令被拒/丢失 → 计卡顿并按间隔重试
+        hasUpgraded = false;
+        bronzeStallFrames++;
+        if (bronzeStallFrames == 1 || bronzeStallFrames % BRONZE_RETRY_INTERVAL == 0) {
+            bool issued = tryStartBronzeUpgrade();
+            DebugText(QString("!! BRONZE-RETRY f=%1 issued=%2 try#%3 stall=%4 meat=%5 tcProj=%6 ageBld=%7(m%8 r%9 s%10)")
+                .arg(frame).arg((int)issued).arg(bronzeAttemptCount).arg(bronzeStallFrames)
+                .arg((int)info.Meat).arg(tc ? tc->Project : -99)
+                .arg(countAgeUpgradeBuildings())
+                .arg(countBuildingsExisting(BUILDING_MARKET))
+                .arg(countBuildingsExisting(BUILDING_RANGE))
+                .arg(countBuildingsExisting(BUILDING_STABLE)));
+        }
+        // ④ 兜底：长时间无法开工 → 退出 UPGRADING，恢复常规状态机（继续攒资源 + 补建前置建筑），
+        //    后续 WAVE1/WAVE2/PREP 入口会自然再次尝试，绝不会像旧版那样整局卡死。
+        if (bronzeStallFrames >= BRONZE_GIVEUP_FRAMES) {
+            hasUpgraded = false;
+            bronzeIssuedFrame = -999999; bronzeAttemptCount = 0; bronzeStallFrames = 0;
+            state = DEFENSE_PREP;
+            DebugText(QString("!! BRONZE-GIVEUP f=%1 → DEFENSE_PREP (need %2 of MARKET/RANGE/STABLE, have m%3 r%4 s%5)")
+                .arg(frame).arg(BRONZE_MIN_AGE_BUILDINGS)
+                .arg(countBuildingsExisting(BUILDING_MARKET))
+                .arg(countBuildingsExisting(BUILDING_RANGE))
+                .arg(countBuildingsExisting(BUILDING_STABLE)));
+        }
         break;
+    }
 
     case DEFENSE_WAVE1:
-        // ★ 食物够800立刻升铜器
-        if (info.civilizationStage < CIVILIZATION_BRONZEAGE && !hasUpgraded) {
-            if (info.Meat >= BUILDING_CENTER_UPGRADE_BRONZEAGE_FOOD) {
-                auto tc = findBuilding(BUILDING_CENTER);
-                if (tc && tc->Project == ACT_NULL) {
-                    BuildingAction(tc->SN, BUILDING_CENTER_UPGRADE);
-                    hasUpgraded = true;
-                    state = UPGRADING;
-                    DebugText(QString(">> WAVE1 Bronze Age! Frame=%1, Meat=%2")
-                        .arg(frame).arg((int)info.Meat));
-                    break;
-                }
-            }
+        // ★ 食物够800且引擎前置满足 → 统一入口发令（含防卡死重试）
+        if (tryStartBronzeUpgrade()) {
+            state = UPGRADING;
+            DebugText(QString(">> WAVE1 Bronze Age! Frame=%1, Meat=%2, ageBld=%3")
+                .arg(frame).arg((int)info.Meat).arg(countAgeUpgradeBuildings()));
+            break;
         }
         // 第一波结束条件：敌人稀少 或 超时强制结束
         if (frame > WAVE1_TIME + 3500) {
@@ -395,18 +466,14 @@ void UsrAI::updateState() {
         break;
 
     case DEFENSE_PREP:
-        // ★ 食物够800立刻升铜器
-        if (info.civilizationStage < CIVILIZATION_BRONZEAGE && !hasUpgraded) {
-            if (info.Meat >= BUILDING_CENTER_UPGRADE_BRONZEAGE_FOOD) {
-                auto tc = findBuilding(BUILDING_CENTER);
-                if (tc && tc->Project == ACT_NULL) {
-                    BuildingAction(tc->SN, BUILDING_CENTER_UPGRADE);
-                    hasUpgraded = true;
-                    state = UPGRADING;
-                    DebugText(QString(">> LATE Bronze Age! Frame=%1, Meat=%2")
-                        .arg(frame).arg((int)info.Meat));
-                }
-            }
+        // ★ 食物够800且引擎前置满足 → 统一入口发令（含防卡死重试）
+        //   ★ 必须 break：旧版发令后继续落回下方波次检测，会把刚设的 UPGRADING
+        //     立刻覆盖成 DEFENSE_WAVE1/2/3，导致升级状态机永远进不去。
+        if (tryStartBronzeUpgrade()) {
+            state = UPGRADING;
+            DebugText(QString(">> LATE Bronze Age! Frame=%1, Meat=%2, ageBld=%3")
+                .arg(frame).arg((int)info.Meat).arg(countAgeUpgradeBuildings()));
+            break;
         }
         // 检测波次开始
         if (frame >= WAVE1_TIME && !wave1Started) {
@@ -430,19 +497,12 @@ void UsrAI::updateState() {
         break;
 
     case DEFENSE_WAVE2:
-        // 铜器升级
-        if (info.civilizationStage < CIVILIZATION_BRONZEAGE && !hasUpgraded) {
-            if (info.Meat >= BUILDING_CENTER_UPGRADE_BRONZEAGE_FOOD) {
-                auto tc = findBuilding(BUILDING_CENTER);
-                if (tc && tc->Project == ACT_NULL) {
-                    BuildingAction(tc->SN, BUILDING_CENTER_UPGRADE);
-                    hasUpgraded = true;
-                    state = UPGRADING;
-                    DebugText(QString(">> W2 Bronze Age! Frame=%1, Meat=%2")
-                        .arg(frame).arg((int)info.Meat));
-                    break;
-                }
-            }
+        // 铜器升级（统一入口：含引擎前置检查 + 防卡死重试）
+        if (tryStartBronzeUpgrade()) {
+            state = UPGRADING;
+            DebugText(QString(">> W2 Bronze Age! Frame=%1, Meat=%2, ageBld=%3")
+                .arg(frame).arg((int)info.Meat).arg(countAgeUpgradeBuildings()));
+            break;
         }
         if (frame > WAVE2_TIME + 4500) {
             int eCount = info.enemy_armies.size() + info.enemy_farmers.size();
@@ -1189,10 +1249,14 @@ void UsrAI::manageEconomy() {
     // 1. 村民生产：有50食物就造人，冲到目标数量
     //    ★ 铜器升级条件已满足时优先升级：暂停造村民，把TC和食物留给升级指令
     auto center = findBuilding(BUILDING_CENTER);
+    //   ★ 2026-09-13：新增两条 —— ①前置建筑就绪才"攒升级费"（否则食物够也升不了，
+    //     白停产、空转）；②UPGRADING 重试期同样停产，避免新村民吃掉 800 升级费。
     bool bronzeUpgradeReady = (info.civilizationStage < CIVILIZATION_BRONZEAGE && !hasUpgraded &&
                                info.Meat >= BUILDING_CENTER_UPGRADE_BRONZEAGE_FOOD &&
+                               countAgeUpgradeBuildings() >= BRONZE_MIN_AGE_BUILDINGS &&
                                (state == EARLY_ECONOMY || state == DEFENSE_PREP ||
-                                state == DEFENSE_WAVE1 || state == DEFENSE_WAVE2));
+                                state == DEFENSE_WAVE1 || state == DEFENSE_WAVE2 ||
+                                state == UPGRADING));
     if (center && center->Project == ACT_NULL && !bronzeUpgradeReady) {
         int farmerCount = 0;
         for (auto &f : info.farmers)
