@@ -74,6 +74,14 @@ ins UsrIns;
 #define ELEPHANT_BAN_FRAMES    1500  // ★ 孤兵救援后的拉黑时长：1500 帧 = 60 秒内不再往这头象派人
 #define MAX_TOWERS 2            // 箭塔数量（2026-09-03 用户改需求：只需2座箭塔，多采150石建第2座，其余人力转食物）
 #define MAX_RANGES 3            // 反攻阶段靶场上限(并行产弓线，越多弓兵越快)
+// ★ 2026-09-13 用户需求「士兵攻击箭塔时选择距离自己最近的箭塔为目标」：
+//   此前士兵在反攻期打建筑只有两个来源——① findNearestEnemyBuilding(范围内任意类型最近建筑)、
+//   ② 「武器厂(siege)绝对优先」覆盖。后果：a) 更近的房屋/农场/谷仓会把箭塔顶掉 ⇒ 挨塔射却不还手；
+//   b) 一旦找到敌方武器厂，全军改打武器厂、附近箭塔被无视 ⇒ 攻城时持续被塔白嫖输出。
+//   新规则：士兵选建筑目标时，【距离自己最近的敌方箭塔】优先于 武器厂 与 任意其它敌建筑；
+//   仅在 TOWER_TARGET_RANGE 格内生效（超出则该塔不构成即时威胁，维持"直奔武器厂"的反攻目标语义）。
+//   ⚠ 只影响"选建筑目标"，不改变打敌方【单位】的优先级(单位永远优先于建筑)。
+#define TOWER_TARGET_RANGE 12   // 士兵把敌方箭塔纳入攻击目标的最大距离(格)；箭塔射程≈8格
 // ★★★ 2026-09-12 改：允许多群瞪羚各建 1 座仓库，1+3=MAX_STOCK=4 座上限。
 //   原 MAX_STOCK=2 限制下，多群瞪羚（典型地图 3~4 群）只能有 2 群被覆盖、其余猎人空跑回最近仓库。
 //   现在 4 座可覆盖近距（首发块）+ 远距（远距块）所有主要聚类，无聚类猎人空跑交肉。
@@ -4888,7 +4896,18 @@ void UsrAI::manageCounterAttack() {
             //   ★ 拆建筑攻击令去重(2026-09-06)：已在打这建筑就别重发,否则每帧 HumanAction 打断上方的拉扯 HumanMove,
             //     远程兵永远走不到该到位的站位。
             if (ranged) {
-                if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
+                // ★ 2026-09-13「士兵攻击箭塔 → 选距离自己最近的箭塔」：
+                //   先查【最近敌方箭塔】(TOWER_TARGET_RANGE 格内)。命中则打塔，且【优先于武器厂/任意敌建筑】——
+                //   旧逻辑里武器厂(siege)必然覆盖一切，更近的房屋/农场也会顶掉箭塔 ⇒ 挨塔射不还手。
+                //   仍保留去重：已在打这座塔就不重发，避免每帧 HumanAction 打断上方拉扯 HumanMove。
+                int towerSN = findNearestEnemyTower(a.DR, a.UR, TOWER_TARGET_RANGE * BL);
+                if (towerSN >= 0) {
+                    if (a.WorkObjectSN != towerSN) {
+                        HumanAction(a.SN, towerSN);
+                        DebugText(QString("[TOWER-TGT f=%1] 复合弓兵/远程 SN=%2 攻击最近敌塔 %3 (R<=%4格)")
+                                  .arg(frame).arg(a.SN).arg(towerSN).arg(TOWER_TARGET_RANGE));
+                    }
+                } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
                     int ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
                     if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);
                     else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);
@@ -4906,17 +4925,30 @@ void UsrAI::manageCounterAttack() {
             // ★ 近战接敌攻击令去重（2026-09-06）：已在打这个敌就别重发，
             //   否则每帧 HumanAction 打断 issueMarch 的推进 HumanMove，近战永远贴不上脸。
             //   同 4099 / 4117 攻击令打断移动的根因。
-            if (enemySN >= 0 && a.WorkObjectSN != enemySN) {
-                HumanAction(a.SN, enemySN);
-            } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
-                // ★ 已到已知敌方基地附近：主动拆最近的敌方建筑(武器厂优先，否则任意敌建筑)
-                int ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
-                // ★ 拆建筑攻击令去重（同 4117）
-                if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);   // 有建筑可打→拆基地
-                else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);  // 无建筑→继续推进
+            if (enemySN >= 0) {
+                // 有敌【单位】可打 → 单位永远优先于建筑（保持原语义，含去重）
+                if (a.WorkObjectSN != enemySN) HumanAction(a.SN, enemySN);
             } else {
-                // 向目标推进：已知敌基地→引擎全图寻路直奔；未知→逐格摸索已探索区
-                issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);
+                // ★ 2026-09-13「士兵攻击箭塔 → 选距离自己最近的箭塔」：
+                //   15 格内无敌方单位时，先查【最近敌方箭塔】(TOWER_TARGET_RANGE 格内)并打它，
+                //   优先于武器厂(siege)与任意其它敌建筑。近战打塔需要走过去，故给 12 格窗口。
+                int towerSN = findNearestEnemyTower(a.DR, a.UR, TOWER_TARGET_RANGE * BL);
+                if (towerSN >= 0) {
+                    if (a.WorkObjectSN != towerSN) {
+                        HumanAction(a.SN, towerSN);
+                        DebugText(QString("[TOWER-TGT f=%1] 近战 SN=%2 攻击最近敌塔 %3 (R<=%4格)")
+                                  .arg(frame).arg(a.SN).arg(towerSN).arg(TOWER_TARGET_RANGE));
+                    }
+                } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
+                    // ★ 已到已知敌方基地附近：主动拆最近的敌方建筑(武器厂优先，否则任意敌建筑)
+                    int ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+                    // ★ 拆建筑攻击令去重（同 4117）
+                    if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);   // 有建筑可打→拆基地
+                    else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);  // 无建筑→继续推进
+                } else {
+                    // 向目标推进：已知敌基地→引擎全图寻路直奔；未知→逐格摸索已探索区
+                    issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);
+                }
             }
             marchCmds++;
         }
@@ -5180,6 +5212,24 @@ int UsrAI::findNearestEnemyBuilding(double dr, double ur, double range) {
     int bestSN = -1;
     double bestDist = range * range;
     for (const auto &b : info.enemy_buildings) {
+        double bDR = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
+        double bUR = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH;
+        double d = (bDR - dr) * (bDR - dr) + (bUR - ur) * (bUR - ur);
+        if (d < bestDist) { bestDist = d; bestSN = b.SN; }
+    }
+    return bestSN;
+}
+
+// ★ 2026-09-13 用户需求「士兵攻击箭塔时选择距离自己最近的箭塔为目标」。
+//   只扫 info.enemy_buildings 中 Type==BUILDING_ARROWTOWER 的项，取【距 (dr,ur) 最近】者。
+//   距离口径与 findNearestEnemyBuilding 一致：建筑中心 =(BlockDR+1, BlockUR+1)×BL
+//   （箭塔是 2×2，+1 即中心；见 cpp:5405 bSize 判据）。
+//   range 为"格"换算后的像素距离（调用方传 N*BL），超出该半径的塔视为不构成即时威胁→返回 -1。
+int UsrAI::findNearestEnemyTower(double dr, double ur, double range) {
+    int bestSN = -1;
+    double bestDist = range * range;
+    for (const auto &b : info.enemy_buildings) {
+        if (b.Type != BUILDING_ARROWTOWER) continue;
         double bDR = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
         double bUR = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH;
         double d = (bDR - dr) * (bDR - dr) + (bUR - ur) * (bUR - ur);

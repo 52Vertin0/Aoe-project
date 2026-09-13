@@ -225,6 +225,8 @@ private:
     tagBuilding* findBuildingIncludingUnderConstruction(int type);
     tagBuilding* findEnemyBuilding(int type);
     int findNearestEnemyBuilding(double dr, double ur, double range);  // 范围内最近敌方建筑SN(反攻直奔基地后拆建筑用)
+    // ★ 2026-09-13：范围内【距离自己最近的敌方箭塔】SN（无则 -1）。士兵选建筑目标时优先打它。
+    int findNearestEnemyTower(double dr, double ur, double range);
     tagResource* findNearestResource(int type, double dr, double ur);
     tagResource* findBestWoodTree(double dr, double ur);   // ★ 2026-09-06：砍树按"离仓库/TC 近"选树（带硬闸）
     int findNearestEnemySN(double dr, double ur, double range);
