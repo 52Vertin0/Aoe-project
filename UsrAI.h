@@ -114,6 +114,7 @@ private:
     std::map<int,int> pendingBuildInsFrame; // 建造指令id → 下发帧号（结果迟迟不回时超时清理，避免永久占位）
     std::map<int,int> deadBuildingsFrame;   // 废弃地基SN → 拉黑帧号（宽限期内仍计入"已存在"，超时才允许另建）
     std::map<int,int> orphanBuildFrame;     // 孤儿地基SN → 上次补派村民的帧号（重派节流）
+    std::map<int,int> builderDispatchFrame; // ★ 建造者SN → 本次建造令下发帧（硬超时起点；重派不重置）
     std::map<int,int> lastBuildIssueFrame;  // 建筑类型 → 最近一次下发建造指令的帧号（防异步回写窗口内重复建造）
     std::set<int> deadBuildings;      // 卡在0%的废弃地基SN（超时后忽略，避免阻塞后续建造）
     std::set<int> depositFarmers;

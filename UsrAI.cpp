@@ -96,7 +96,13 @@ ins UsrIns;
 // ★ 建造/地基保护常量
 #define DEAD_BUILDING_GRACE 1800  // 废弃地基宽限期(帧,30秒)：拉黑后这段时间内仍算"已存在"，
                                   // 给"孤儿地基抢救"时间补救；超时才允许另择新址重建(避免重复建造)
-#define ORPHAN_REDISPATCH_CD 120  // 孤儿地基(在建但无人施工)补派村民的节流间隔(帧)
+#define ORPHAN_REDISPATCH_CD 120  // 孤儿地基(在建但无人施工)补派村民的节流间隔(帧，纯空闲村民)
+#define ORPHAN_STEAL_CD 300       // ★ 2026-09-13 关键建筑"抽人"抢救的节流(帧)：空闲村民取不到时，
+                                  //   允许从采集岗抽 1 人施工。间隔更长(5秒)以免经济被反复抽干。
+#define BUILDER_HARD_TIMEOUT 1800 // ★ 2026-09-13 建造者硬超时(帧,72秒)：从下达建造令起算，
+                                  //   无论处于何种状态(WALKING 走不到 / 被改派 / 反复卡顿)，
+                                  //   只要该地基仍未完工且本人不在施工 → 判作废(拉黑+释放)，
+                                  //   让 manageBuildings 另择新址重建。修"地基永久卡 0% 无人施工"。
 #define PENDING_BUILD_TIMEOUT 300 // 建造指令结果迟迟不回的超时(帧)：超时则清掉占位，防止永久虚占名额
 #define BUILD_GAP 1              // 建筑间距：候选建筑footprint外扩1格内不得有其他建筑(含敌我)，避免建筑成墙堵死路
 #define MELEE_OVERFLOW_FOOD 150      // 后期/反攻"爆近战"食物溢出阈值：食物≥此值才大规模造近战兵(棍棒/方阵)
@@ -1293,6 +1299,7 @@ void UsrAI::manageBuildings() {
         if (!f) {
             builderIdleFrame.erase(sn);
             buildRedispatchFrame.erase(sn);
+            builderDispatchFrame.erase(sn);
             it = buildingFarmerType.erase(it);
             continue;
         }
@@ -1326,6 +1333,50 @@ void UsrAI::manageBuildings() {
             releaseBuilder(sn);
             it = buildingFarmerType.erase(it);
             continue;
+        }
+
+        // ★ 2026-09-13 建造者硬超时（总钥匙）：从本次建造令下发起，超过 BUILDER_HARD_TIMEOUT(1800帧)
+        //   仍未完工、且本人当前也不在该地基上施工 → 判定该地基作废：拉黑 + 释放村民，
+        //   交由 manageBuildings 另择新址重建。
+        //   旧逻辑只在 IDLE 状态累计空闲(builderIdleFrame, 900帧)才超时；建造者若长期处于
+        //   WALKING（地基不可达 / 被单位挡死）或被中途改派去干别的，则永远不释放
+        //   ⇒ 建筑永久卡 0%、且 countBuildingsExisting 仍把它算作"已存在"、不会再发建造令
+        //   ⇒ 下游建筑被引擎前置链连锁卡死（靶场←兵营、农场←市场，见 Development.cpp:727/765）。
+        {
+            auto dsp = builderDispatchFrame.find(sn);
+            bool workingNow = (myB && f->NowState == HUMAN_STATE_WORKING && f->WorkObjectSN == myB->SN);
+            // ★ 关键防误杀：只要【该地基上有任何村民正在施工】就不算超时。
+            //   2026-09-13 实证：l_r90 中农场 SN=11353 被本判据误判 —— 登记建造者走了，
+            //   但另一村民仍在施工（percent=91），63 帧后农场正常建完。若只看"本人是否 WORKING"
+            //   就会把别的村民正在推进的进度判死。
+            //   ⚠ 必须同时要求 NowState==WORKING：WorkObjectSN 会被引擎长期保留为"上次目标"，
+            //     只看 SN 匹配会让本判据恒真、硬超时永不触发。
+            bool anyoneWorking = false;
+            if (myB)
+                for (auto &g : info.farmers)
+                    if (g.NowState == HUMAN_STATE_WORKING && g.WorkObjectSN == myB->SN) { anyoneWorking = true; break; }
+            if (workingNow || anyoneWorking) {
+                // 有人在建 → 保持登记、不超时（刻意不续期：一旦彻底无人施工立即触发兜底）
+            } else if (dsp != builderDispatchFrame.end() &&
+                       frame - dsp->second > BUILDER_HARD_TIMEOUT) {
+                if (myB && myB->Percent < 100) {
+                    // ★ 分档处置：percent==0（纯卡死，材料未投入）→ 拉黑另址重建；
+                    //   percent>0（已有进度）→ 不拉黑，仅释放登记，交由孤儿抢救派人接手建完，
+                    //   避免丢弃已投入的建造进度（该地基仍会被 countBuildingsExisting 计入，
+                    //   不会重复建造；且 deadBuildings 清理逻辑见 percent>0 即自动复活）。
+                    if (myB->Percent == 0) {
+                        deadBuildings.insert(myB->SN);
+                        if (!deadBuildingsFrame.count(myB->SN)) deadBuildingsFrame[myB->SN] = frame;
+                    }
+                    DebugText(QString("[BUILDER-HARD f=%1] 建造者SN=%2 type=%3 地基SN=%4 percent=%5 超时%6帧 → %7")
+                              .arg(frame).arg(sn).arg(buildType).arg(myB->SN).arg(myB->Percent)
+                              .arg(frame - dsp->second)
+                              .arg(myB->Percent == 0 ? "作废另址重建" : "仅释放登记(交孤儿抢救接手)"));
+                }
+                releaseBuilder(sn);
+                it = buildingFarmerType.erase(it);
+                continue;
+            }
         }
 
         // 建造者正在施工（WORKING 且目标就是该建筑）→ 正常推进，保持登记
@@ -1371,10 +1422,14 @@ void UsrAI::manageBuildings() {
                 auto dit = deadBuildingsFrame.find(b.SN);
                 if (dit != deadBuildingsFrame.end() && frame - dit->second > DEAD_BUILDING_GRACE) continue;
             }
-            // 是否已有村民在干这个地基
+            // 是否已有村民【正在施工】这个地基
+            //   ★ 2026-09-13 收紧：旧版只判 `f.WorkObjectSN == b.SN`，而 WorkObjectSN 在引擎里
+            //     会作为"上次工作目标"长期保留（村民早已离开/改派，字段仍指着它）
+            //     ⇒ hasWorker 恒为 true ⇒ 孤儿抢救永不触发 ⇒ 地基永久卡在 0% 无人施工。
+            //     现要求必须【处于 WORKING 状态且目标就是该地基】才算有人在施工。
             bool hasWorker = false;
             for (auto &f : info.farmers) {
-                if (f.WorkObjectSN == b.SN) { hasWorker = true; break; }
+                if (f.NowState == HUMAN_STATE_WORKING && f.WorkObjectSN == b.SN) { hasWorker = true; break; }
                 // 刚下发指令、WorkObjectSN 尚未回写的同类型建造者：也算有人在管
                 auto bt = buildingFarmerType.find(f.SN);
                 if (bt != buildingFarmerType.end() && bt->second == b.Type && f.WorkObjectSN <= 0) {
@@ -1382,18 +1437,35 @@ void UsrAI::manageBuildings() {
                 }
             }
             if (hasWorker) continue;
-            // 同一地基的重派节流（不reset，避免卡住时每帧刷指令）
+
+            // ★ 2026-09-13：关键建筑允许"抽人"抢救。
+            //   旧版只调 findIdleFarmer()，经济满载（所有村民都在采集/施工）时恒返回 null
+            //   ⇒ 地基永久无人施工(卡 0%)，而下游建筑被引擎前置链连锁卡死
+            //     （靶场←兵营 Development.cpp:727、农场←市场 :765、市场←谷仓 :635）。
+            //   这里对关键建筑放宽到 findAnyFarmer()（从木/金/石采集岗抽 1 人），
+            //   并用更长的节流(ORPHAN_STEAL_CD=5 秒)避免把经济抽干。
+            //   ★ 农场也纳入：tryBuild 的农场硬上限把【所有】FARM 建筑都计入名额(含 0% 卡死的)，
+            //     一座卡死农场会永久占用一个农场名额 ⇒ 后半段农场建不出来。
+            bool crit = (b.Type == BUILDING_ARMYCAMP || b.Type == BUILDING_RANGE ||
+                         b.Type == BUILDING_MARKET  || b.Type == BUILDING_GRANARY ||
+                         b.Type == BUILDING_HOME    || b.Type == BUILDING_STOCK ||
+                         b.Type == BUILDING_FARM);
+            tagFarmer* of = findIdleFarmer();
+            bool steal = false;
+            if (!of && crit) { of = findAnyFarmer(); steal = true; }
+            if (!of) continue;
+            // 同一地基的重派节流（不 reset，避免卡住时每帧刷指令）
             auto oit = orphanBuildFrame.find(b.SN);
-            if (oit != orphanBuildFrame.end() && frame - oit->second < ORPHAN_REDISPATCH_CD) continue;
-            // 只调空闲村民，没有就本帧不抢人（优先保证采集/建造主流程）
-            auto f = findIdleFarmer();
-            if (!f) break;
-            buildingFarmerType[f->SN] = b.Type;
-            HumanBuild(f->SN, b.Type, (int)b.BlockDR, (int)b.BlockUR);
+            int cd = steal ? ORPHAN_STEAL_CD : ORPHAN_REDISPATCH_CD;
+            if (oit != orphanBuildFrame.end() && frame - oit->second < cd) continue;
+            buildingFarmerType[of->SN] = b.Type;
+            builderDispatchFrame[of->SN] = frame;   // ★ 硬超时起点
+            HumanBuild(of->SN, b.Type, (int)b.BlockDR, (int)b.BlockUR);
             orphanBuildFrame[b.SN] = frame;
             if (frame % 60 == 0)
-                DebugText(QString("[ORPHAN f=%1] 地基SN=%2 type=%3 percent=%4 补派村民SN=%5")
-                          .arg(frame).arg(b.SN).arg(b.Type).arg(b.Percent).arg(f->SN));
+                DebugText(QString("[ORPHAN f=%1] 地基SN=%2 type=%3 percent=%4 补派村民SN=%5%6")
+                          .arg(frame).arg(b.SN).arg(b.Type).arg(b.Percent).arg(of->SN)
+                          .arg(steal ? " (抽采集岗)" : ""));
             break;   // 每帧最多救 1 个，防止指令刷屏
         }
     }
@@ -1596,6 +1668,28 @@ void UsrAI::manageBuildings() {
                 info.Wood >= BUILD_HOUSE_WOOD) {
                 builtThisFrame = tryBuild(BUILDING_HOME, 2);
             }
+
+            // ★ 2026-09-13（根因 A）：rushMilitary 期间不再整块跳过"经济前置建筑"。
+            //   旧版 rushMilitary=true 时整个 else 分支被跳过 ⇒ 谷仓/市场在整个 postW1 窗口
+            //   零机会，只能等 postW2(9 分钟) 才补；而农场依赖市场(Development.cpp:765)、
+            //   市场依赖谷仓(:635) ⇒ 整条食物经济链被推迟到 9 分钟后才启动。
+            //   这里把「谷仓 → 市场」按最低优先级放行：排在兵营/靶场/房屋之后，
+            //   仅当本帧尚无建造令(builtThisFrame==false)且木材充足时触发，不抢军事资源。
+            //   同时去掉 `Meat >= 100` 前置（与 postW2 市场闸 1835 段口径对齐）——
+            //   铜器期肉常被优先喂军，100 肉门槛会让市场在肉低谷反复跳空。
+            bool canAffordEcon = (info.Meat >= 80 && info.Wood >= 50);
+            if (!builtThisFrame && canAffordEcon &&
+                countBuildingsExisting(BUILDING_MARKET) == 0 && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+                info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
+                builtThisFrame = tryBuild(BUILDING_GRANARY, 3);
+            }
+            if (!builtThisFrame && canAffordEcon &&
+                countBuildingsExisting(BUILDING_MARKET) == 0 &&
+                countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {
+                builtThisFrame = tryBuild(BUILDING_MARKET, 3);
+                if (builtThisFrame)
+                    DebugText(QString("[MARKET f=%1] rushMilitary 期放行市场 wood=%2").arg(frame).arg((int)info.Wood));
+            }
         } else {
             // ★ 铜器前/11分钟后/W2结束后：正常市场→农场
             bool canAffordBuilding = (info.Meat >= 80 && info.Wood >= 50);
@@ -1619,8 +1713,13 @@ void UsrAI::manageBuildings() {
             }
             if (!builtThisFrame && canAffordBuilding &&
                 countBuildingsExisting(BUILDING_MARKET) == 0 &&
-                countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150 && info.Meat >= 100) {  // 造市场（已去掉所有限制条件）
+                countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {  // 造市场
+                // ★ 2026-09-13：去掉 `info.Meat >= 100` 前置（原为"已去掉所有限制条件"却仍留着肉闸）。
+                //   铜器期肉常被优先喂军，100 肉门槛会让市场在肉低谷反复跳空；postW2 市场闸(1835段)
+                //   本就没有肉闸，此处对齐，避免同一建筑两套门槛。
                 builtThisFrame = tryBuild(BUILDING_MARKET, 3);
+                if (builtThisFrame)
+                    DebugText(QString("[MARKET f=%1] postW1 经济期建市场 wood=%2").arg(frame).arg((int)info.Wood));
             }
 
             // ★ 箭塔优先于农场：石头够就造（数量上限 MAX_TOWERS）。
@@ -5669,6 +5768,7 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     if (!placed) return false;
 
     buildingFarmerType[f->SN] = buildingType;
+    builderDispatchFrame[f->SN] = frame;   // ★ 硬超时起点（本次建造令下发帧）
     int buildInsId = HumanBuild(f->SN, buildingType, x, y);
     pendingBuildIns[buildInsId] = {f->SN, buildingType};
     pendingBuildInsFrame[buildInsId] = frame;
@@ -5679,6 +5779,10 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     triedBuildPositions.insert(key);
 
     buildCooldown = 5;   // 5帧冷却（单位碰撞检测已防止重复失败）
+    // ★ 2026-09-13 建造下令观测：记录每次 HumanBuild 的类型/村位/坐标，
+    //   用于对照"地基何时放下 / 何时完工"，定位长期卡住的地基。
+    DebugText(QString("[BUILD-ISSUE f=%1] type=%2 size=%3 村民SN=%4 at=(%5,%6) wood=%7")
+              .arg(frame).arg(buildingType).arg(size).arg(f->SN).arg(x).arg(y).arg((int)info.Wood));
     return true;
 }
 
