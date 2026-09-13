@@ -209,6 +209,9 @@ private:
     std::map<int,int> frameWoodCount; // 本帧每棵树分配人数（单树≤2人，防同帧挤爆+减少过渡期空闲）
     std::map<int,int> lionHunterSN;    // ★ 猎狮任务：单位SN → 目标狮子SN（期间不再重复下令、不被采集模块抢走）
     std::map<int,int> lionHunterExpire; // ★ 猎狮任务：单位SN → 任务保底到期帧（到期或狮死/单位空闲即释放）
+    // ★ 2026-09-13 猎象整队：大象SN → 解禁帧。孤兵救援(召回)后短期拉黑，
+    //   防止"召回→立刻又派人→再召回"的来回送死循环。
+    std::map<int,int> elephantBanUntil;
 
     // ---- 基础辅助函数 ----
     tagFarmer* findIdleFarmer();

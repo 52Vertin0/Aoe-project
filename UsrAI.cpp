@@ -67,6 +67,11 @@ ins UsrIns;
 //     1~3 人在打时优先补位；0 人在打时本帧允许派 1 人开团，但限 ELEPHANT_HUNT_MIN 累计防单挑送命。
 #define ELEPHANT_HUNT_GROUP 5
 #define ELEPHANT_HUNT_MIN   4   // ★ 打大象的最低人数门槛(开团/补位都遵循)
+// ★ 2026-09-13 用户需求强化「狩猎大象必须 4 个人一起狩猎，单个村民狩猎会死」：
+//   旧实现是"逐帧凑人"（0 人在打时本帧先派 1 人开团，其余人随后才到）⇒ 先到者在 1~3 人状态下被打死。
+//   现改为【整队一次性出击】：同一帧下 min 条令 ⇒ 同时出发 ⇒ 同时抵达 ⇒ 同时开打；凑不齐一人不派。
+#define ELEPHANT_RESCUE_MAX_ON 1  // ★ 只有"孤兵/双人"(在打人数≤此值)才强制救援：能补则补，补不齐则召回+拉黑
+#define ELEPHANT_BAN_FRAMES    1500  // ★ 孤兵救援后的拉黑时长：1500 帧 = 60 秒内不再往这头象派人
 #define MAX_TOWERS 2            // 箭塔数量（2026-09-03 用户改需求：只需2座箭塔，多采150石建第2座，其余人力转食物）
 #define MAX_RANGES 3            // 反攻阶段靶场上限(并行产弓线，越多弓兵越快)
 // ★★★ 2026-09-12 改：允许多群瞪羚各建 1 座仓库，1+3=MAX_STOCK=4 座上限。
@@ -2579,7 +2584,6 @@ void UsrAI::assignIdleFarmers() {
 void UsrAI::assignIdleSimple() {
     std::map<int,int> assignedBush;
     std::map<int,int> assignedGazelle;
-    std::map<int,int> assignedElephant;  // ★ 本帧已派往大象的 <elephantSN, 人数>，配合组队围猎
     std::map<int,int> assignedFarm;   // ★ 本帧已派往农场的 <farmSN, workerSN>，防同场重复派工导致>1人
     double BL = (double)BLOCKSIDELENGTH;
     // ★ 伐木工目标动态化（2026-09-01）：缺木(<120)时拉到 10 人抢木，常态 6 人。
@@ -2658,11 +2662,114 @@ void UsrAI::assignIdleSimple() {
         : std::max(MIN_GOLD_WORKERS,
                    (int)((double)foodWorkers * FOOD_GOLD_DEN / FOOD_GOLD_NUM + 0.999));
 
+    // ============================================================
+    // ★★★ 猎象整队（2026-09-13 用户需求：「狩猎大象必须 4 个人一起狩猎，单个村民狩猎会死」）
+    //   引擎事实：大象 45 血 / 攻 10 / 不逃跑 / 掉肉 300；村民 25 血 ⇒ 单人、双人必死。
+    //   旧实现是"逐帧凑人"：0 人在打时本帧先派 1 人开团，其余人随后几帧才到
+    //   ⇒ 先到者在 1~3 人状态下被磨死（实测 run7：1 头象 + 2 个村民死亡）。
+    //   现改为【整队一次性出击】：同一帧下发 MIN 条令 ⇒ 同时出发 ⇒ 同时抵达 ⇒ 同时开打：
+    //     ① on==0：本帧空闲村民 ≥ ELEPHANT_HUNT_MIN 才一次性派 4 人；凑不齐则【一人不派】；
+    //     ② 0<on<MIN（开团后战损）：本帧能补齐到 MIN 就整批补上；
+    //        补不齐且 on ≤ ELEPHANT_RESCUE_MAX_ON ⇒【孤兵必救】召回该村民 + 把大象拉黑，绝不让他独自送死；
+    //     ③ MIN≤on<GROUP：已成团，允许整批补位到 GROUP(5)。
+    //   优先级与主循环严格一致：仅当"附近浆果/瞪羚已满员、吃不下人力"时才开新团。
+    //   出击名额写入 elephantPartyPending，主循环据此跳过这些村民，防止同帧被改派去砍树/农场。
+    // ============================================================
+    std::set<int> elephantPartyPending;   // 本帧已编入猎象队的村民SN
+    {
+        std::vector<int> elePool;         // 本帧真正空闲、可编队的村民（info.farmers 下标）
+        for (size_t i = 0; i < info.farmers.size(); ++i) {
+            auto &g = info.farmers[i];
+            if (g.FarmerSort != FARMERTYPE_FARMER) continue;
+            if (g.Resource > 0) continue;                             // 手上有资源，先送回
+            if (g.NowState != HUMAN_STATE_IDLE) continue;              // 只动真正空闲的
+            if (waveBlockers.count(g.SN) || g.SN == scoutFarmerSN) continue;
+            if (lionHunterSN.count(g.SN)) continue;
+            if (buildingFarmerType.count(g.SN)) continue;
+            elePool.push_back((int)i);
+        }
+        // 附近浆果(≤3人/丛, 30格内) 与 瞪羚(≤2人/只, 50格内) 是否都吃满人力；
+        // 没吃满 ⇒ 人力优先给它们（与主循环 bush→gazelle→elephant 顺序一致），本帧不开新象团。
+        bool bushGazelleFull = true;
+        for (auto &r : info.resources) {
+            if (r.Cnt <= 0) continue;
+            if (r.Type != RESOURCE_BUSH && r.Type != RESOURCE_GAZELLE) continue;
+            double lim = (r.Type == RESOURCE_BUSH) ? 30.0 : (double)GAZELLE_HUNT_RANGE;
+            if (calDistance(tcDR, tcUR, r.DR, r.UR) > lim * BL) continue;
+            int on = 0;
+            for (auto &o : info.farmers) if (o.WorkObjectSN == r.SN) on++;
+            if (on < ((r.Type == RESOURCE_BUSH) ? 3 : 2)) { bushGazelleFull = false; break; }
+        }
+        // ★ 与主循环「木头→黄金→石头→食物」的优先级严格对齐（见下面主循环的派工顺序）：
+        //   只有伐木/采金/采石目标人数都已吃满、且浆果瞪羚也都满员时，空闲村民才会落到"大象"这一档。
+        //   否则本帧不开新团 —— 不得让猎象抢走伐木/采金/采石的人力（严格保持改动前的优先级行为）。
+        bool laborFull = bushGazelleFull
+                      && (woodStop  || woodWorkers  >= woodTarget)
+                      && (goldWorkers >= goldTarget)
+                      && (stoneStop || stoneWorkers >= STONE_WORKERS_LATE);
+        // 按"到该象的距离"由近到远，同一帧一次性派出 need 人（同时下令 ⇒ 同时抵达 ⇒ 同时开打）
+        auto eleDispatch = [&](tagResource* tgt, int need)->int {
+            std::sort(elePool.begin(), elePool.end(), [&](int a, int b) {
+                return calDistance(info.farmers[a].DR, info.farmers[a].UR, tgt->DR, tgt->UR)
+                     < calDistance(info.farmers[b].DR, info.farmers[b].UR, tgt->DR, tgt->UR);
+            });
+            int sent = 0;
+            for (size_t k = 0; k < elePool.size() && sent < need; ++k) {
+                int sn = info.farmers[elePool[k]].SN;
+                HumanAction(sn, tgt->SN);
+                elephantPartyPending.insert(sn);
+                sent++;
+            }
+            if (sent > 0) elePool.erase(elePool.begin(), elePool.begin() + sent);
+            return sent;
+        };
+        for (auto &r : info.resources) {
+            if (elePool.empty()) break;
+            if (r.Type != RESOURCE_ELEPHANT || r.Cnt <= 0) continue;
+            if (calDistance(tcDR, tcUR, r.DR, r.UR) > 30 * BL) continue;
+            auto bit = elephantBanUntil.find(r.SN);
+            if (bit != elephantBanUntil.end() && frame < bit->second) continue;   // 拉黑期内不提这头象
+            int on = 0;
+            for (auto &o : info.farmers) if (o.WorkObjectSN == r.SN) on++;
+            if (on >= ELEPHANT_HUNT_GROUP) continue;                    // 已满员(5) → 不再加人
+            if (on < ELEPHANT_HUNT_MIN) {
+                if (on == 0 && (foodStop || !laborFull)) continue;   // 食物过剩/人力还没被伐木采金采石浆果瞪羚吃满 → 不开新团
+                int need = ELEPHANT_HUNT_MIN - on;
+                if ((int)elePool.size() < need) {
+                    // 本帧凑不齐 4 人 ⇒ 绝不放人过去；若已有 1~2 人在挨打，立刻救回来
+                    if (on > 0 && on <= ELEPHANT_RESCUE_MAX_ON && center) {
+                        std::vector<int> lone;
+                        for (auto &o : info.farmers)
+                            if (o.WorkObjectSN == r.SN) lone.push_back(o.SN);
+                        for (size_t k = 0; k < lone.size(); ++k) HumanAction(lone[k], center->SN);
+                        elephantBanUntil[r.SN] = frame + ELEPHANT_BAN_FRAMES;
+                        DebugText(QString("[ELEPHANT-RESCUE f=%1] 象SN=%2 仅%3人在打(凑不齐%4人)→召回孤兵%5人,拉黑%6帧")
+                                  .arg(frame).arg(r.SN).arg(on).arg(ELEPHANT_HUNT_MIN)
+                                  .arg((int)lone.size()).arg(ELEPHANT_BAN_FRAMES));
+                    }
+                    continue;
+                }
+                int sent = eleDispatch(&r, need);
+                DebugText(QString("[ELEPHANT-PARTY f=%1] 整队出击 象SN=%2 已在打%3人 本帧一次派%4人(同帧出发) 空闲池余%5 meat=%6 pop=%7")
+                          .arg(frame).arg(r.SN).arg(on).arg(sent).arg((int)elePool.size())
+                          .arg((int)info.Meat).arg((int)info.farmers.size()));
+            } else {
+                if (foodStop) continue;                                  // 食物过剩 → 不再补人打肉
+                int need = std::min(ELEPHANT_HUNT_GROUP - on, (int)elePool.size());
+                if (need <= 0) continue;
+                int sent = eleDispatch(&r, need);
+                DebugText(QString("[ELEPHANT-TOPUP f=%1] 已成团补位 象SN=%2 已在打%3人 补%4人 空闲池余%5")
+                          .arg(frame).arg(r.SN).arg(on).arg(sent).arg((int)elePool.size()));
+            }
+        }
+    }
+
     for (auto &f : info.farmers) {
         if (f.FarmerSort != FARMERTYPE_FARMER) continue;
         if (f.Resource > 0) continue;
         if (f.NowState != HUMAN_STATE_IDLE) continue;
         if (waveBlockers.count(f.SN) || f.SN == scoutFarmerSN) continue;
+        if (elephantPartyPending.count(f.SN)) continue;   // ★ 本帧已编入猎象队，禁止同帧改派
         if (lionHunterSN.count(f.SN)) continue;   // ★ 正在猎狮，不要改派去采集
 
         // ★ 木头达停采上限(日常≥150 / WAVE3后≥250)则不再派新伐木工，人力优先留作食物
@@ -2763,45 +2870,9 @@ void UsrAI::assignIdleSimple() {
             continue;
         }
 
-        // ★ 组队猎象（2026-09-03 用户需求, 2026-09-08 加 4 人下限）：大象血45/攻10/不逃跑/掉肉300。
-        //   村民(血25)单挑必死，【必须凑够 ELEPHANT_HUNT_MIN(4) 人】才能开打。
-        //   此处遍历所有大象：
-        //     ① 优先【补位】已有人在打(1~3人)的最近一头，让空闲村民源源不断补到同一头，快速凑齐 4 人；
-        //     ② 0 人在打的大象，本帧允许【开团】派 1 人去打（用 assignedElephant 跟踪开团人数，
-        //        累计 < ELEPHANT_HUNT_MIN 才派；凑齐 4 后停止开团，改由补位逻辑接管）。
-        //   双重机制保证：① 永远不让 1 个村民单挑送死（开团上限 4、补位优先）；② 总能开团（不会 0 人死锁）。
-        tagResource* bestElephant = nullptr;        // 补位候选
-        double bestElephantScore = 1e12;
-        tagResource* openElephant = nullptr;       // 开团候选(0 人在打)
-        double openElephantDist = 1e12;
-        for (auto &r : info.resources) {
-            if (r.Type != RESOURCE_ELEPHANT || r.Cnt <= 0) continue;
-            if (calDistance(tcDR, tcUR, r.DR, r.UR) > 30 * BL) continue;
-            int onElephant = 0;
-            for (auto &other : info.farmers)
-                if (other.WorkObjectSN == r.SN) onElephant++;
-            int totalOnElephant = onElephant + assignedElephant[r.SN];
-            if (totalOnElephant >= ELEPHANT_HUNT_GROUP) continue;  // 已满员(5人)→不补
-            double d = (r.DR - f.DR)*(r.DR - f.DR) + (r.UR - f.UR)*(r.UR - f.UR);
-            if (onElephant >= 1) {
-                // ① 已有人在打(集中火力)→优先补位(加权 -1.5格距离当量)，再按距离近者优先
-                double score = d - (1.5 * BL * 1.5 * BL);
-                if (score < bestElephantScore) { bestElephantScore = score; bestElephant = &r; }
-            } else if (assignedElephant[r.SN] < ELEPHANT_HUNT_MIN) {
-                // ② 0 人在打：开团候选(每头最多累计派 ELEPHANT_HUNT_MIN 个,凑齐 4 后停)
-                if (d < openElephantDist) { openElephantDist = d; openElephant = &r; }
-            }
-        }
-        if (bestElephant) {
-            HumanAction(f.SN, bestElephant->SN);
-            assignedElephant[bestElephant->SN]++;
-            continue;
-        }
-        if (openElephant) {
-            HumanAction(f.SN, openElephant->SN);
-            assignedElephant[openElephant->SN]++;
-            continue;
-        }
+        // ★ 组队猎象已【上移】到本函数主循环之前的"猎象整队"块（2026-09-13）：
+        //   旧实现在这里逐帧凑人（先派 1 人开团、其余随后到）→ 先到者单人被打死；
+        //   现在统一由整队块【同一帧一次性派够 4 人】出击，此处不再单独下发，避免出现 1~3 人的散兵。
 
         // ★ 农场：每座农场"有且仅有一人"。跳过本帧已派的农场，且已有≥1工人(实时)的也跳过，杜绝重复派工
         tagBuilding* farm = nullptr;
@@ -6131,12 +6202,11 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
     }
 
     // ★ 优先级2：狩猎大象（优先于瞪羚！每头200~300食物，波次期间禁止）★
-    //   ★ 2026-09-08 加 4 人下限：1~3 人在打时优先补位；0 人在打时允许开团（限 ELEPHANT_HUNT_MIN 累计）。
+    //   ★ 2026-09-13 用户需求「必须 4 个人一起狩猎」：本函数【只补已成团的队】(已在打 ≥ ELEPHANT_HUNT_MIN 人)，
+    //     【绝不单独开团】——开新团由 assignIdleSimple() 的"猎象整队"块在同一帧一次性派 4 人完成。
     if (!isWarTime) {
-        tagResource* bestEle = nullptr;       // 补位候选
+        tagResource* bestEle = nullptr;
         double bestEDist = 1e12;
-        tagResource* openEle = nullptr;       // 开团候选
-        double openEDist = 1e12;
         for (auto &r : info.resources) {
             if (r.Type != RESOURCE_ELEPHANT || r.Cnt <= 0) continue;
             if (calDistance(tcDR, tcUR, r.DR, r.UR) > 30 * BL) continue;
@@ -6144,20 +6214,14 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
             int realCount = 0;
             for (auto &other : info.farmers)
                 if (other.WorkObjectSN == r.SN) realCount++;
-            int elephantFrameCount = frameFoodTargets.count(r.SN) ? 1 : 0;   // 本帧已派往此象
+            if (realCount < ELEPHANT_HUNT_MIN) continue;      // ★ 未成团(0~3人)一律不派人：单人/双人必死
             if (realCount >= ELEPHANT_HUNT_GROUP) continue;   // 已满员(5)
             double d = calDistance(f->DR, f->UR, r.DR, r.UR);
-            if (realCount >= 1) {
-                if (d < bestEDist) { bestEDist = d; bestEle = &r; }
-            } else if (elephantFrameCount == 0) {
-                // 0 人在打 且 本帧还没人派过去→开团候选(每帧最多 1 个开团,4 帧凑齐 4 人)
-                if (d < openEDist) { openEDist = d; openEle = &r; }
-            }
+            if (d < bestEDist) { bestEDist = d; bestEle = &r; }
         }
-        tagResource* pickEle = bestEle ? bestEle : openEle;
-        if (pickEle) {
-            HumanAction(f->SN, pickEle->SN);
-            frameFoodTargets.insert(pickEle->SN);
+        if (bestEle) {
+            HumanAction(f->SN, bestEle->SN);
+            frameFoodTargets.insert(bestEle->SN);
             return true;
         }
     }
