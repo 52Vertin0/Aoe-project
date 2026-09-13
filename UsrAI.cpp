@@ -35,6 +35,14 @@ ins UsrIns;
 //     农场门槛会永久抬高到 75+120=195 木，导致仓库建好后农场严重滞后（实测会晚很多）。
 #define FARM_WOOD_NEED(gazelleStockBuilt) \
     ((gazelleStockBuilt) ? BUILD_FARM_WOOD : (BUILD_FARM_WOOD + WOOD_RESERVE_FOR_GAZELLE_STOCK))
+// ★★★ 2026-09-13 用户要求「木材加工科技解锁应排在建造农场之前」★★★
+//   农场每座吃掉 75 木；市场·木材加工（120食+75木）给伐木 +50%。
+//   用【未加成】的伐木速度去铺农场＝低效 ⇒ 农场加闸：marketWoodUpgraded 未完成前不建农场。
+//   ★ 实测时序（16 局）：市场 f≈5200~5600 建成 → 木材加工 f≈12440~15395 研究完；
+//     而农场前置【瞪羚仓库】f≈9000 就绪 ⇒ 旧逻辑下农场会抢在科技之前开始铺，正是本次要修的顺序。
+//   ★ 必须配超时兜底：市场未建成 / 长期缺木 / 市场被摧毁 → 科技永不完成 → 农场永久冻结 → 食物崩盘。
+//     兜底取 18000(12min)，比实测最晚研究帧 15395 留 2600 帧余量；触发后本闸自动失效。
+#define FARM_WAIT_WOOD_TECH_FRAME 18000
 // ★ 打猎瞪羚选取范围（2026-09-04 用户要求"扩大一些"）：30→50 格，覆盖远距未建仓库的瞪羚群。
 //   仓库覆盖判断（1547/1705 nearStock）也用此常量同步，避免猎人跑出去 50 格打、仓库仍卡 30 格内。
 #define GAZELLE_HUNT_RANGE  50
@@ -1837,7 +1845,9 @@ void UsrAI::manageBuildings() {
         //     期间猎人空跑 TC↔瞪羚群（仓库未建的窗口期农场抢食物资源没意义）。
         // ★ 农场前置用地图上【任意】一座我方仓库解锁（不限 AI 自建）：地图初始已存在仓库时，
         //   1547 段会算"30格内有库存→tryBuild 跳过" → storageNearGazelleBuilt 永远停在 0 → 农场闸永远卡死。
+        //   ★ 2026-09-13 加闸（用户要求"木材加工科技解锁排在建农场之前"）：见 FARM_WAIT_WOOD_TECH_FRAME 注释。
         if (!builtThisFrame && marketReady && storageNearGazelleBuilt == 1 &&
+                (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME) &&
                 info.Wood >= FARM_WOOD_NEED(storageNearGazelleBuilt == 1) && info.Meat >= 100) {
             int currentFarms = countFarmsForCap();
                 int farmerCount = 0;
@@ -2098,12 +2108,20 @@ void UsrAI::manageBuildings() {
         //     ⇒ 9~11 分钟两者并存，农场抢光木材 → 瞪羚仓库永远建不出、猎人来回空跑。
         //     故补上与 1487 段一致的双重闸：瞪羚仓库已建 + 木材预留
         //     （★ 预留仅仓库【未】建成时生效，仓库已建则恢复原阈值，见 FARM_WOOD_NEED 宏注释）。
-        if (!builtThisFrame && storageNearGazelleBuilt == 1) {
+        //   ★ 2026-09-13 加闸（用户要求"木材加工科技解锁排在建农场之前"）：见 FARM_WAIT_WOOD_TECH_FRAME 注释。
+        bool farmWoodTechOk = (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME);
+        if (!builtThisFrame && storageNearGazelleBuilt == 1 && farmWoodTechOk) {
             int currentFarms = countFarmsForCap();
             if (currentFarms < farmTarget &&
                 info.Wood >= FARM_WOOD_NEED(storageNearGazelleBuilt == 1)) {
                 builtThisFrame = tryBuild(BUILDING_FARM, 3);
             }
+        } else if (!builtThisFrame && !marketWoodUpgraded && frame < FARM_WAIT_WOOD_TECH_FRAME &&
+                   storageNearGazelleBuilt == 1 && frame % 300 == 0) {
+            // 诊断：农场被"等木材加工科技"挡住时的现场（每 300 帧一条）
+            DebugText(QString("[FARM-TECHWAIT f=%1] 农场等木材加工科技 wood=%2 meat=%3 farms=%4/%5 mkt=%6")
+                      .arg(frame).arg((int)info.Wood).arg((int)info.Meat)
+                      .arg(countFarmsForCap()).arg(farmTarget).arg(countBuildings(BUILDING_MARKET)));
         }
     }
 }
