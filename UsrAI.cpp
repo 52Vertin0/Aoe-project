@@ -2696,11 +2696,13 @@ void UsrAI::assignIdleSimple() {
     // ★ 石头停采：14分钟(WAVE3_TIME)后不再采石，或存量≥STONE_CAP_STOP，或【建满 MAX_TOWERS 座箭塔后永久停采】。
     //   塔建满后石头再无用途（箭塔是唯一活的石头消耗：铜器塔升级被 DISABLE_TOWER_UPGRADE 封禁、
     //   投石兵无训练代码、维修未实现）→ 继续采石纯属浪费人力。
-    //   ⚠ 判据必须用 countBuildingsExisting（含在建地基/pending/宽限期），**不能并列 towerCount 成员**：
-    //     towerCount 在 tryBuild 成功当帧即++、塔被摧毁也不回退 → "第2座失败/被打掉"会永久误停采、再也补建不出；
-    //     用实际存在数则天然自愈（塔没了计数回落即自动恢复采石补建）。
+    //   ⚠ 判据须用 countBuildings（仅 Percent==100 的"已建成"），**不能并列 countBuildingsExisting**：
+    //     countBuildingsExisting 含【地基+在建+pending 90帧兜底】，MAX_TOWERS=3 时第2座地基后
+    //     就会叠加到 3（已建1+地基1+pending1）→ towersDone 提前触发 → S=0、St=0 → 第3座永远拿不到150石
+    //     → 第3座建不出。改用 countBuildings 后只算"已建成的塔"，第3座实际建成时才停采。
+    //     ⚠ towerCount 成员也不能用：tryBuild 成功即++、塔被摧毁不回退 → "第2座被打掉"会永久误停采。
     //   stoneStop 同时驱动「派工跳过采石」+「回撤撤走采石工」两个方向，一处改两处生效。
-    const bool towersDone = (countBuildingsExisting(BUILDING_ARROWTOWER) >= MAX_TOWERS);
+    const bool towersDone = (countBuildings(BUILDING_ARROWTOWER) >= MAX_TOWERS);
     const bool stoneStop = (frame >= WAVE3_TIME) || (info.Stone >= STONE_CAP_STOP) || towersDone;
     // ★ 黄金过剩判定（后期实测"黄金堆到 700+、木头食物都不够"）：
     //   ⚠ 不得给反攻期加豁免：反攻期食物才是造兵瓶颈（复合弓40食/方阵60食，食物需求≈黄金2倍），
