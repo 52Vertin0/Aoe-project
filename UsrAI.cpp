@@ -98,7 +98,7 @@ ins UsrIns;
 //   现改为【整队一次性出击】：同一帧下 min 条令 ⇒ 同时出发 ⇒ 同时抵达 ⇒ 同时开打；凑不齐一人不派。
 #define ELEPHANT_RESCUE_MAX_ON 1  // ★ 只有"孤兵/双人"(在打人数≤此值)才强制救援：能补则补，补不齐则召回+拉黑
 #define ELEPHANT_BAN_FRAMES    1500  // ★ 孤兵救援后的拉黑时长：1500 帧 = 60 秒内不再往这头象派人
-#define MAX_TOWERS 2            // 箭塔数量（2026-09-03 用户改需求：只需2座箭塔，多采150石建第2座，其余人力转食物）
+#define MAX_TOWERS 3            // 箭塔数量（2026-09-13 用户改需求：从2座再多建1座=3座；上限抬至3，多采150石建第3座）
 #define MAX_RANGES 3            // 反攻阶段靶场上限(并行产弓线，越多弓兵越快)
 // ★ 2026-09-13 用户需求「士兵攻击箭塔时选择距离自己最近的箭塔为目标」：
 //   此前士兵在反攻期打建筑只有两个来源——① findNearestEnemyBuilding(范围内任意类型最近建筑)、
@@ -267,7 +267,7 @@ ins UsrIns;
 #define LION_TASK_FRAMES 300    // 猎狮任务保底时长(帧)：期间不重复下令、不被采集模块抢走(10秒)
 #define MIN_GOLD_WORKERS 1      // 至少1人挖金！复合弓兵/阔剑兵/方阵兵/投石车/后勤科技真扣黄金
 // ★ 资源停采上限（2026-09-01）：存量达到即停止派/补采该资源，人力转向其他资源
-#define STONE_CAP_STOP 150   // 石头≥150 不再采石（2026-09-03：只需2座箭塔=开局150石建第1座+额外采150石建第2座，故上限150）
+#define STONE_CAP_STOP 300   // 石头≥300 不再采石（2026-09-13 用户需求「再多建一座箭塔」：3座箭塔=开局150石建第1座+额外采300石建第2~3座，故上限300）
 // ★ 2026-09-03 用户需求："木头维持150左右、优先食物"。木头是"够用就行"的资源：
 //   日常水位 150（够房屋30/谷仓120/兵营125/靶场150/马厩150/市场150/农场75），省下人力全投食物。
 //   但后期有高木头门槛：反攻多靶场(WAVE3_TIME后 Wood≥230)、学院(反攻期 Wood≥210)，
@@ -313,7 +313,8 @@ ins UsrIns;
 #define FOOD_GOLD_DEN 3
 // ★ 石头保底采集（仅在不达停采上限时生效）：石头现仅用于
 //   箭塔(150)/投石兵(10)/铜器箭塔升级(50)/采石科技(50)/建筑维修。
-//   2026-09-03 用户改需求"只需再采150石建2座箭塔"：4→1 人，1人采够150石即可，其余人力全转食物。
+//   2026-09-13 用户改需求"再多建一座箭塔"：从2→3座需多采150石=总计300石。1人持续采即可
+//   （边采边建，不是攒齐再建；塔建满后由 STONE_CAP_STOP/towersDone 永久停采）。
 #define STONE_WORKERS_LATE 1    // 后期保底采石人数（只需1人采够150石建第2座箭塔）
 #define FOOD_PAUSE_TECH_TRAIN 60 // 食物<60暂停科技/训练
 #define STUCK_GATHER_TIMEOUT 1500     // 空手且非空闲超时(帧)→判定寻路卡死(60秒)
@@ -5107,9 +5108,14 @@ void UsrAI::manageCounterAttack() {
                 } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
                     // ★ 2026-09-13 用户要求「军队不要攻击敌方武器厂」：不再优先选武器厂(ARMY_IGNORE_SIEGE_WORKSHOP)，
                     //   改打【最近任意敌建筑】（箭塔已在上面 towerSN 分支优先命中）。
-                    int ebSN = ARMY_IGNORE_SIEGE_WORKSHOP
-                             ? findNearestEnemyBuilding(a.DR, a.UR, 12 * BL)
-                             : (siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL));
+                    int ebSN;
+                    if (ARMY_IGNORE_SIEGE_WORKSHOP) {
+                        int nb = findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+                        // ★ 武器厂专留给祭司感化——军队即使最近建筑是武器厂也跳过它(不打武器厂)
+                        ebSN = (nb >= 0 && siege != nullptr && nb == siege->SN) ? -1 : nb;
+                    } else {
+                        ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+                    }
                     if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);
                     else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);
                 } else {
@@ -5143,9 +5149,14 @@ void UsrAI::manageCounterAttack() {
                 } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
                     // ★ 2026-09-13 用户要求「军队不要攻击敌方武器厂」：不再优先选武器厂(ARMY_IGNORE_SIEGE_WORKSHOP)，
                     //   改拆【最近任意敌建筑】（箭塔已在上方 towerSN 分支优先命中）。武器厂留给祭司感化。
-                    int ebSN = ARMY_IGNORE_SIEGE_WORKSHOP
-                             ? findNearestEnemyBuilding(a.DR, a.UR, 12 * BL)
-                             : (siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL));
+                    int ebSN;
+                    if (ARMY_IGNORE_SIEGE_WORKSHOP) {
+                        int nb = findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+                        // ★ 武器厂专留给祭司感化——军队即使最近建筑是武器厂也跳过它(不打武器厂)
+                        ebSN = (nb >= 0 && siege != nullptr && nb == siege->SN) ? -1 : nb;
+                    } else {
+                        ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+                    }
                     // ★ 拆建筑攻击令去重（同 4117）
                     if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);   // 有建筑可打→拆基地
                     else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);  // 无建筑→继续推进
