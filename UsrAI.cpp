@@ -106,6 +106,16 @@ ins UsrIns;
 #define PENDING_BUILD_TIMEOUT 300 // 建造指令结果迟迟不回的超时(帧)：超时则清掉占位，防止永久虚占名额
 #define BUILD_GAP 1              // 建筑间距：候选建筑footprint外扩1格内不得有其他建筑(含敌我)，避免建筑成墙堵死路
 #define MELEE_OVERFLOW_FOOD 150      // 后期/反攻"爆近战"食物溢出阈值：食物≥此值才大规模造近战兵(棍棒/方阵)
+// ★★★ 2026-09-13 方阵兵编制比例（用户要求"放宽方阵兵数量"，选定 3:4 温和档）★★★
+//   上限公式：hop < NUM/DEN × comp + FLOOR
+//     旧版硬编码 (comp+4)/2 ⇒ 长期趋近 1:2（复合弓为主、方阵为辅，o8 局实测 hop 只到 4）
+//     新版 3/4×comp + 2  ⇒ 长期趋近 3:4，方阵兵约 +50%，仍保证"复合弓为主"不被反超
+//   逐点对照(comp→hop上限)：0→2 / 2→3 / 4→5 / 6→6 / 8→8 / 10→9 / 20→17 / 40→32
+//     （comp≤2 时与旧版完全一致：开局零弓兵也先出 2 个方阵顶前排，不断肉盾）
+//   ★ 同时作用于【反攻期】与【后期(lateGame)】两个方阵产线块；黄金预留策略保持严格不变。
+#define HOPLITE_RATIO_NUM   3    // 比例分子：hop 上限 ≈ comp × NUM/DEN
+#define HOPLITE_RATIO_DEN   4    // 比例分母
+#define HOPLITE_RATIO_FLOOR 2    // 保底基数：comp=0 时也先出 2 个方阵挡刀（与旧版一致）
 // ★ 反攻期兵种编制（2026-09-02 用户要求）：反攻**只训练 复合弓兵(主) + 方阵兵(副)**，不训练其他兵种。
 //   原因：旧逻辑里骑兵(70食+80金)与棍棒兵(50食)会抢占复合弓兵(40食+20金)的资源与人口，
 //   骑兵单次吃掉 4 个复合弓兵的黄金 → 复合弓兵判据长期不过 → 退化成普通弓兵/停产。
@@ -3475,8 +3485,9 @@ void UsrAI::manageMilitary() {
                 //    a) 黄金预留：付完方阵后，黄金仍须够**所有空闲靶场各产一个复合弓**
                 //       （方阵 40 金 vs 复合弓 20 金，从根上保证复合弓的黄金不被方阵抢走；
                 //        空闲靶场为 0(全在造兵)时按 1 座计，保证任何时刻都留得住 1 个复合弓的黄金）。
-                //    b) ★ 数量比例闸：现役方阵数 < (复合弓数+4)/2，即长期趋近 2:1。
-                //       +4 缓冲让开局 comp=0 时也先出 2 个方阵顶前排，不会因零弓兵而完全断肉盾。
+                //    b) ★ 数量比例闸：现役方阵数 < HOPLITE_RATIO_NUM/DEN × 复合弓数 + HOPLITE_RATIO_FLOOR。
+                //       ★ 2026-09-13 由硬编码 (comp+4)/2（1:2）放宽为 3:4 温和档（见常量区注释），
+                //         comp≤2 时结果与旧版一致 —— 开局零弓兵也先出 2 个方阵顶前排，不断肉盾。
                 int idleRanges = 0;
                 for (auto &b : info.buildings)
                     if (b.Type == BUILDING_RANGE && b.Project == ACT_NULL) idleRanges++;
@@ -3487,14 +3498,15 @@ void UsrAI::manageMilitary() {
                     else if (a.Sort == AT_HOPLITE)          nHopNow++;
                 }
                 auto colC = findBuilding(BUILDING_COLLAGE);
+                int hopLimitNow = (HOPLITE_RATIO_NUM * nCompNow) / HOPLITE_RATIO_DEN + HOPLITE_RATIO_FLOOR;
                 if (colC && colC->Project == ACT_NULL &&
-                    nHopNow < (nCompNow + 4) / 2 &&
+                    nHopNow < hopLimitNow &&
                     info.Meat >= BUILDING_COLLAGE_CREATE_HOPLITE_FOOD + BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
                     info.Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD + goldKeep) {
                     BuildingAction(colC->SN, BUILDING_COLLAGE_CREATE_HOPLITE);
                     trained = true;
-                    DebugText(QString("[HOPLITE-ATK f=%1] 反攻期产方阵兵 现役hop=%2 comp=%3 meat=%4 gold=%5(kept%6)")
-                              .arg(frame).arg(nHopNow).arg(nCompNow)
+                    DebugText(QString("[HOPLITE-ATK f=%1] 反攻期产方阵兵 现役hop=%2 comp=%3 limit=%4 meat=%5 gold=%6(kept%7)")
+                              .arg(frame).arg(nHopNow).arg(nCompNow).arg(hopLimitNow)
                               .arg((int)info.Meat).arg((int)info.Gold).arg(goldKeep));
                 }
 
@@ -3589,7 +3601,8 @@ void UsrAI::manageMilitary() {
             //     独立块把门槛降到 Meat >= HOPLITE_FOOD+60(=120)，让【14 分钟后】(lateGame) 即投产。
             //   ★ 沿用反攻期同款双保险（保证"复合弓为主、方阵为辅"，不抢复合弓资源）：
             //     a) 黄金预留：付完方阵后，黄金仍须够【所有空闲靶场各产一个复合弓】(方阵40金 vs 复合弓20金)；
-            //     b) 数量比例闸：现役方阵 < (复合弓数+4)/2，长期趋近 2:1，开局零弓兵时也先出 2 个方阵顶前排。
+            //     b) 数量比例闸：现役方阵 < HOPLITE_RATIO_NUM/DEN × 复合弓数 + HOPLITE_RATIO_FLOOR，
+            //        ★ 2026-09-13 由 1:2 放宽为 3:4（见常量区），开局零弓兵时同样先出 2 个方阵顶前排。
             //   ★ 与优先级1(复合弓) 并行：不同建筑(靶场/学院)各产各的，共用"逐栋下发"风格不检查 trained。
             if (lateGame) {
                 int idleRanges2 = 0;
@@ -3602,14 +3615,15 @@ void UsrAI::manageMilitary() {
                     else if (a.Sort == AT_HOPLITE)          nHop2++;
                 }
                 auto colLate = findBuilding(BUILDING_COLLAGE);
+                int hopLimit2 = (HOPLITE_RATIO_NUM * nComp2) / HOPLITE_RATIO_DEN + HOPLITE_RATIO_FLOOR;
                 if (colLate && colLate->Project == ACT_NULL &&
-                    nHop2 < (nComp2 + 4) / 2 &&
+                    nHop2 < hopLimit2 &&
                     info.Meat >= BUILDING_COLLAGE_CREATE_HOPLITE_FOOD + 60 &&
                     info.Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD + goldKeep2) {
                     BuildingAction(colLate->SN, BUILDING_COLLAGE_CREATE_HOPLITE);
                     trained = true;
-                    DebugText(QString("[HOPLITE-LATE f=%1] 后期(lateGame)产方阵兵 现役hop=%2 comp=%3 meat=%4 gold=%5(kept%6)")
-                              .arg(frame).arg(nHop2).arg(nComp2)
+                    DebugText(QString("[HOPLITE-LATE f=%1] 后期(lateGame)产方阵兵 现役hop=%2 comp=%3 limit=%4 meat=%5 gold=%6(kept%7)")
+                              .arg(frame).arg(nHop2).arg(nComp2).arg(hopLimit2)
                               .arg((int)info.Meat).arg((int)info.Gold).arg(goldKeep2));
                 }
             }
