@@ -4848,15 +4848,33 @@ void UsrAI::manageCounterAttack() {
                 phase = kitingPhase[a.SN];
                 int phaseFrame = kitingPhaseFrame[a.SN];
                 int phaseAged = frame - phaseFrame;
-                int kEnemy = findNearestEnemyNoStone(a.DR, a.UR, 20 * BL);
+                // ★★★★★ 2026-09-14「反攻时拉扯必须成功」第 1 步：目标粘滞 ★★★★★
+                //   旧实现每帧都调 findNearestEnemyNoStone 重选"最近敌"⇒ 敌我都在动 ⇒
+                //   目标 SN 每帧跳变（实测 ln1：复合弓 6827 条攻击令落在 22 个目标上）
+                //   ⇒ HumanAction(X,目标) 每帧被重设 ⇒ 引擎瞄准/出手进度永远归零 ⇒ 只走不打。
+                //   新实现：先沿用粘滞目标（仍存活且距 ≤20 格），只有它消失/跑远才重选。
+                int kEnemy = -1;
                 double kEX = 0, kEY = 0; bool kGot = false;
                 bool kMelee = false;
-                if (kEnemy >= 0) {
-                    for (auto &e : info.enemy_armies) if (e.SN == kEnemy) {
+                if (kitingTargetSN.count(a.SN)) {
+                    int cur = kitingTargetSN[a.SN];
+                    for (auto &e : info.enemy_armies) if (e.SN == cur) {
                         kEX = e.DR; kEY = e.UR; kMelee = isMeleeSort(e.Sort); kGot = true; break;
                     }
                     if (!kGot)
-                        for (auto &e : info.enemy_farmers) if (e.SN == kEnemy) { kEX = e.DR; kEY = e.UR; kGot = true; break; }
+                        for (auto &e : info.enemy_farmers) if (e.SN == cur) { kEX = e.DR; kEY = e.UR; kGot = true; break; }
+                    if (kGot && calDistance(a.DR, a.UR, kEX, kEY) > 20 * BL) kGot = false;  // 目标跑远→放手
+                    if (kGot) kEnemy = cur;
+                }
+                if (!kGot) {
+                    kEnemy = findNearestEnemyNoStone(a.DR, a.UR, 20 * BL);
+                    if (kEnemy >= 0) {
+                        for (auto &e : info.enemy_armies) if (e.SN == kEnemy) {
+                            kEX = e.DR; kEY = e.UR; kMelee = isMeleeSort(e.Sort); kGot = true; break;
+                        }
+                        if (!kGot)
+                            for (auto &e : info.enemy_farmers) if (e.SN == kEnemy) { kEX = e.DR; kEY = e.UR; kGot = true; break; }
+                    }
                 }
                 // ★【修 2026-09-08】投石车兜底：findNearestEnemyNoStone 写死了 continue 投石车,
                 //   当射程内"只有投石车"时 kGot=false → dK=1e12 → 全部相位转移不触发 → 走 issueMarch
@@ -4879,6 +4897,7 @@ void UsrAI::manageCounterAttack() {
                         kGot = true;
                     }
                 }
+                if (kEnemy >= 0 && kGot) kitingTargetSN[a.SN] = kEnemy;   // ★ 记录/刷新粘滞目标
                 double dK = kGot ? calDistance(a.DR, a.UR, kEX, kEY) : 1e12;
 
                 // —— 终止触发(无条件、无节流):从 SHOOT 贴身<0.5R 立即切 RETREAT ——
@@ -4888,6 +4907,8 @@ void UsrAI::manageCounterAttack() {
                 if (kGot && dK <= 0.5 * R && phase != 1) {
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
+                    kitingRetStuck[a.SN] = 0;   // ★ 2026-09-14：每开一个新撤退窗口都重试"远离目标"档
+                                                //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
                 // ★【2026-09-12 新增：敌近提前撤】SHOOT 相位内若敌已逼近到 0.9R(=复合弓 6.3 格)内,
                 //   不必等满 30 帧——远程敌可能 0.5 秒就贴到 5 格,30 帧够吃两箭。立即切 RETREAT。
@@ -4898,6 +4919,8 @@ void UsrAI::manageCounterAttack() {
                     // 造成"反复横跳"震荡(每帧切相位,实际伤害 0)。
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
+                    kitingRetStuck[a.SN] = 0;   // ★ 2026-09-14：每开一个新撤退窗口都重试"远离目标"档
+                                                //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
                 bool coolPhase = (frame - phaseFrame >= PHASE_COOLDOWN);
                 // —— 状态转移 ——
@@ -4905,6 +4928,8 @@ void UsrAI::manageCounterAttack() {
                 if (phase == 0 && kGot && phaseAged >= SHOOT_FRAMES) {
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
+                    kitingRetStuck[a.SN] = 0;   // ★ 2026-09-14：每开一个新撤退窗口都重试"远离目标"档
+                                                //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
                 //   RETREAT 阶段退出条件【双路径】(命中用户原话"直到敌出射程外再攻击"):
                 //     ① 优选:敌距 ≥ R+BREATH(=1.5 格,即"敌出射程外")——正常情况
@@ -5039,24 +5064,44 @@ void UsrAI::manageCounterAttack() {
                     continue;   // RETREAT 段不落站桩/推进
                 }
 
-                if (phase == 0 && kGot && dK <= R) {
+                // ★★★★★ 2026-09-14「反攻时拉扯必须成功」第 2 步：接敌带站桩射 ★★★★★
+                //   旧实现只在 dK ≤ R 时才"站桩射"，dK ∈(R, R+2] 这段却被下面的 issueMarch 接管——
+                //   而 issueMarch 的目标是 targetDR/UR(敌基地)，方向朝前 ⇒ 弓兵被一路推过目标贴脸，
+                //   RETREAT 令与推进令互相拉扯 = 净位移≈0（实测 ln7 SN=91382 全程 882 条撤退令、
+                //   只有 27 条 SHOOT 采样、dK 一路 7.9→1.8 被贴脸）。
+                //   新实现：dK ≤ R+2 格即视为"接敌带"⇒ 只发攻击令（引擎自己会走到射程内开火），
+                //   再也不发移动令。配合目标粘滞，才形成「走到射程 → 开火 → 撤 → 再走回 → 开火」的真拉扯。
+                //   ⚠ 攻击令节流 20 帧 + 目标粘滞：同一目标不重发（铁律 14：重发=引擎重置瞄准进度）。
+                if (phase == 0 && kGot && dK <= R + 2.0 * BL) {
                     // —— SHOOT 阶段射程内攻击(撤完保护期 60 帧内不重发,符合用户"攻击目标间隔扩大"指示) ——
                     const int RETREAT_PROTECT_FRAMES = 60;   // ★ 60 帧 ≈2.4 秒(原 30 帧=1.2 秒)——撤完等久一点再开火
+                    const int SHOOT_REISSUE_FRAMES   = 20;   // ★ 2026-09-14 攻击令最小重发间隔(≈0.8 秒)
                     bool retreatProt = lastRetreatFrame.count(a.SN) &&
                                        (frame - lastRetreatFrame[a.SN] < RETREAT_PROTECT_FRAMES);
-                    if (!retreatProt && a.WorkObjectSN != kEnemy) {
-                        HumanAction(a.SN, kEnemy);            // 射程内→攻击,引擎不再逼近
+                    bool atkCool = !kitingAtkFrame.count(a.SN) ||
+                                   (frame - kitingAtkFrame[a.SN] >= SHOOT_REISSUE_FRAMES);
+                    if (!retreatProt && a.WorkObjectSN != kEnemy && atkCool) {
+                        HumanAction(a.SN, kEnemy);            // 接敌带→攻击,引擎自行逼近到射程(不发移动令)
+                        kitingAtkFrame[a.SN] = frame;
                     }
                     if (frame % 100 == 0)
                         DebugText(QString("[KIT-S f=%1] SN=%2 phaseAged=%3 dK=%4 R=%5")
                                   .arg(frame).arg(a.SN).arg(phaseAged).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1));
                     marchCmds++;
-                    continue;   // 射程内→站桩射,不落下方推进
+                    continue;   // 接敌带→站桩/引擎逼近,绝不落下方推进段
                 }
+                // ★ 2026-09-14：RETREAT 相位内【绝不落到推进段】——旧实现 phase==1 但 !canReissue 时会
+                //   掉进 issueMarch（目标=敌基地=朝前）⇒ 撤退途中被"推回去"，与撤退令互相抵消。
+                if (phase == 1) { marchCmds++; continue; }
                 // 射程外 / 无敌 / SHOOT 但脱战:落入下方常规推进段
             }
 
-            if (a.NowState != HUMAN_STATE_IDLE) {
+            // ★ 2026-09-14：投石车豁免此闸。原实现下投石车一旦开火就进 ATTACKING(≠IDLE)，
+            //   整段 standoff/后撤逻辑被 `continue` 跳过 ⇒ 只会站桩挨打、永不拉扯
+            //   （弓兵相位机在闸之前，所以弓兵有拉扯、投石车没有）。豁免后由下方投石车块
+            //   按"射程带 ≤10.5 格站桩 / 贴身 ≤7 格后撤"自行节奏，且全程受 20~30 帧节流保护，
+            //   不会每帧换目标或每帧改方向。
+            if (a.NowState != HUMAN_STATE_IDLE && a.Sort != AT_STONE_THROWER) {
                 if (!stuckNow || !canReissue) continue;   // 正常行进中不打断；卡死且到窗口才重下令
             } else if (stuckNow && !canReissue) {
                 continue;                                  // IDLE但已判卡死→节流，给引擎时间走
@@ -5098,69 +5143,138 @@ void UsrAI::manageCounterAttack() {
                 continue;
             }
 
-            // 投石车：尽量在最大射程处攻击(standoff/kiting)——脆弱攻城单位不贴脸
+            // ================================================================================
+            // ★★★★★ 2026-09-14 投石车 standoff / 拉扯（用户需求：「反攻时投石车一定要能成功拉扯」）★★★★★
+            //   实测铁证（ln1 反攻窗口 f≥33000）：我方投石车 91129 发出 586 条攻击令、落在 13 个目标上，
+            //   引擎日志每 1~3 帧一条「投石车(编号:91129)开始向X攻击」⇒ 瞄准进度每帧被重设、累计零命中；
+            //   同时段撤退令 0 条 ⇒ 既打不中也不后撤。
+            //   三条根因：
+            //     ① 目标每帧重选（findCatapultTarget 取"最近敌"，敌我在动 ⇒ 目标 SN 每帧跳变）——铁律 14；
+            //     ② 撤退触发线 11 格 < 目标选取范围 15 格、又 > 射程 10 格 ⇒ 10~15 格区间"够不到(射程 10)
+            //        也没危险(不撤)" ⇒ 空转；再叠加"≤11 格就撤走"⇒ 永远进不到 10 格射程内，一炮打不出；
+            //     ③ 本块位于 `NowState != IDLE → continue` 闸之后 ⇒ 开火中(ATTACKING)整段被跳过，
+            //        永远不会后撤（弓兵相位机在闸之前才有拉扯，投石车没有）⇒ 站桩挨打。
+            //   修法：①目标粘滞(每 30 帧评估一次，且新目标需近 ≥2 格才换) ②攻击令 20 帧节流
+            //        ③IDLE 闸对投石车豁免(见上方 5099 处) ④射程带 ≤10.5 格站桩输出；
+            //        真被贴身(≤7 格)才后撤、退到 14 格才停(迟滞) = 「打-撤-再打」闭环。
+            // ================================================================================
             if (a.Sort == AT_STONE_THROWER) {
-                const double CAT_RANGE = 10.0 * BL;   // 投石车最大射程(DIS_STONE_THROWER=10格)
-                int atkSN   = findCatapultTarget(a.DR, a.UR, 15 * BL);   // 攻击目标(含敌方投石车+箭塔，火力压制优先)
-                int threatSN = findNearestEnemySN(a.DR, a.UR, CAT_RANGE * 1.6); // 最近威胁(含一切敌,用于判断要不要后撤)
+                const double CAT_RANGE     = 10.0 * BL;              // 投石车最大射程(DIS_STONE_THROWER=10格)
+                const double CAT_FIRE_BAND = CAT_RANGE + 0.5 * BL;   // ≤10.5 格：可站桩输出
+                const double CAT_FLEE_TRIG = CAT_RANGE * 0.7;        // ≤7 格：真被贴身→后撤
+                const double CAT_FLEE_EXIT = CAT_RANGE * 1.4;        // 退到 14 格才停（迟滞）
+                // —— ① 目标粘滞：沿用旧目标，只有"死了/跑出 15 格/新目标近 ≥2 格"才换 ——
+                int atkSN = -1; double atkD = 1e12;
+                if (catTargetSN.count(a.SN)) {
+                    int cur = catTargetSN[a.SN];
+                    double cx = 0, cy = 0; bool alive = false;
+                    for (auto &e : info.enemy_armies) if (e.SN == cur) { cx = e.DR; cy = e.UR; alive = true; break; }
+                    if (!alive) for (auto &e : info.enemy_farmers) if (e.SN == cur) { cx = e.DR; cy = e.UR; alive = true; break; }
+                    if (!alive) for (auto &b : info.enemy_buildings) if (b.SN == cur) {
+                        cx = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
+                        cy = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH; alive = true; break;
+                    }
+                    if (alive) {
+                        atkD = calDistance(a.DR, a.UR, cx, cy);
+                        if (atkD > 15 * BL) alive = false;      // 目标跑出选取范围→放手
+                        else atkSN = cur;
+                    }
+                }
+                bool catReEval = !catTargetFrame.count(a.SN) || (frame - catTargetFrame[a.SN] >= 30);
+                if (catReEval) {
+                    int cand = findCatapultTarget(a.DR, a.UR, 15 * BL);
+                    if (cand >= 0 && cand != atkSN) {
+                        double cx = 0, cy = 0; bool found = false;
+                        for (auto &e : info.enemy_armies) if (e.SN == cand) { cx = e.DR; cy = e.UR; found = true; break; }
+                        if (!found) for (auto &e : info.enemy_farmers) if (e.SN == cand) { cx = e.DR; cy = e.UR; found = true; break; }
+                        if (!found) for (auto &b : info.enemy_buildings) if (b.SN == cand) {
+                            cx = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
+                            cy = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH; found = true; break;
+                        }
+                        double cd = found ? calDistance(a.DR, a.UR, cx, cy) : 1e12;
+                        if (atkSN < 0 || cd + 2.0 * BL < atkD) { atkSN = cand; atkD = cd; }  // 只有明显更近才换目标
+                    }
+                    catTargetFrame[a.SN] = frame;
+                }
+                if (atkSN >= 0) catTargetSN[a.SN] = atkSN;
+                // —— ② 威胁判定 + 后撤（迟滞：进入线 7 格 / 退出线 14 格）——
+                int threatSN = findNearestEnemySN(a.DR, a.UR, CAT_RANGE * 1.6);
                 double ex = 0, ey = 0; bool gotThreat = false;
                 if (threatSN >= 0) {
                     for (auto &e : info.enemy_armies) if (e.SN == threatSN) { ex = e.DR; ey = e.UR; gotThreat = true; break; }
                     if (!gotThreat) for (auto &e : info.enemy_farmers) if (e.SN == threatSN) { ex = e.DR; ey = e.UR; gotThreat = true; break; }
                 }
+                bool catRetreating = (catRetreat.count(a.SN) && catRetreat[a.SN]);
                 if (gotThreat) {
                     double d = calDistance(a.DR, a.UR, ex, ey);
-                    // ★ 2026-09-04 修：阈值改严 d < 0.9*CAT_RANGE(=9格) → d ≤ CAT_RANGE+1(=11格)。
-                    //   原阈值敌已贴到 9 格才后撤——投石车 10 格射程,9 格早挨打。改后"进入射程即撤"。
-                    if (d <= CAT_RANGE + 1.0 * BL) {
-                        // ★ 2026-09-04 三修：加 30 帧节流,防止近战贴脸反复重发 HumanMove→投石车来不及移动。
-                        //   (12 帧≈0.48 秒不够走 1 格；30 帧=1 秒足够完成 1 次 standoff 闭环)
+                    bool wantRetreat = catRetreating ? (d < CAT_FLEE_EXIT) : (d <= CAT_FLEE_TRIG);
+                    if (wantRetreat) {
+                        if (!catRetreating) catRetreat[a.SN] = 1;
+                        // ★ 30 帧节流：12 帧≈0.48 秒不够走 1 格；30 帧=1 秒足够完成 1 次 standoff 闭环。
                         const int CAT_COOLDOWN = 30;
                         bool cool = !marchCmdFrame.count(a.SN) ||
                                     (frame - marchCmdFrame[a.SN] >= CAT_COOLDOWN);
                         if (cool) {
-                            // 敌已进入或贴近射程→后撤到 1.6*CAT_RANGE(远比默认 0.95 远),投石车比弓兵更脆弱
                             double ux = (a.DR - ex) / (d + 1e-6), uy = (a.UR - ey) / (d + 1e-6);
                             double angs[5] = {0.0, 0.6, -0.6, 1.2, -1.2};   // 多方向试退路防被挡/卡树
                             bool moved = false;
                             for (int ai = 0; ai < 5 && !moved; ++ai) {
                                 double ca = std::cos(angs[ai]), sa = std::sin(angs[ai]);
-                                double rx = ex + (ux*ca - uy*sa) * CAT_RANGE * 1.6;
-                                double ry = ey + (uy*ca + ux*sa) * CAT_RANGE * 1.6;
+                                double rx = ex + (ux*ca - uy*sa) * CAT_FLEE_EXIT;   // 落点=威胁点+14 格（真出射程）
+                                double ry = ey + (uy*ca + ux*sa) * CAT_FLEE_EXIT;
                                 rx = max(0.0, min((double)MAP_L * BL, rx));
                                 ry = max(0.0, min((double)MAP_U * BL, ry));
                                 if (isPassableAt(rx, ry)) { HumanMove(a.SN, rx, ry); marchCmdFrame[a.SN] = frame; moved = true; }
                             }
-                            if (!moved && atkSN >= 0 && a.WorkObjectSN != atkSN) HumanAction(a.SN, atkSN);   // 退路全挡→原地攻击(去重防刷屏)
+                            if (!moved && atkSN >= 0 && a.WorkObjectSN != atkSN) HumanAction(a.SN, atkSN);   // 退路全挡→原地攻击
                         }
                         marchCmds++;
-                        continue;
+                        continue;   // 后撤窗口内不做别的
                     }
-                }
-                if (atkSN >= 0) {
-                    // ★ 攻击令去重（2026-09-08）：只在 WorkObjectSN != atkSN 时下发，
-                    //   否则每帧重发同一目标（箭塔/敌投石车不变时 atkSN 恒同）→ 日志刷屏
-                    //   "HumanAction:投石车 ... 设置攻击目标为 箭塔 ..."（用户实测 24:24 每 4 帧刷一次）。
-                    if (a.WorkObjectSN != atkSN) HumanAction(a.SN, atkSN);   // 已在射程内→原地攻击不前进(引擎不再逼近)
-                } else if (ARMY_IGNORE_SIEGE_WORKSHOP ? false
-                                                      : (siege && calDistance(a.DR, a.UR, targetDR, targetUR) <= CAT_RANGE)) {
-                    if (a.WorkObjectSN != siege->SN) HumanAction(a.SN, siege->SN);   // 武器厂进入最大射程→轰炸(不贴近，去重防刷屏)
-                } else if (stuckTry <= 0 && canReissue) {
-                    // ★ 直接引擎全图寻路直奔目标（7e 起 HumanMove 可穿越未探索区，不再逐格摸索）。
-                    //   ⚠ 必须带 canReissue 节流：否则每帧重发 HumanMove 到同一(可能不可达的)目标点
-                    //   → 刷新 marchCmdFrame → canReissue 永假 → stuckTry 永不涨 → 投石车卡死打转
-                    //   (2026-09-03 踩坑)。加节流后，无位移 90 帧 stuckNow 触发 stuckTry 上涨
-                    //   → 落下方 marchWaypoint 扇形脱困。
-                    HumanMove(a.SN, targetDR, targetUR);
-                    marchCmdFrame[a.SN] = frame;
+                    catRetreat[a.SN] = 0;   // 敌已退到 14 格外 → 解除迟滞（与置位条件同源，铁律 9）
                 } else {
-                    double wx = 0, wy = 0;
-                    if (marchWaypoint(a.DR, a.UR, wx, wy, stuckTry, 5.0)) {
-                        HumanMove(a.SN, wx, wy);
+                    catRetreat[a.SN] = 0;
+                }
+                // —— ③ 射程带内(≤10.5 格)：站桩输出。目标粘滞 + 20 帧节流，绝不每帧重发 ——
+                if (atkSN >= 0 && atkD <= CAT_FIRE_BAND) {
+                    bool cool = !catAtkFrame.count(a.SN) || (frame - catAtkFrame[a.SN] >= 20);
+                    if (a.WorkObjectSN != atkSN && cool) {
+                        HumanAction(a.SN, atkSN);
+                        catAtkFrame[a.SN] = frame;
+                    }
+                    marchCmds++;
+                    continue;   // 射程带内→站桩打，不推进（引擎不再逼近）
+                }
+                // —— ④ 目标在射程外：靠攻击令让引擎自行逼近（30 帧节流，防每帧重发打断移动）——
+                if (atkSN >= 0) {
+                    bool cool = !catAtkFrame.count(a.SN) || (frame - catAtkFrame[a.SN] >= 30);
+                    if (a.WorkObjectSN != atkSN && cool) {
+                        HumanAction(a.SN, atkSN);
+                        catAtkFrame[a.SN] = frame;
+                    }
+                    marchCmds++;
+                    continue;
+                }
+                // —— ⑤ 无敌可打：推进 ——
+                //   ⚠【2026-09-14 修】整段必须包在 canReissue 里！旧写法是
+                //     `if (stuckTry<=0 && canReissue) {...} else { marchWaypoint→HumanMove }`，
+                //     那个 else 恰好是"已被节流(canReissue=false)"时进入 ⇒ **每帧都发一条移动令**。
+                //     旧版本块在 IDLE 闸之后，只有 IDLE 时才跑到，问题被掩盖；本轮投石车豁免 IDLE 闸后
+                //     立刻暴露：实测 kt4 投石车 91129 在 f=33003~45000 每帧一条 HumanMove（9555 条刷屏、
+                //     全部指向同一个点）⇒ 又会把 standoff/后撤令顶掉 = 拉扯再次失败。
+                if (canReissue) {
+                    if (stuckTry <= 0) {
+                        HumanMove(a.SN, targetDR, targetUR);
                         marchCmdFrame[a.SN] = frame;
-                    } else if (stuckTry > 0 && frame % 150 == 0) {
-                        DebugText(QString("[MARCH STUCK] catapult SN=%1 try=%2 无可用航点")
-                                  .arg(a.SN).arg(stuckTry));
+                    } else {
+                        double wx = 0, wy = 0;
+                        if (marchWaypoint(a.DR, a.UR, wx, wy, stuckTry, 5.0)) {
+                            HumanMove(a.SN, wx, wy);
+                            marchCmdFrame[a.SN] = frame;
+                        } else if (stuckTry > 0 && frame % 150 == 0) {
+                            DebugText(QString("[MARCH STUCK] catapult SN=%1 try=%2 无可用航点")
+                                      .arg(a.SN).arg(stuckTry));
+                        }
                     }
                 }
                 marchCmds++;

@@ -225,6 +225,20 @@ private:
     //     （实测 run1：20 次撤退令全被丢弃、单位零撤退位移，位移判据却始终清零）。
     std::map<int,int>    kitingRetStuck;     // SN → 连续"发令却没拉开距离"的次数(>0 则跳过第 1 档)
     std::map<int,double> kitingRetPrevDK;    // SN → 上一个撤退窗口的 dK（本窗口据此判断是否拉开）
+    // ★★★★★ 2026-09-14「反攻期拉扯必须成功」（用户需求）★★★★★
+    //   实测铁证（ln1/ln7 反攻窗口 f≥33000）：
+    //     • 复合弓：HumanAction 共 6827 条 / 目标在 22 个敌之间跳变 ⇒ 每帧换目标；
+    //     • 投石车：586 条攻击令 / 13 个目标，引擎每 1~3 帧记一条"开始向X攻击" ⇒ 零命中；
+    //   机制：`HumanAction(X,目标)` 是"设置攻击目标"，每帧重设 ⇒ 引擎施法/瞄准进度永远归零
+    //        （铁律 14 的同一陷阱，祭司感化武器厂那次已踩过）。
+    //   解法＝目标粘滞 + 攻击令节流：沿用旧目标，仅在"目标消失/跑出范围/新目标明显更近"时才切换。
+    std::map<int,int> kitingTargetSN;   // 复合弓 SN → 粘滞目标 SN（反攻拉扯的目标锚）
+    std::map<int,int> kitingAtkFrame;   // 复合弓 SN → 上次下发攻击令的帧号（节流，防每帧重发）
+    // 投石车 standoff/拉扯（独立表，不与弓兵共用，避免下游串味）
+    std::map<int,int> catTargetSN;      // 投石车 SN → 粘滞目标 SN
+    std::map<int,int> catTargetFrame;   // 投石车 SN → 上次重新评估目标的帧号（每 30 帧一次）
+    std::map<int,int> catAtkFrame;      // 投石车 SN → 上次下发攻击令的帧号
+    std::map<int,int> catRetreat;       // 投石车 SN → 撤退迟滞(1=正在后撤，退到 CAT_FLEE_EXIT 才解除)
     std::set<int> huntingGroup; // 正在打猎的村民SN
     std::set<int> frameFoodTargets; // 本帧已分配的食物目标SN（防同帧重复分配）
     std::map<int,int> frameBushCount; // 本帧每丛浆果已分配人数（浆果每丛≤2人，防同帧挤爆单丛）
