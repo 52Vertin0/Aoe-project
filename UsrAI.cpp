@@ -200,6 +200,12 @@ ins UsrIns;
 //   且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 2026-09-13 保祭司：反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
+// ★★★ 2026-09-14 感化武器厂的【施法静默期】(帧) ★★★
+//   铁证对比：成功案例 lc3 只发 1 次感化令 → 340 帧后收编成功；
+//             失败案例 lk6 发 2155 次(每帧重发) → 持续 2150 帧从未收编。
+//   机制：`HumanAction(祭司, 建筑)` 是"设置转换目标"，重发 = 引擎每帧被重设目标打断、
+//         施法进度永远重置。⇒ 发令后必须进入静默期，让引擎把整段施法做完（实测需 ~340~440 帧）。
+#define PRIEST_SIEGE_CONVERT_LOCKOUT 400
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
@@ -5242,11 +5248,19 @@ void UsrAI::manageCounterAttack() {
         if (enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
             double sD0 = calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL);
             if (sD0 <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
-                HumanAction(priestSN, enemySiegeSN);
-                priestCounterCooldown = 60; priestMoveCooldown = 60;
-                if (frame % 50 == 0)
-                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 path=early")
-                              .arg(frame).arg(sD0 / BL, 0, 'f', 1));
+                // ★★ 2026-09-14 二次修（lk6 铁证）：感化令【绝不能每帧重发】★★
+                //   引擎语义：`HumanAction(祭司, 建筑)` = 设置转换目标，重发会重置施法进度。
+                //   对比：成功 lc3 只发 1 次 → 340 帧后收编；失败 lk6 发 2155 次 → 2150 帧未收编。
+                //   修：仅当 ①引擎当前目标非该武器厂(`WorkObjectSN`) ②不在施法静默窗口 才发令；
+                //       发令后进入 PRIEST_SIEGE_CONVERT_LOCKOUT(400 帧) 静默期，让引擎完成施法。
+                if (priest->WorkObjectSN != enemySiegeSN && priestCounterCooldown <= 0) {
+                    HumanAction(priestSN, enemySiegeSN);
+                    priestCounterCooldown = PRIEST_SIEGE_CONVERT_LOCKOUT;
+                    if (frame % 50 == 0)
+                        DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 path=early")
+                                  .arg(frame).arg(sD0 / BL, 0, 'f', 1));
+                }
+                priestMoveCooldown = 60;   // 钉住：施法期禁止后撤/移动打断（移动会清空 WorkObjectSN）
                 return;
             }
         }
