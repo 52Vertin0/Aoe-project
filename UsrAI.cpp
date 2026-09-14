@@ -4555,7 +4555,7 @@ void UsrAI::manageCounterAttack() {
     tagBuilding* siege = nullptr;
     if (enemySiegeSN != -1) siege = findEnemyBuilding(BUILDING_SIEGE);
     if (enemySiegeSN != -1 && !siege) {
-        // 已记录武器厂但敌方列表里没有了：检查是否已被我方转化
+        // 已记录武器厂但当前不在敌方列表里：可能 (1)已被我方转化 (2)暂时失去视野
         bool converted = false;
         for (auto &b : info.buildings)
             if (b.Type == BUILDING_SIEGE) { converted = true; break; }
@@ -4564,7 +4564,15 @@ void UsrAI::manageCounterAttack() {
             DebugText("!!! VICTORY! Siege Workshop converted !!!");
             return;
         }
-        enemySiegeSN = -1;   // 不是转化则重新搜索
+        // ★★★ 2026-09-14 修复「发现武器厂却感化不了」的真正根因 ★★★
+        //   旧代码此处为 `enemySiegeSN = -1;`（重置 SN）。而 findEnemyBuilding 只遍历
+        //   info.enemy_buildings，受 Core.cpp:622【explored||visible】约束 ⇒
+        //   "发现一次 → 军队推进/该区域失去视野 → !siege → 重置 SN → 需再次可见才能重新发现"
+        //   形成循环 ⇒ 祭司拿不到稳定目标 ⇒ 前出分支 `allowConvertSiege && siege` 恒假
+        //   ⇒ 感化 0 次（这正是 ce/lc 批次"发现了却依然平局"的第一层根因）。
+        //   修：失去视野 ≠ 武器厂不存在。方位已由 rallyDR/rallyUR 持久记忆(4538-4539)，
+        //       保持 enemySiegeSN 不变，下游改用【记忆坐标】推进；若它真被拆毁，
+        //       保持 SN 只会让祭司继续奔向该方位（无害，且胜利条件本就需要它存在）。
     }
     // ★ 探到过敌方基地：一旦 info.enemy_buildings 出现过敌方建筑，记录其方位并【持久化】——
     //   即便之后暂时失去视野/该建筑消失，也记得大致方位，反攻时直接奔袭基地而非盲走对角角落。
@@ -4586,6 +4594,11 @@ void UsrAI::manageCounterAttack() {
     if (siege) {
         targetDR = (siege->BlockDR + 1) * BL;
         targetUR = (siege->BlockUR + 1) * BL;
+    } else if (enemySiegeSN != -1) {
+        // ★ 2026-09-14：武器厂已发现但当前不可见（siege==null）→ 用持久记忆的方位推进，
+        //   不再退化成"敌基地方位/对角角落"（那会让祭司根本不往武器厂方向走）。
+        targetDR = (rallyDR + 1.0) * BL;
+        targetUR = (rallyUR + 1.0) * BL;
     } else if (enemyBaseScouted) {
         targetDR = enemyBaseDR; targetUR = enemyBaseUR;   // ★ 探到过基地→直奔已知方位
     } else {
@@ -5320,6 +5333,14 @@ void UsrAI::manageCounterAttack() {
         double pBRg = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
         bool localClear = !nearThreat && !nearTower && (nearAlly >= nearEnemy) && (pBRg > PRIEST_COUNTER_FLEE_HP);
         bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear;
+        // ★ 2026-09-14 诊断（低频/ASCII）：定位"发现武器厂却不去感化"的卡点。
+        //   看点：siegeSN 是否非空 / 记忆坐标 / 距武器厂距离 / localClear 及各条件 / 转换冷却。
+        if (frame % 300 == 0)
+            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 clear=%6 thr=%7 twr=%8 ally=%9 enemy=%10 hp=%11 cd=%12")
+                      .arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
+                      .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
+                      .arg(localClear ? 1 : 0).arg(nearThreat ? 1 : 0).arg(nearTower ? 1 : 0)
+                      .arg(nearAlly).arg(nearEnemy).arg(pBRg, 0, 'f', 2).arg(priest->ConvertCooldown));
         // ★【2026-09-08 二次修】原"扩到 28 格后 priestEnemy>=0 return"——WRONG-LAYER return 又踩坑:
         //   反攻期祭司前出后 28 格内**恒有敌** → return 几乎每帧触发 → 祭司段永远跑不到 → 停在 TC 不动。
         //   改为：只查询,不 return——managePriest 仍独立按"投石车→近战→远程→村民"优先级感化
@@ -5333,29 +5354,39 @@ void UsrAI::manageCounterAttack() {
         //   不感化武器厂(避免被钉在前线送命)；只有已在安全范围才允许【被动】感化武器厂(不主动前出)。
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
         // ★ 2026-09-13 制定 / 2026-09-14 放宽判据：祭司自身无直接威胁且我军不输于敌军时，
-        //   解除 18 格安全距离约束 —— 否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂
-        //   （这就是"发现武器厂却感化不了"的根因；放宽后的判据见上方 localClear 段）。
-        if (allowConvertSiege) priestTooClose = false;
+        //   解除 18 格安全距离约束 —— 否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂。
+        // ★★ 2026-09-14 副作用修复（重要）：必须再加 `enemySiegeSN != -1` 条件 ★★
+        //   旧写法只判 allowConvertSiege —— 而未发现武器厂时 allowConvertSiege 也可能为 true，
+        //   于是 priestTooClose 被置 false ⇒ 下方 `else if (cooldown<=0 || priestTooClose)` 不成立
+        //   ⇒ 祭司【不进后撤分支、停在原地挨打】。实测 lc8(f=36980 死)、lc4(f=36100 死) 均属此型
+        //   （两局都未发现武器厂，祭司移动目标长时间恒定不变 = 停住不撤）。
+        //   修：只有【确实存在武器厂目标】时才解除后撤距离约束，与下方前出分支同源。
+        if (allowConvertSiege && enemySiegeSN != -1) priestTooClose = false;
 
         // ★★★ 2026-09-13 用户需求：祭司前出感化敌方武器厂 ★★★
         //   优先级高于"后撤保命"（allowConvertSiege 已保证祭司自身无直接威胁，前出不会送命）。
-        if (allowConvertSiege && siege && priest->ConvertCooldown <= 0) {
-            double dSiege = calDistance(priest->DR, priest->UR, targetDR, targetUR);
+        // ★ 2026-09-14：目标改用【持久记忆】的武器厂 SN + 坐标(rallyDR/rallyUR)，
+        //   不再依赖 siege 指针 —— 后者受实时可见性约束，一旦失去视野即失效（见 4557 段修复）。
+        const double sMemDR = (rallyDR + 1.0) * BL;
+        const double sMemUR = (rallyUR + 1.0) * BL;
+        if (allowConvertSiege && enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
+            double dSiege = calDistance(priest->DR, priest->UR, sMemDR, sMemUR);
             if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
-                // 已在感化射程内 → 直接感化武器厂
-                HumanAction(priestSN, siege->SN);
+                // 已在感化射程内 → 直接感化武器厂（目标用【记忆 SN】，无需当前可见；
+                //   若改回 siege->SN 会在失去视野(siege==null)时空指针崩溃）
+                HumanAction(priestSN, enemySiegeSN);
                 priestCounterCooldown = 60; priestMoveCooldown = 60;
                 if (frame % 50 == 0)
                     DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 ally=%3 enemy=%4 towers=%5")
                               .arg(frame).arg(dSiege / BL, 0, 'f', 1).arg(nearAlly).arg(nearEnemy).arg(enemyTowers));
             } else if (priestCounterCooldown <= 0) {
-                // 在射程外 → 主动朝武器厂推进（清场状态，不怕前出）
-                double ux2 = (targetDR - priest->DR), uy2 = (targetUR - priest->UR);
+                // 在射程外 → 主动朝武器厂【记忆坐标】推进
+                double ux2 = (sMemDR - priest->DR), uy2 = (sMemUR - priest->UR);
                 double ul2 = std::sqrt(ux2 * ux2 + uy2 * uy2) + 1e-6;
                 ux2 /= ul2; uy2 /= ul2;
                 double stopD = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;   // 停在感化射程内 1 格处
-                double tx = targetDR - ux2 * stopD;
-                double ty = targetUR - uy2 * stopD;
+                double tx = sMemDR - ux2 * stopD;
+                double ty = sMemUR - uy2 * stopD;
                 tx = max(0.0, min((double)MAP_L * BL, tx));
                 ty = max(0.0, min((double)MAP_U * BL, ty));
                 if (isPassableAt(tx, ty)) {
