@@ -44,7 +44,11 @@ ins UsrIns;
 //     而 AoE3 农场原地生产、食物自动入库，村民从 TC 出发 ⇒ 真代价是 TC→农场通勤距离。
 //     ⇒ 评分改为「到 TC 的距离」，远端锚点用三角不等式下界整段剪掉（不再被误选）。
 #define FARM_ANCHOR_R_MIN 4      // 锚点外的最近可行环（3x3 锚点 + 隔 1 格 + 3x3 农场）
-#define FARM_ANCHOR_R_MAX 12     // 单锚点搜索半径上限；超出即认为不划算，交给 tryBuild 的 findBuildSite 兜底
+#define FARM_ANCHOR_R_MAX 18     // 单锚点搜索半径上限；超出即认为不划算，交给 tryBuild 的 findBuildSite 兜底
+//   ★ 2026-09-15 由 12 上调到 18：R_MAX=12 时，一旦 TC 环 12 格内被建筑/资源/相邻约束挤满，
+//     就只剩 findBuildSite 兜底；而兜底已带上 avoidFarmAdjacent（守"农场隔 1 格"），可能直接失败。
+//     实测 fm3 因此只建出 6 座农场（f=24877 之后连续 13500 帧无任何农场令）。
+//     放大半径只增加"内圈确实全满时"的候选，不影响紧凑度 —— 评分按"到 TC 距离"，内圈永远优先命中。
 // ★ 建农场时为【瞪羚中心仓库】预留的木头（2026-09-06 用户要求「建造瞪羚的仓库前先不要建农场，预留120木头」）。
 //   判据用 info.Wood >= BUILD_FARM_WOOD + WOOD_RESERVE_FOR_GAZELLE_STOCK，
 //   即"造完农场后仍留得住 120 木"，保证瞪羚仓库(BUILD_STOCK_WOOD)永远有料可建。
