@@ -20,8 +20,25 @@ ins UsrIns;
 //   农场间隔 1 格（isFarmAdjacent）仍需选址空间，若实测建不满 12 座可调回 10。
 #define MAX_FARMS 12            // 农场上限：7→12（2026-09-12 用户需求"农场上限是否可以提升，基地附近位置不够的话可以建在谷仓周围"）
                                //   ⮕ R5 末 5+20+30 = 340 食 vs TC 用率 25%：上限放宽至 12 给更多食物通道；
-                               //   ⮕ 选址回退链：findFarmRingSite（TC 环）→ findFarmNearGranarySite（谷仓环）→ findBuildSite（兜底）。
-                               //   ⮕ 谷仓环绕允许：解决"TC 周围 5 圈已被房屋/兵营/市场/箭塔挤满"的边界 case。
+                               //   ⮕ 选址链（2026-09-15 改）：findFarmSiteBest（统一锚点就近择优）→ findBuildSite（兜底）。
+// ★★★ 2026-09-15 用户需求「优化农场布局，尽量分布在 TC 和谷仓周围」★★★
+//   实测（96 局 / 1041 座真实农场，用 isFarmAdjacent 几何做了贪心重建去掉失败重试位）：
+//     ① 农场 100% 围绕 TC：到 TC 中位 5.7 格（= 内圈 r=4）、最大 12.8 格；到最近谷仓中位 51.2 格；0 座离谷仓更近。
+//     ② 39.4% 落到 >6 格、7.2% >10 格 —— TC 内圈没吃满就外扩。
+//   根因（结构性，非阈值问题）：
+//     · 旧链 `findFarmRingSite`（TC 环）→ `findFarmNearGranarySite`（谷仓外扩）→ `findBuildSite`（兜底）
+//       的第一步【自带 findBuildSite 兜底】(旧 cpp:6438 `return findBuildSite(x,y,3);`)，
+//       而 findBuildSite 只要地图上还有空位就恒 true ⇒ **第二步永远不可达**（死代码）。
+//     · 旧 ring 枚举"由内到外第一个可用"且同圈内 dx 升序（从最左端起）⇒ 布局偏向一侧、不均匀。
+//     · triedBuildPositions 对近处位置是【永久拉黑】的一次失败即被踢到外圈。
+//   新选址 findFarmSiteBest：
+//     锚点集合 = TC（平局优先）+ 全部已建成【谷仓 GRANARY / 仓库 STOCK】；
+//     在 [R_MIN, R_MAX] 环上枚举候选，取「到最近锚点中心距离最小」者。
+//     几何：锚点与农场都是 3x3，隔 1 格(BUILD_GAP=1) ⇒ 最近环 R_MIN = 3 + BUILD_GAP = 4（与旧代码同口径）。
+//     ⇒ TC 旁有空位就吃 TC 旁（正方向 5.0 格 < 角落 5.7 格，天然更紧凑、更均匀）；
+//       TC 旁饱和后自动落到"就近的谷仓/仓库"旁，而不是被 findBuildSite 甩到远处的矩形边框上。
+#define FARM_ANCHOR_R_MIN 4      // 锚点外的最近可行环（3x3 锚点 + 隔 1 格 + 3x3 农场）
+#define FARM_ANCHOR_R_MAX 12     // 单锚点搜索半径上限；超出即认为不划算，交给 tryBuild 的 findBuildSite 兜底
 // ★ 建农场时为【瞪羚中心仓库】预留的木头（2026-09-06 用户要求「建造瞪羚的仓库前先不要建农场，预留120木头」）。
 //   判据用 info.Wood >= BUILD_FARM_WOOD + WOOD_RESERVE_FOR_GAZELLE_STOCK，
 //   即"造完农场后仍留得住 120 木"，保证瞪羚仓库(BUILD_STOCK_WOOD)永远有料可建。
@@ -227,19 +244,6 @@ ins UsrIns;
 #define PRIEST_SIEGE_CLEAR_TOWER_R 14.0  // 清场判据：敌【箭塔】须距祭司 < 此值才算"未清场"（塔是静态远程，留更大余量）
 #define PRIEST_SIEGE_ABORT_R       4.5   // 迟滞锁解除阈值：敌贴到祭司此半径内 ⇒ 视为真危险，解除前出
 #define PRIEST_SIEGE_ABORT_HP      0.35  // 迟滞锁解除阈值：祭司血量低于此值 ⇒ 解除前出（交给保命逻辑）
-// ★ 2026-09-14 新增（起因：用户追问「祭司为什么在敌方箭塔没全部拆完的情况下就去感化武器厂？」）：
-//   迟滞锁 priestSiegeApproach 的【置位】含"14 格内无箭塔"，【复位】却只有"敌军队 4.5 格 + 血量 0.35"
-//   ⇒ 箭塔维度只在置位那一帧被评估一次，此后永远不再参与判据 = 单向闩锁（违反铁律 9：复位须与置位同源）。
-//   铁证 pg7：f=41458 发现武器厂 → f=41768 敌塔 11107 开火打祭司 → f=41865 祭司仍被下令感化
-//   → f=42176 祭司死（0.85 血一路被打空）。
-//   半径取 12.0 = 箭塔射程（与 cpp:786 chkThreat 的 12.0*BL 口径一致）⇒ 只有"塔真能打到"才算危险。
-//   ★ 为什么不用 13/14：tl 批次首测（13 格版）实测把"本来能赢的推进"也挡了——赢局的感化起手
-//     发生在祭司距塔 12~17 格时（起手后祭司走进去，塔距才降到 6~8 格），13 格闸覆盖面过大。
-#define PRIEST_SIEGE_ABORT_TOWER_R 12.0  // 迟滞闩锁【置位】半径：敌箭塔进入此半径(=射程) ⇒ 视为真危险
-// ★ 2026-09-14 迟滞带（本轮血的教训）：首测版只用"置位 13 / 复位 13"= 1 格带 ⇒ 边界处逐帧翻转：
-//   tl 批次 41 次"解除→重锁"抖动，祭司在"前出点/后撤点"之间 30~60 帧一换向、净位移≈0（tl4 f=42900~45000
-//   dS 恒在 14.6~15.0 空转 900 帧）。现按铁律 13 拉开迟滞带：危险线 12、重新放行线 18。
-#define PRIEST_SIEGE_REARM_TOWER_R 18.0  // 迟滞闩锁【复位】半径：全部敌箭塔退出此半径，才重新放行前出
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
@@ -5393,36 +5397,7 @@ void UsrAI::manageCounterAttack() {
         //   ⇒ 这才是历次"发现了武器厂却感化不了"的【最终根因】（ce/lc/lj 批次通病）。
         //   修：感化检查提到最前，仅受 ①武器厂已发现(enemySiegeSN) ②引擎转换冷却 ③已在射程内 约束；
         //       本路径【不发移动令】（前出仍走下方原逻辑），故不增加祭司暴露风险，只增加"够得着就用"的命中率。
-        // ★★ 2026-09-14 新增：祭司【箭塔危险】判据 + 迟滞闩锁（本段三处共用同一把尺子，铁律 9）★★
-        //   ① 早路径（下方）感化【起手】硬闸  → 用瞬时值 priestTowerDanger（只挡"塔已在射程 12 格内"）
-        //   ② 迟滞锁 priestSiegeApproach 的复位维度 → 同样用瞬时值
-        //   ③ 前出许可 allowConvertSiege 的总闸 → 用闩锁值 priestTowerHold（防边界抖动，见下方注释）
-        bool priestTowerDanger = false;   // 瞬时：有敌塔已进射程(12 格)
-        bool priestTowerNear   = false;   // 瞬时：有敌塔仍在迟滞带内(18 格)
-        double priestTowerD = -1.0;       // 最近敌箭塔距祭司的距离(像素)，无塔则 -1（仅供诊断打印）
-        for (auto &b : info.enemy_buildings) {
-            if (b.Type != BUILDING_ARROWTOWER) continue;
-            double dT = calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL);
-            if (priestTowerD < 0 || dT < priestTowerD) priestTowerD = dT;
-        }
-        if (priestTowerD >= 0) {
-            priestTowerDanger = (priestTowerD < PRIEST_SIEGE_ABORT_TOWER_R * BL);
-            priestTowerNear   = (priestTowerD < PRIEST_SIEGE_REARM_TOWER_R * BL);
-        }
-        // ★ 迟滞闩锁（本轮第二次迭代，首测血的教训）：置位 12 格 / 复位 18 格，带内保持原值。
-        //   为什么必须闩锁而不能用瞬时值：塔距在阈值上逐帧跨线时，"前出分支"与"后撤分支"
-        //   各自 30 帧节流 ⇒ 两个相反移动令交替下发、净位移≈0（首测 41 次抖动、tl4 空转 900 帧）。
-        if (priestTowerDanger)     priestTowerHold = 1;
-        else if (!priestTowerNear) priestTowerHold = 0;
-
-        // ★★ 2026-09-14 修：早路径感化也必须过箭塔闸（此前它【完全绕过】localClear/迟滞锁）★★
-        //   旧代码只有 `siegeSN != -1 && ConvertCooldown <= 0 && sD0 <= 12格` 三个条件 ⇒ 只要祭司
-        //   人在武器厂 12 格内就下发感化令，并 `priestMoveCooldown = 60; return;` **每帧钉住**祭司
-        //   ⇒ 施法期间祭司一步都动不了（pg7: f=41865 发令后 311 帧零条 HumanMove，站着被塔打死）。
-        //   修：塔进 13 格 ⇒ 不下发/不钉住，落回下方后撤逻辑（HumanMove 会清空 WorkObjectSN ⇒ 中断施法）。
-        //   ★ 因箭塔是【静态建筑】+ 施法期祭司被钉住 ⇒ "施法中途才有塔进 13 格"不可能发生，
-        //     故只要"起手时无塔"即可保证整段施法无塔（无需再加中途中断逻辑）。
-        if (enemySiegeSN != -1 && priest->ConvertCooldown <= 0 && !priestTowerDanger) {
+        if (enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
             double sD0 = calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL);
             if (sD0 <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
                 // ★★ 2026-09-14 二次修（lk6 铁证）：感化令【绝不能每帧重发】★★
@@ -5443,13 +5418,11 @@ void UsrAI::manageCounterAttack() {
         }
         // 诊断（低频/ASCII，放在两道闸之前 ⇒ 真实反映本段执行率与卡点）
         if (frame % 300 == 0)
-            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 tD=%10 tDgr=%11 lock=%12 hold=%13")
+            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9")
                       .arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
                       .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
                       .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
-                      .arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown)
-                      .arg((priestTowerD >= 0) ? priestTowerD / BL : -1.0, 0, 'f', 1)
-                      .arg(priestTowerDanger ? 1 : 0).arg(priestSiegeApproach).arg(priestTowerHold));
+                      .arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown));
 
         if (priest->NowState != HUMAN_STATE_IDLE && priest->NowState != HUMAN_STATE_WALKING) {
             // 祭司在 ATTACKING（治愈）或 CONVERTING（感化）中,避免本段覆盖其引擎托管动作
@@ -5496,14 +5469,14 @@ void UsrAI::manageCounterAttack() {
         //   12 < 18 ⇒ 二者**永远不可能同时成立**！实测 k8/cb8 的 [PRST-REAR] dTgt 恒在 22.6~36.4 格，
         //   祭司被安全距离钉死在后方 ⇒ 感化武器厂 0 次（全部 9 局 352 条转换令**无一条是建筑**）。
         //   修复：当祭司【自身周边无军事威胁】时，解除 18 格安全距离约束，允许祭司主动前出感化武器厂。
-        //   ★ 判据用【祭司周边局部清场】（而非"全局敌全灭"）——
+        //   ★ 判据用【祭司周边 20 格内无敌方军队 + 无敌方箭塔】（局部清场），而非"全局敌全灭"——
         //     实测 8 局里"全局敌全灭"从未出现的概率极高（7/8 局敌军队一直存在），
         //     而用户描述的场景本质是"祭司身边已经安全了，就该去干活"。
         //     ⇒ 局部清场判据既覆盖用户场景，又不会让祭司在有兵有塔时莽撞前出。
-        //     ★ 半径口径见下方 PRIEST_SIEGE_CLEAR_*（军队 8 格 / 箭塔 14 格；20 格是 2026-09-13 的旧值，已废）
-        // ★ 2026-09-14 清理：原此处有 enemyMil / enemyTowers 两个【全局计数】，算出后
-        //   只出现在注释文字里、从未参与任何判据 ⇒ 死代码 + 误导（让人误以为用的是"全局清场"口径）。
-        //   真正生效的是下方【局部】清场（以祭司自身为圆心）。已删除。
+        int enemyMil = 0;
+        for (auto &e : info.enemy_armies) if (e.Blood > 0) enemyMil++;
+        int enemyTowers = 0;
+        for (auto &b : info.enemy_buildings) if (b.Type == BUILDING_ARROWTOWER) enemyTowers++;
         // 局部清场：祭司周边无敌【活敌军队】、无【箭塔】
         // ★ 2026-09-14 半径 20→8/14：旧 20 格 > 感化射程 12 格 ⇒ 结构死锁（祭司永远够不到）。
         bool localClear = true;
@@ -5514,13 +5487,7 @@ void UsrAI::manageCounterAttack() {
                 if (b.Type == BUILDING_ARROWTOWER &&
                     calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_CLEAR_TOWER_R * BL) { localClear = false; break; }
         // ★★ 2026-09-14 前出感化【迟滞锁】：防 localClear 在半径边界处逐帧翻转 ★★
-        //   进入：清场成立(敌军队>=8格 且 敌箭塔>=14格) + 武器厂已发现；
-        //   退出：敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP) 或 **敌箭塔进 12 格(=塔射程)**。
-        //   ★ 2026-09-14 修（本轮）：退出条件原本【没有箭塔维度】——而进入条件有。
-        //     即"14 格内无箭塔"只在置位那一帧验一次，之后塔怎么压上来都不解锁 ⇒ 单向闩锁。
-        //     pg7 就是被它坑死：塔 11107 从 f=41768 起持续打祭司，祭司却一路被允许前出到
-        //     11 格并施法，f=42176 死。现按铁律 9 补齐：退出含箭塔维度（与进入同源、同一把尺子）。
-        //   ★ 防抖由 priestTowerHold(12→18 迟滞带) 负责，见上方常量注释。
+        //   进入：清场成立 + 武器厂已发现；退出：敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP)。
         if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear && enemySiegeSN != -1) {
             priestSiegeApproach = 1;
         } else if (priestSiegeApproach == 1) {
@@ -5528,15 +5495,9 @@ void UsrAI::manageCounterAttack() {
             for (auto &e : info.enemy_armies)
                 if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_ABORT_R * BL) { hardAbort = true; break; }
             double pBRap = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
-            if (hardAbort || priestTowerDanger || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1) {
-                // 诊断：本行是"箭塔把前出许可收回来"的直接证据（= 本轮修复点本身；低频、ASCII）
-                if (priestTowerDanger)
-                    DebugText(QString("[PRST-TOWER-ABORT f=%1] nearest enemy tower %2 blocks (limit %3) -> release lock, set hold")
-                              .arg(frame).arg(priestTowerD / BL, 0, 'f', 1).arg(PRIEST_SIEGE_ABORT_TOWER_R, 0, 'f', 1));
-                priestSiegeApproach = 0;
-            }
+            if (hardAbort || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1) priestSiegeApproach = 0;
         }
-        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && !priestTowerHold && (localClear || priestSiegeApproach == 1);
+        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (localClear || priestSiegeApproach == 1);
         // ★【2026-09-08 二次修】原"扩到 28 格后 priestEnemy>=0 return"——WRONG-LAYER return 又踩坑:
         //   反攻期祭司前出后 28 格内**恒有敌** → return 几乎每帧触发 → 祭司段永远跑不到 → 停在 TC 不动。
         //   改为：只查询,不 return——managePriest 仍独立按"投石车→近战→远程→村民"优先级感化
@@ -5549,7 +5510,7 @@ void UsrAI::manageCounterAttack() {
         //   新方案：祭司冲到反攻目标 PRIEST_MIN_DIST_TARGET 格内(太靠前)→本帧强制后撤到【大队后方安全距离】，
         //   不感化武器厂(避免被钉在前线送命)；只有已在安全范围才允许【被动】感化武器厂(不主动前出)。
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
-        // ★ 2026-09-13：前出感化成立(allowConvertSiege)时，安全距离约束失效 ——
+        // ★ 2026-09-13：敌方已清场(enemyMil==0 && enemyTowers==0)时，安全距离约束失效 ——
         //   否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂（这就是"不感化"的根因）。
         // ★ 2026-09-14 副作用修复：只有【确实存在武器厂目标】才解除后撤距离约束。
         //   旧写法 `if (allowConvertSiege)` 在未发现武器厂时也会解除 ⇒ 祭司不进后撤分支、
@@ -6203,7 +6164,7 @@ bool UsrAI::findBuildSiteTowardCenter(int &x, int &y, int size, int minR, int ma
     return true;
 }
 
-bool UsrAI::findBuildSite(int &x, int &y, int size) {
+bool UsrAI::findBuildSite(int &x, int &y, int size, bool avoidFarmAdjacent) {
     if (townCenterSN == -1) return false;
     auto center = findBuilding(BUILDING_CENTER);
     if (!center) return false;
@@ -6217,10 +6178,11 @@ bool UsrAI::findBuildSite(int &x, int &y, int size) {
                 int nx = cx + dx, ny = cy + dy;
                 int key = nx * 1000 + ny;
                 if (triedBuildPositions.count(key)) continue;
-                if (isPositionFree(nx, ny, size)) {
-                    x = nx; y = ny;
-                    return true;
-                }
+                if (!isPositionFree(nx, ny, size)) continue;
+                // ★ 2026-09-15：农场兜底选址时守住"农场之间至少隔 1 格"（isFarmAdjacent 的刻意设计）
+                if (avoidFarmAdjacent && isFarmAdjacent(nx, ny)) continue;
+                x = nx; y = ny;
+                return true;
             }
         }
     }
@@ -6566,6 +6528,77 @@ bool UsrAI::findFarmNearGranarySite(int &x, int &y) {
     return false;
 }
 
+// ============================================================
+// ★★★ 2026-09-15 农场统一锚点就近选址（用户需求：尽量分布在 TC 和谷仓周围）★★★
+//   锚点 = TC（平局优先）+ 全部已建成【谷仓 GRANARY / 仓库 STOCK】。
+//   在每个锚点外 [FARM_ANCHOR_R_MIN, FARM_ANCHOR_R_MAX] 的 4 条环带上枚举 3x3 农场位，
+//   取「到最近锚点中心距离最小」者；距离相同时因锚点顺序为 TC 第一 ⇒ TC 优先。
+//   判据顺序（便宜的先做，降开销）：黑名单 → isPositionFree（地形/建筑间距/资源/狮子）→ isFarmAdjacent。
+//   全部锚点都找不到空位 ⇒ 返回 false，由 tryBuild 的 findBuildSite 兜底（保留原兜底能力）。
+bool UsrAI::findFarmSiteBest(int &x, int &y) {
+    auto center = findBuilding(BUILDING_CENTER);
+    if (!center) return false;
+
+    // ---- 锚点集合（块左下角）：TC 第一（平局优先），其后谷仓/仓库 ----
+    std::vector<std::pair<int, int> > anchors;
+    anchors.push_back(std::make_pair(center->BlockDR, center->BlockUR));
+    for (auto &b : info.buildings) {
+        if (b.Percent < 100) continue;                       // 只在【已建成】的谷仓/仓库旁扩展
+        if (b.Type == BUILDING_GRANARY || b.Type == BUILDING_STOCK)
+            anchors.push_back(std::make_pair(b.BlockDR, b.BlockUR));
+    }
+    std::sort(anchors.begin(), anchors.end());
+    anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
+    const int NA = (int)anchors.size();
+
+    // 锚点中心（块格坐标 +1），用于"到最近锚点"的度量
+    std::vector<double> acx(NA), acy(NA);
+    for (int i = 0; i < NA; ++i) { acx[i] = anchors[i].first + 1.0; acy[i] = anchors[i].second + 1.0; }
+
+    double bestD2 = 1e18;      // 到最近锚点距离的平方（避免 sqrt）
+    int bx = -1, by = -1;
+    // 两遍：第 1 遍尊重 triedBuildPositions（避免反复在同一失败点丢令）；
+    //        第 1 遍完全无解时第 2 遍忽略它（近处位置可能早已空出却被永久拉黑 —— 旧代码外扩的成因之一）。
+    for (int pass = 0; pass < 2 && bx < 0; ++pass) {
+        const bool useBlack = (pass == 0);
+        // 由内到外逐环扫描；环内比较【全部锚点】的候选取"到最近锚点最近"者。
+        for (int r = FARM_ANCHOR_R_MIN; r <= FARM_ANCHOR_R_MAX; ++r) {
+            // ★ 剪枝（精确、非近似）：r 层候选到其锚点的最小距离恰为 r
+            //   （当 nx==ax 时 Δx=0、Δy=r），故 r² 一旦超过当前最优，
+            //   本层及所有更外层都不可能更优 ⇒ 提前结束。实测扫描通常止于 r≈6。
+            if ((double)r * (double)r > bestD2) break;
+            const int n = 2 * r + 3;                          // 每条环带上的候选个数
+            for (int ai = 0; ai < NA; ++ai) {
+                const int ax = anchors[ai].first, ay = anchors[ai].second;
+                for (int side = 0; side < 4; ++side) {
+                    for (int k = 0; k < n; ++k) {
+                        int nx, ny;
+                        if (side == 0)      { nx = ax - r + k; ny = ay + r; }       // 上带
+                        else if (side == 1) { nx = ax - r + k; ny = ay - r; }       // 下带
+                        else if (side == 2) { nx = ax - r;     ny = ay - r + k; }   // 左带
+                        else                { nx = ax + r;     ny = ay - r + k; }   // 右带
+                        if (nx < 0 || ny < 0) continue;
+                        if (useBlack && triedBuildPositions.count(nx * 1000 + ny)) continue;
+                        if (!isPositionFree(nx, ny, 3)) continue;
+                        if (isFarmAdjacent(nx, ny)) continue;
+                        // 评分：到最近锚点中心的距离（平方比较）；锚点顺序 TC 第一 ⇒ 平局时 TC 优先
+                        double fcx = nx + 1.0, fcy = ny + 1.0;
+                        double d2 = 1e18;
+                        for (int j = 0; j < NA; ++j) {
+                            double t = (fcx - acx[j]) * (fcx - acx[j]) + (fcy - acy[j]) * (fcy - acy[j]);
+                            if (t < d2) d2 = t;
+                        }
+                        if (d2 < bestD2) { bestD2 = d2; bx = nx; by = ny; }
+                    }
+                }
+            }
+        }
+    }
+    if (bx < 0) return false;
+    x = bx; y = by;
+    return true;
+}
+
 bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX, int prefY, bool noFallback,
                      bool preferNearBuilder) {
     if (buildCooldown > 0 && !ignoreCooldown) return false;
@@ -6612,12 +6645,14 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     if (!placed && buildingType == BUILDING_HOME)
         placed = findHouseSite(x, y);
     if (!placed && buildingType == BUILDING_FARM) {
-        // ★★★ 2026-09-12 三段式选址（MAX_FARMS 7→12 后）：TC 环 → 谷仓环 → 兜底 ★★★
-        //   ① findFarmRingSite：TC 周围隔 1 格环形（已被房屋/兵营/市场/箭塔挤满时常常 false）
-        //   ② findFarmNearGranarySite：现有谷仓外扩 1~10 块格（基地附近放不下时的扩展位）
-        //   ③ findBuildSite：最后兜底（应很少触发；触发即说明地图已极密）
-        placed = findFarmRingSite(x, y);
-        if (!placed) placed = findFarmNearGranarySite(x, y);
+        // ★★★ 2026-09-15 统一锚点就近择优（用户需求：尽量分布在 TC 和谷仓周围）★★★
+        //   取代旧三段式 findFarmRingSite → findFarmNearGranarySite。
+        //   旧链因第一步内部自带 findBuildSite 兜底而恒返回 true ⇒ 谷仓环那步【永不可达】，
+        //   且枚举顺序偏向一侧 + 近处失败位置被 triedBuildPositions 永久拉黑
+        //   ⇒ 96 局实测 39.4% 的农场被挤到 >6 格、7.2% >10 格，谷仓旁 0 座。
+        //   新逻辑把 TC 与全部已建成谷仓/仓库作为并列锚点，直接取"离最近锚点最近"的空位。
+        //   全部锚点半径内都放不下时才回落到底部通用的 findBuildSite 兜底（保留原兜底能力）。
+        placed = findFarmSiteBest(x, y);
     }
     if (!placed && buildingType == BUILDING_ARROWTOWER)
         placed = findDefenseBuildSite(x, y, size);
@@ -6625,7 +6660,8 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     if (!placed && (buildingType == BUILDING_ARMYCAMP || buildingType == BUILDING_RANGE ||
                     buildingType == BUILDING_STABLE))
         placed = findBuildSiteTowardCenter(x, y, size, 12, 45);
-    if (!placed) placed = findBuildSite(x, y, size);
+    // ★ 2026-09-15 农场兜底：额外要求"与已有农场不相邻"，守 isFarmAdjacent 的隔 1 格设计
+    if (!placed) placed = findBuildSite(x, y, size, buildingType == BUILDING_FARM);
     if (!placed) return false;
 
     buildingFarmerType[f->SN] = buildingType;

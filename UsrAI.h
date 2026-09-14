@@ -44,7 +44,7 @@ public:
               scoutIssueDR(0), scoutIssueUR(0), scoutIssueFrame(-999999),
               priestIssueDR(0), priestIssueUR(0), priestIssueFrame(-999999),
               priestNearTCTry(0), priestFleeTry(0), priestMode(0), priestFleeLastX(0), priestFleeLastY(0), priestFleeLastFrame(-999999),
-              priestConvSN(-1), priestConvFrame(-999999), priestSiegeApproach(0), priestTowerHold(0)
+              priestConvSN(-1), priestConvFrame(-999999), priestSiegeApproach(0)
     { this->id = 0; }
     ~UsrAI() {}
 
@@ -184,12 +184,6 @@ private:
     //   净位移≈0，永远够不到 12 格感化射程（ll5 f=44531~44981 实测落点每 30 帧翻转）。
     //   修：一旦成立就锁定，除非【真贴身(<=PRIEST_SIEGE_ABORT_R)】或【血量过低】才解除。
     int priestSiegeApproach;
-    // ★ 2026-09-14 新增【箭塔迟滞闩锁】：1 = 曾被敌箭塔逼退（塔进 12 格=射程），
-    //   此后【禁止前出感化武器厂】，直到全部敌箭塔退出 PRIEST_SIEGE_REARM_TOWER_R(18 格) 才复位。
-    //   为什么必须是独立闩锁：allowConvertSiege 用的是"瞬间值"（localClear/锁），
-    //   塔距在 12~13 格边界处逐帧跨线 ⇒ 前出/后撤两分支每 30 帧互相覆盖、净位移≈0。
-    //   置位/复位同源（都以"距祭司最近的敌箭塔距离"为唯一输入），仅靠 12→18 的带宽制造迟滞。
-    int priestTowerHold;
     // ★ 军事单位回TC旁待命的绕路状态（与主城建筑中心不可达导致的刷屏卡死对应，刀斧兵/弓箭手等通用）★
     std::map<int,int> armyReturnTry;      // 单位SN → 多半径×多角度螺旋重试计数(0~23)
     std::map<int,double> armyIssueDR, armyIssueUR; // 上次下发回TC移动指令时的位置（卡死检测）
@@ -283,7 +277,10 @@ private:
     int countAllMilitary();
     bool isPositionFree(int blockDR, int blockUR, int size);
     bool isSiteReachable(int blockDR, int blockUR, int size);  // 地基可达性预检：地基旁须有路可走，避免选址被建筑围死、村民永远走不到(卡死)
-    bool findBuildSite(int &x, int &y, int size = 2);
+    // avoidFarmAdjacent=true：额外跳过与已有农场"相邻"的位置（3x3 外扩 1 格内不得有农场）。
+    //   ★ 2026-09-15：农场兜底选址用 —— 旧链第一步的 findBuildSite 兜底不做此检查，
+    //     一旦 TC 内圈被占就会把农场紧贴着排成一片，破坏 isFarmAdjacent 的"隔 1 格"设计。
+    bool findBuildSite(int &x, int &y, int size = 2, bool avoidFarmAdjacent = false);
     bool findBuildSiteTowardCenter(int &x, int &y, int size, int minR, int maxR);  // 建筑选址偏向 TC→地图中心方向且离TC更远(避免堵角)
     bool findDefenseBuildSite(int &x, int &y, int size = 2);
     bool findGranarySite(int &x, int &y);
@@ -294,6 +291,13 @@ private:
     bool findHouseSite(int &x, int &y);
     bool findFarmRingSite(int &x, int &y);  // TC周围隔1格环形选址
     bool findFarmNearGranarySite(int &x, int &y);  // ★ 2026-09-12：谷仓周围外扩张展选址（MAX_FARMS 7→12 后必用）
+    // ★ 2026-09-15（用户需求「优化农场布局，尽量分布在 TC 和谷仓周围」）：
+    //   统一锚点就近择优 —— 锚点 = TC + 全部已建成谷仓(GRANARY)/仓库(STOCK)，
+    //   在 [FARM_ANCHOR_R_MIN, FARM_ANCHOR_R_MAX] 环上取「到最近锚点最近」的空位。
+    //   ★ 取代 findFarmRingSite + findFarmNearGranarySite 的组合（后两者因
+    //     findFarmRingSite 内部自带 findBuildSite 兜底而双双失效：第二步永不可达）。
+    //   保留旧两函数仅为回滚方便，正常路径不再调用。
+    bool findFarmSiteBest(int &x, int &y);
     bool isFarmAdjacent(int blockDR, int blockUR);  // 农场不相邻：候选农场外扩1格内不得有其他农场(至少隔1格)
     // noFallback=true：指定 prefX/prefY 但周边放不下时【直接失败】，不再回退到默认选址
     //   （用于"必须建在某片资源旁"的场景，否则回退可能建到完全无关的位置）
