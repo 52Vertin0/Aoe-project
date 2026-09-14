@@ -178,18 +178,14 @@ ins UsrIns;
 //   → 大部队直接全图寻路直达，省去逐格摸索。故侦察骑兵训练开关设 false。
 #define ENABLE_SCOUT_RECON false
 // ★ 2026-09-07 由 20 下调到 12（用户实测驱动）：
-//   反攻态已由 updateState 在「三波全清 / frame>COUNTER_ATTACK_FORCE_TIME 强制」时进入，此时敌方主力已被消灭，
+//   反攻态已由 updateState 在「三波全清 / frame>27000 强制」时进入，此时敌方主力已被消灭，
 //   再等 20 人已无意义；而实测军队长期停在 12 人左右（复合弓 15 分钟前停产 + 战损），
 //   导致 readyToAttack 恒 false ⇒ ① kiting 整段被跳过（"反攻时不会后撤"）
 //   ② 全军被 4143 段反复 HumanMove 回 TC 同一点（"复合弓兵在 TC 附近来回走"）。
 //   ⚠ 改小=更早推进、更零散；改大=更保守但要等更久（24 分钟强制兜底仍在）。
 #define COUNTER_ATTACK_MIN_ARMY 12   // ★ 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
-#define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
-                                        // （2026-09-14 用户要求：24分钟→22分钟，提前2分钟反攻，
-                                        //   目的是给"发现敌方武器厂"留更长的窗口——实测胜局均在
-                                        //   26~28.5 分钟才探到武器厂，距 45000 帧上限仅剩 1~4 分钟）
-                                        // 沿革：2026-09-04 用户要求 22→24 分钟(多留2分钟集结攒兵)；
-                                        //       本次按新需求回调至 22 分钟。
+#define COUNTER_ATTACK_FORCE_TIME 36000 // 24分钟强制反攻(=36000帧,1500帧/分钟)：即使人数不足也一起进攻
+                                        // （2026-09-04 用户要求：22分钟→24分钟，多留2分钟集结攒兵）
 // ★ 祭司护驾三级半径(格)：祭司死=立刻失败，故护驾优先于士兵自卫/守家/前出等一切军事行为
 #define PRIEST_GUARD_URGENT 8.0   // 紧急：敌进入祭司此半径 → 所有兵(可打断战斗)立即回防
 #define PRIEST_GUARD_ALERT  15.0  // 预警：敌进入祭司此半径 → 空闲/行军兵前往护驾(不打断正在战斗的兵，防反复横跳)
@@ -205,9 +201,6 @@ ins UsrIns;
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 2026-09-13 保祭司：反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
-// ★★★ 2026-09-14 感化前出许可（放宽 localClear）★★★
-#define PRIEST_SIEGE_NEAR_TOWER 15.0  // 敌方箭塔距祭司 < 此值 = 塔压制，禁止前出感化武器厂
-#define PRIEST_SIEGE_GUARD_R    20.0  // 掩护统计半径(格)：此半径内【我军数 >= 敌军数】才允许前出
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
 //   马厩 = 学院前置（Development.cpp:804 addPreCondition(STABLE.buildCon)），不解马厩则学院永远建不出。
@@ -612,14 +605,11 @@ void UsrAI::updateState() {
                 DebugText(QString(">> ALL WAVES DEFEATED! Counterattack! Frame=%1").arg(frame));
             }
         }
-        // 超时强制反击：与 COUNTER_ATTACK_FORCE_TIME 对齐(=22 分钟=33000 帧)
+        // 超时强制反击：与 COUNTER_ATTACK_FORCE_TIME 对齐(=24 分钟=36000 帧)
         //   【修正 2026-09-08】原 27000 帧(18 分钟)与反攻内部门槛 36000 不一致 →
         //     用户实测 19 分钟(28500 帧)就触发反攻，导致 armyCount 远未达 12 即提前全军出击，
         //     零散士兵+祭司被敌方集火送命。改：对齐 COUNTER_ATTACK_FORCE_TIME，
-        //     给 W3~CounterAttack 之间留足集结时间(14 分 W3 开打 → 22 分反攻，整 8 分钟缓冲)。
-        //   【2026-09-14】用户要求提前 2 分钟反攻(24→22)，缓冲由 10 分钟收缩到 8 分钟；
-        //     兵力门槛 COUNTER_ATTACK_MIN_ARMY=12 不变——早于门槛仍会被 readyToAttack 拦住，
-        //     不会出现"兵力不足强推"的旧问题(旧问题源于 27000 与内部门槛不一致)。
+        //     给 W3~CounterAttack 之间留足集结时间(14 分 W3 开打 → 24 分反攻，整 10 分钟缓冲)。
         if (frame > COUNTER_ATTACK_FORCE_TIME && state == DEFENSE_WAVE3) {
             state = COUNTERATTACK;
             DebugText("!! Force COUNTERATTACK (timeout)");
@@ -4555,7 +4545,7 @@ void UsrAI::manageCounterAttack() {
     tagBuilding* siege = nullptr;
     if (enemySiegeSN != -1) siege = findEnemyBuilding(BUILDING_SIEGE);
     if (enemySiegeSN != -1 && !siege) {
-        // 已记录武器厂但当前不在敌方列表里：可能 (1)已被我方转化 (2)暂时失去视野
+        // 已记录武器厂但敌方列表里没有了：检查是否已被我方转化
         bool converted = false;
         for (auto &b : info.buildings)
             if (b.Type == BUILDING_SIEGE) { converted = true; break; }
@@ -4564,15 +4554,13 @@ void UsrAI::manageCounterAttack() {
             DebugText("!!! VICTORY! Siege Workshop converted !!!");
             return;
         }
-        // ★★★ 2026-09-14 修复「发现武器厂却感化不了」的真正根因 ★★★
-        //   旧代码此处为 `enemySiegeSN = -1;`（重置 SN）。而 findEnemyBuilding 只遍历
-        //   info.enemy_buildings，受 Core.cpp:622【explored||visible】约束 ⇒
-        //   "发现一次 → 军队推进/该区域失去视野 → !siege → 重置 SN → 需再次可见才能重新发现"
-        //   形成循环 ⇒ 祭司拿不到稳定目标 ⇒ 前出分支 `allowConvertSiege && siege` 恒假
-        //   ⇒ 感化 0 次（这正是 ce/lc 批次"发现了却依然平局"的第一层根因）。
-        //   修：失去视野 ≠ 武器厂不存在。方位已由 rallyDR/rallyUR 持久记忆(4538-4539)，
-        //       保持 enemySiegeSN 不变，下游改用【记忆坐标】推进；若它真被拆毁，
-        //       保持 SN 只会让祭司继续奔向该方位（无害，且胜利条件本就需要它存在）。
+        // ★★★ 2026-09-14 不再因"失去视野"重置 enemySiegeSN ★★★
+        //   旧代码此处 `enemySiegeSN = -1;` —— 而 findEnemyBuilding 只遍历 info.enemy_buildings，
+        //   受 Core.cpp:622【explored||visible】约束 ⇒「发现一次 → 军队推进/视野丢失 → !siege →
+        //   重置 SN → 需再次可见才能重新发现」循环 ⇒ 祭司拿不到稳定目标 ⇒ 感化恒不触发。
+        //   修：失去视野 ≠ 武器厂不存在。方位由 rallyDR/rallyUR 持久记忆(4538-4539，从不被重置)，
+        //       保持 enemySiegeSN 供下游用记忆坐标推进；若它真被拆毁，保持 SN 只会让祭司继续
+        //       奔向该方位（无害，且胜利条件本就需要它存在）。
     }
     // ★ 探到过敌方基地：一旦 info.enemy_buildings 出现过敌方建筑，记录其方位并【持久化】——
     //   即便之后暂时失去视野/该建筑消失，也记得大致方位，反攻时直接奔袭基地而非盲走对角角落。
@@ -4594,11 +4582,6 @@ void UsrAI::manageCounterAttack() {
     if (siege) {
         targetDR = (siege->BlockDR + 1) * BL;
         targetUR = (siege->BlockUR + 1) * BL;
-    } else if (enemySiegeSN != -1) {
-        // ★ 2026-09-14：武器厂已发现但当前不可见（siege==null）→ 用持久记忆的方位推进，
-        //   不再退化成"敌基地方位/对角角落"（那会让祭司根本不往武器厂方向走）。
-        targetDR = (rallyDR + 1.0) * BL;
-        targetUR = (rallyUR + 1.0) * BL;
     } else if (enemyBaseScouted) {
         targetDR = enemyBaseDR; targetUR = enemyBaseUR;   // ★ 探到过基地→直奔已知方位
     } else {
@@ -4655,7 +4638,7 @@ void UsrAI::manageCounterAttack() {
     int armyCount = 0;
     for (auto &a : info.armies) if (a.Sort != AT_PRIEST) armyCount++;  // 非祭司军队总数(近战集结门槛用)
     // ★ 全体反攻门槛：所有军事单位(非祭司，含远程/近战/投石车)≥COUNTER_ATTACK_MIN_ARMY 才一起反攻；
-    //   或到 COUNTER_ATTACK_FORCE_TIME(22分钟) 强制一起进攻——避免人数不足时零散冲出被敌方集火。
+    //   或到 COUNTER_ATTACK_FORCE_TIME(24分钟) 强制一起进攻——避免人数不足时零散冲出被敌方集火。
     bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY) || (frame >= COUNTER_ATTACK_FORCE_TIME);
     // 集结中心：未达门槛时全军回己方 TC 附近集结待命(形成密集兵力，来敌也能抱团防守)
     tagBuilding* rallyTC = findBuilding(BUILDING_CENTER);
@@ -5246,6 +5229,35 @@ void UsrAI::manageCounterAttack() {
     //   行走中的单位,只会覆盖目标,managePriest 对 WALKING 单位的治疗/感化也照常生效）。
     if (priest) {
         if (priestCounterCooldown > 0) priestCounterCooldown--;   // ★ 反攻推进专用节流（与 priestMoveCooldown 解耦）
+
+        // ★★★ 2026-09-14 关键修复：武器厂感化【提前到状态/移动闸之前】★★★
+        //   诊断铁证：[LC-DBG] 8 局仅命中 1 次 ⇒ 下方整段实际执行率 <1%（被下面两道闸挡住：
+        //     ① NowState 非 IDLE/WALKING 即 return ② priestMoveCooldown>0 即 return）。
+        //   而【感化是 HumanAction(转换动作)，与 priestMoveCooldown(移动节流) 无关】——
+        //   引擎侧转换冷却由 priest->ConvertCooldown 独立管理。
+        //   旧结构把感化判断放在移动闸之后 ⇒ 祭司只要在跟军(WALKING)+冷却中就永远错过感化窗口
+        //   ⇒ 这才是历次"发现了武器厂却感化不了"的【最终根因】（ce/lc/lj 批次通病）。
+        //   修：感化检查提到最前，仅受 ①武器厂已发现(enemySiegeSN) ②引擎转换冷却 ③已在射程内 约束；
+        //       本路径【不发移动令】（前出仍走下方原逻辑），故不增加祭司暴露风险，只增加"够得着就用"的命中率。
+        if (enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
+            double sD0 = calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL);
+            if (sD0 <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
+                HumanAction(priestSN, enemySiegeSN);
+                priestCounterCooldown = 60; priestMoveCooldown = 60;
+                if (frame % 50 == 0)
+                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 path=early")
+                              .arg(frame).arg(sD0 / BL, 0, 'f', 1));
+                return;
+            }
+        }
+        // 诊断（低频/ASCII，放在两道闸之前 ⇒ 真实反映本段执行率与卡点）
+        if (frame % 300 == 0)
+            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9")
+                      .arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
+                      .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
+                      .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
+                      .arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown));
+
         if (priest->NowState != HUMAN_STATE_IDLE && priest->NowState != HUMAN_STATE_WALKING) {
             // 祭司在 ATTACKING（治愈）或 CONVERTING（感化）中,避免本段覆盖其引擎托管动作
             return;
@@ -5295,52 +5307,19 @@ void UsrAI::manageCounterAttack() {
         //     实测 8 局里"全局敌全灭"从未出现的概率极高（7/8 局敌军队一直存在），
         //     而用户描述的场景本质是"祭司身边已经安全了，就该去干活"。
         //     ⇒ 局部清场判据既覆盖用户场景，又不会让祭司在有兵有塔时莽撞前出。
-        //   ⚠ 2026-09-14：enemyMil（全局敌军数）统计已删除——新判据不再用它，留着会新增 unused 警告。
+        int enemyMil = 0;
+        for (auto &e : info.enemy_armies) if (e.Blood > 0) enemyMil++;
         int enemyTowers = 0;
         for (auto &b : info.enemy_buildings) if (b.Type == BUILDING_ARROWTOWER) enemyTowers++;
-        // ★★★ 2026-09-14 放宽局部清场判据（用户拍板"直接做"）★★★
-        //   旧判据 = 祭司 20 格内【存在】活敌军队 / 敌箭塔 → localClear=false。
-        //   反攻期祭司随军推进，20 格内几乎必有敌军与箭塔 ⇒ localClear 恒 false
-        //     ⇒ allowConvertSiege 恒 false ⇒ 祭司被 18 格安全距离钉在后方
-        //     ⇒ 永远够不到 12 格射程内的武器厂 ⇒ 感化 0 次。
-        //   实测 ce 批次：8 局里 6 局已"发现武器厂"却只赢 1 局，全部卡在此判据
-        //     （ce6 在 f=34800 就发现、剩 10270 帧 ≈6.8 分钟仍失败 ⇒ 不是"太晚"，是"够不着"）。
-        //   新判据 = 【祭司自身是否被直接威胁】+【是否有掩护】，而非"附近有没有敌人"：
-        //     ① 无敌人进入其自身攻击半径（远程 12 格 / 近战 2.5 格，与 cpp:759 同口径）→ 真威胁
-        //     ② 敌方箭塔不在 PRIEST_SIEGE_NEAR_TOWER(15) 格内 → 无塔压制
-        //     ③ 掩护：PRIEST_SIEGE_GUARD_R(20) 格内我军数量 >= 敌军数量 → 有军队顶着，非孤军深入
-        //     ④ 祭司血量 > PRIEST_COUNTER_FLEE_HP → 与保命闸同源（保命优先于感化）
-        //   ⇒ 保命闸 / 迟滞锁 / PRIEST_COUNTER_FLEE_HP 全部保留兜底；
-        //     一旦①成立（敌人真能打到祭司）立即回到禁止前出，祭司随 5348 行 else 分支后撤。
-        bool nearThreat = false;          // ① 有敌人已进入自身攻击半径
-        int  nearAlly = 0, nearEnemy = 0; // ③ 掩护对比
-        for (auto &a : info.armies)
-            if (a.SN != priestSN && a.Blood > 0 &&
-                calDistance(priest->DR, priest->UR, a.DR, a.UR) < PRIEST_SIEGE_GUARD_R * BL) nearAlly++;
-        for (auto &e : info.enemy_armies) {
-            if (e.Blood <= 0) continue;
-            double dE = calDistance(priest->DR, priest->UR, e.DR, e.UR);
-            if (dE < PRIEST_SIEGE_GUARD_R * BL) nearEnemy++;
-            double eR = (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
-                         e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
-                         e.Sort == AT_STONE_THROWER) ? 12.0 * BL : 2.5 * BL;
-            if (dE <= eR) nearThreat = true;
-        }
-        bool nearTower = false;           // ② 敌箭塔压制
-        for (auto &b : info.enemy_buildings)
-            if (b.Type == BUILDING_ARROWTOWER &&
-                calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_NEAR_TOWER * BL) { nearTower = true; break; }
-        double pBRg = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
-        bool localClear = !nearThreat && !nearTower && (nearAlly >= nearEnemy) && (pBRg > PRIEST_COUNTER_FLEE_HP);
+        // 局部清场：祭司 20 格内无活敌军队、无箭塔
+        bool localClear = true;
+        for (auto &e : info.enemy_armies)
+            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < 20.0 * BL) { localClear = false; break; }
+        if (localClear)
+            for (auto &b : info.enemy_buildings)
+                if (b.Type == BUILDING_ARROWTOWER &&
+                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 20.0 * BL) { localClear = false; break; }
         bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear;
-        // ★ 2026-09-14 诊断（低频/ASCII）：定位"发现武器厂却不去感化"的卡点。
-        //   看点：siegeSN 是否非空 / 记忆坐标 / 距武器厂距离 / localClear 及各条件 / 转换冷却。
-        if (frame % 300 == 0)
-            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 clear=%6 thr=%7 twr=%8 ally=%9 enemy=%10 hp=%11 cd=%12")
-                      .arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
-                      .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
-                      .arg(localClear ? 1 : 0).arg(nearThreat ? 1 : 0).arg(nearTower ? 1 : 0)
-                      .arg(nearAlly).arg(nearEnemy).arg(pBRg, 0, 'f', 2).arg(priest->ConvertCooldown));
         // ★【2026-09-08 二次修】原"扩到 28 格后 priestEnemy>=0 return"——WRONG-LAYER return 又踩坑:
         //   反攻期祭司前出后 28 格内**恒有敌** → return 几乎每帧触发 → 祭司段永远跑不到 → 停在 TC 不动。
         //   改为：只查询,不 return——managePriest 仍独立按"投石车→近战→远程→村民"优先级感化
@@ -5353,32 +5332,28 @@ void UsrAI::manageCounterAttack() {
         //   新方案：祭司冲到反攻目标 PRIEST_MIN_DIST_TARGET 格内(太靠前)→本帧强制后撤到【大队后方安全距离】，
         //   不感化武器厂(避免被钉在前线送命)；只有已在安全范围才允许【被动】感化武器厂(不主动前出)。
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
-        // ★ 2026-09-13 制定 / 2026-09-14 放宽判据：祭司自身无直接威胁且我军不输于敌军时，
-        //   解除 18 格安全距离约束 —— 否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂。
-        // ★★ 2026-09-14 副作用修复（重要）：必须再加 `enemySiegeSN != -1` 条件 ★★
-        //   旧写法只判 allowConvertSiege —— 而未发现武器厂时 allowConvertSiege 也可能为 true，
-        //   于是 priestTooClose 被置 false ⇒ 下方 `else if (cooldown<=0 || priestTooClose)` 不成立
-        //   ⇒ 祭司【不进后撤分支、停在原地挨打】。实测 lc8(f=36980 死)、lc4(f=36100 死) 均属此型
-        //   （两局都未发现武器厂，祭司移动目标长时间恒定不变 = 停住不撤）。
-        //   修：只有【确实存在武器厂目标】时才解除后撤距离约束，与下方前出分支同源。
+        // ★ 2026-09-13：敌方已清场(enemyMil==0 && enemyTowers==0)时，安全距离约束失效 ——
+        //   否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂（这就是"不感化"的根因）。
+        // ★ 2026-09-14 副作用修复：只有【确实存在武器厂目标】才解除后撤距离约束。
+        //   旧写法 `if (allowConvertSiege)` 在未发现武器厂时也会解除 ⇒ 祭司不进后撤分支、
+        //   停在原地挨打（lc8 f=36980 死 / lc4 f=36100 死，两局移动目标长时间恒定=停住不撤）。
         if (allowConvertSiege && enemySiegeSN != -1) priestTooClose = false;
 
-        // ★★★ 2026-09-13 用户需求：祭司前出感化敌方武器厂 ★★★
-        //   优先级高于"后撤保命"（allowConvertSiege 已保证祭司自身无直接威胁，前出不会送命）。
-        // ★ 2026-09-14：目标改用【持久记忆】的武器厂 SN + 坐标(rallyDR/rallyUR)，
-        //   不再依赖 siege 指针 —— 后者受实时可见性约束，一旦失去视野即失效（见 4557 段修复）。
-        const double sMemDR = (rallyDR + 1.0) * BL;
-        const double sMemUR = (rallyUR + 1.0) * BL;
+        // ★★★ 2026-09-13 用户需求：敌方军队全灭 + 箭塔全拆 → 祭司主动前出感化武器厂 ★★★
+        //   优先级高于"后撤保命"（清场后无威胁，前出不会送命）。
         if (allowConvertSiege && enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
+            // ★ 2026-09-14：目标用【持久记忆】的武器厂 SN + 坐标(rallyDR/rallyUR)，
+            //   不再依赖 siege 指针（受实时可见性约束，失去视野即失效；且解引用会空指针崩溃）。
+            const double sMemDR = (rallyDR + 1.0) * BL;
+            const double sMemUR = (rallyUR + 1.0) * BL;
             double dSiege = calDistance(priest->DR, priest->UR, sMemDR, sMemUR);
             if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
-                // 已在感化射程内 → 直接感化武器厂（目标用【记忆 SN】，无需当前可见；
-                //   若改回 siege->SN 会在失去视野(siege==null)时空指针崩溃）
+                // 已在感化射程内 → 直接感化武器厂
                 HumanAction(priestSN, enemySiegeSN);
                 priestCounterCooldown = 60; priestMoveCooldown = 60;
                 if (frame % 50 == 0)
-                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 ally=%3 enemy=%4 towers=%5")
-                              .arg(frame).arg(dSiege / BL, 0, 'f', 1).arg(nearAlly).arg(nearEnemy).arg(enemyTowers));
+                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 path=front")
+                              .arg(frame).arg(dSiege / BL, 0, 'f', 1));
             } else if (priestCounterCooldown <= 0) {
                 // 在射程外 → 主动朝武器厂【记忆坐标】推进
                 double ux2 = (sMemDR - priest->DR), uy2 = (sMemUR - priest->UR);
