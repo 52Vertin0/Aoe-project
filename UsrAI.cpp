@@ -2741,23 +2741,39 @@ void UsrAI::assignIdleSimple() {
     int woodWorkers = 0;
     int stoneWorkers = 0;   // ★ 采石工计数
     int foodWorkers  = 0;   // ★ 食物工计数（浆果/瞪羚/大象/农场）
+    int totalFarmers = 0;   // ★ 村民总数（供 goldTarget 基数与诊断打印使用）
+    // ★★★ 2026-09-14 修【工人统计双重计数】—— 本轮唯一的确定性 bug ★★★
+    //   事实：`ResourceSort` = 人物【手持资源种类】（config.h「人物手持资源种类」，HUMAN_UNKNOWN=0 为空），
+    //        `WorkObjectSN` = 【工作目标】；两者语义完全不同，旧写法却对二者【各自 ++】。
+    //        而引擎把 WorkObjectSN 当"上次工作目标"长期保留（村民早已改派，字段仍指着旧目标）
+    //        ⇒ 同一人必被计两次。铁证：开局日志旧版字段 `Frm:8`（全场只有 8 个村民），
+    //        而 workers 之和 `F3 + W7 + G0 + S2 = 12` —— 虚高 50%。
+    //   后果链：woodWorkers 虚高 ⇒ `woodWorkers < woodTarget` 恒假 ⇒ 从不派伐木工；
+    //        回撤判据 `woodWorkers > WOOD_KEEP_MIN` 同样被虚高值误触发（实际 3 人却被当 5 人撤到 2 人）。
+    //   改法：互斥 else-if 链，每人至多计 1 次。手持资源【优先】（引擎实时写入、不被残留污染），
+    //        手上没资源（正在采集/赶路）才回落到工作目标。
     for (auto &f : info.farmers) {
         if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-        if (f.ResourceSort == HUMAN_GOLD) goldWorkers++;
-        if (f.ResourceSort == HUMAN_WOOD) woodWorkers++;
-        if (f.ResourceSort == HUMAN_STONE) stoneWorkers++;
-        if (f.ResourceSort == HUMAN_GRANARYFOOD || f.ResourceSort == HUMAN_STOCKFOOD) foodWorkers++;
-        if (f.WorkObjectSN > 0) {
+        totalFarmers++;
+        bool counted = false;
+        if (f.ResourceSort == HUMAN_GOLD)       { goldWorkers++;  counted = true; }
+        else if (f.ResourceSort == HUMAN_WOOD)  { woodWorkers++;  counted = true; }
+        else if (f.ResourceSort == HUMAN_STONE) { stoneWorkers++; counted = true; }
+        else if (f.ResourceSort == HUMAN_GRANARYFOOD || f.ResourceSort == HUMAN_STOCKFOOD
+                 || f.ResourceSort == HUMAN_DOCKFOOD) { foodWorkers++; counted = true; }
+        if (!counted && f.WorkObjectSN > 0) {
             for (auto &r : info.resources)
                 if (r.SN == f.WorkObjectSN) {
                     if (r.Type == RESOURCE_GOLD) goldWorkers++;
                     else if (r.Type == RESOURCE_TREE) woodWorkers++;
                     else if (r.Type == RESOURCE_STONE) stoneWorkers++;
                     else if (r.Type == RESOURCE_BUSH || r.Type == RESOURCE_GAZELLE || r.Type == RESOURCE_ELEPHANT) foodWorkers++;
+                    counted = true;
                     break;
                 }
-            for (auto &b : info.buildings)
-                if (b.SN == f.WorkObjectSN && b.Type == BUILDING_FARM) { foodWorkers++; break; }
+            if (!counted)
+                for (auto &b : info.buildings)
+                    if (b.SN == f.WorkObjectSN && b.Type == BUILDING_FARM) { foodWorkers++; counted = true; break; }
         }
     }
 
@@ -2792,12 +2808,19 @@ void UsrAI::assignIdleSimple() {
     //   ★ 2026-09-03 修正：铜器升级要 800 食物，铜器前停采阈值必须 >800，
     //     否则食物到 500 就停采+撤食物工，永远攒不到 800 → 升级拖到 20 分钟。铜器前 850、铜器后 500。
     const bool foodStop = (info.Meat >= (postBronze ? FOOD_CAP_STOP : FOOD_CAP_STOP_PREBRONZE));
-    // ★ 黄金目标人数：与食物工数按 5:3 配比（复合弓兵40食+20金 / 方阵兵60食+40金 → 100:60=5:3）。
-    //   黄金过剩时压到保底人数，把人力让给食物与木头。★
+    // ★★★ 黄金目标人数（2026-09-14 重写【基数】）★★★
+    //   原公式 `goldTarget = foodWorkers × 3/5`，其基数【食物工数】在修好工人统计后语义变了：
+    //     · 改前 foodWorkers 因双重计数虚高 ≈1.5×，而食物工约占人口 45%：
+    //       goldTarget ≈ (1.5 × 0.45N) × 0.6 ≈ 0.4N —— 虚高**意外地**把金工配额撑到 ~9 人；
+    //     · 若不动这里，修复双重计数后基数缩回真实值 ⇒ 配额腰斩到 ~3
+    //       ⇒ 实测反攻期黄金 59.7 → 10.8（峰值 230→80）⇒ 复合弓兵(20金)/方阵兵(40金)造不出 ⇒ 0 胜。
+    //   改法：基数换成【总人口】，不受统计口径影响。系数取 2/5 —— 它精确还原"修复前被虚高掩盖的
+    //     有效配额"（0.4N），保证本轮只修 bug、不改变金/食的实际产出水平（实测食物本就充足：
+    //     均值 245~293，黄金才是瓶颈；若沿用 3/8 之类会得到 6 人，仍低于改前有效值 9）。
+    //   黄金过剩时仍压到保底人数，把人力让给食物与木头。
     int goldTarget = (!postBronze) ? 0
         : goldRich ? MIN_GOLD_WORKERS
-        : std::max(MIN_GOLD_WORKERS,
-                   (int)((double)foodWorkers * FOOD_GOLD_DEN / FOOD_GOLD_NUM + 0.999));
+        : std::max(MIN_GOLD_WORKERS, (int)((double)totalFarmers * 2.0 / 5.0 + 0.999));
 
     // ============================================================
     // ★★★ 猎象整队（2026-09-13 用户需求：「狩猎大象必须 4 个人一起狩猎，单个村民狩猎会死」）
@@ -3109,12 +3132,14 @@ void UsrAI::assignIdleSimple() {
     }
 
     // ★ 资源调度自检打印（便于实测调参）：存量 / 各资源工数 / 门禁状态
+    //   ★ 2026-09-14 加 tot（村民总数）与 gT（金工配额）：
+    //     tot 用于核对"工人统计不再双重计数"（工人数之和必须 ≤ tot）；gT 用于核对金工配额。
     if (frame % 600 == 0) {
-        DebugText(QString("ECO | Fd:%1 Wd:%2 St:%3 Gd:%4 || workers F%5 W%6 G%7 S%8 || goldRich:%9 woodStop:%10 stoneStop:%11 foodStop:%12 woodTarget:%13 twr:%14/%15")
+        DebugText(QString("ECO | Fd:%1 Wd:%2 St:%3 Gd:%4 || workers F%5 W%6 G%7 S%8 tot:%9 || rich:%10 wStop:%11 sStop:%12 fStop:%13 wT:%14 gT:%15 twr:%16/%17")
                   .arg((int)info.Meat).arg((int)info.Wood).arg((int)info.Stone).arg((int)info.Gold)
-                  .arg(foodWorkers).arg(woodWorkers).arg(goldWorkers).arg(stoneWorkers)
+                  .arg(foodWorkers).arg(woodWorkers).arg(goldWorkers).arg(stoneWorkers).arg(totalFarmers)
                   .arg(goldRich ? 1 : 0).arg(woodStop ? 1 : 0).arg(stoneStop ? 1 : 0).arg(foodStop ? 1 : 0)
-                  .arg(woodTarget)
+                  .arg(woodTarget).arg(goldTarget)
                   .arg(countBuildingsExisting(BUILDING_ARROWTOWER)).arg(MAX_TOWERS));
     }
 
@@ -5693,30 +5718,30 @@ tagFarmer* UsrAI::findIdleFarmerNear(double dr, double ur) {
 }
 
 tagFarmer* UsrAI::findAnyFarmer() {
-    for (auto &f : info.farmers) {
-        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) continue;
-        if (f.Resource > 0) continue;
-        if (f.NowState == HUMAN_STATE_WORKING && f.ResourceSort == HUMAN_STONE) return &f;
-    }
-    for (auto &f : info.farmers) {
-        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) continue;
-        if (f.Resource > 0) continue;
-        if (f.NowState == HUMAN_STATE_WORKING && f.ResourceSort == HUMAN_GOLD) return &f;
-    }
-    for (auto &f : info.farmers) {
-        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) continue;
-        if (f.Resource > 0) continue;
-        if (f.NowState == HUMAN_STATE_WORKING && f.ResourceSort == HUMAN_WOOD) return &f;
-    }
-    for (auto &f : info.farmers) {
-        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) continue;
-        if (f.Resource > 0) continue;
-        if (f.NowState != HUMAN_STATE_IDLE && f.NowState != HUMAN_STATE_ATTACKING) return &f;
-    }
+    // ★★★ 2026-09-14 修【优先级死代码】★★★
+    //   原判据 `f.NowState == HUMAN_STATE_WORKING && f.ResourceSort == HUMAN_STONE`（金/木同构）
+    //   把【手持资源】当【正在采集的资源】用 —— 而 WORKING = 正在采集，此刻手上恰恰【没有】资源
+    //   ⇒ 前三轮（石→金→木）恒返回 nullptr，是死代码；实际每次都落到第 4 轮"任取一个在干活的人"，
+    //   "优先抽采石工、其次采金工、最后伐木工"的设计优先级从未生效（抽谁全凭遍历顺序）。
+    //   改用 WorkObjectSN 指向的资源类型来判定"正在采什么"，优先级才真正落地。
+    //   抽人损失由小到大：采石工(仅1人且塔建完即停) < 采金工 < 伐木工 < 其他。
+    auto ok = [&](tagFarmer &f)->bool {
+        if (f.FarmerSort != FARMERTYPE_FARMER) return false;
+        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) return false;
+        if (f.Resource > 0) return false;
+        return true;
+    };
+    auto workingOn = [&](tagFarmer &f, int resType)->bool {
+        if (f.NowState != HUMAN_STATE_WORKING || f.WorkObjectSN <= 0) return false;
+        for (auto &r : info.resources)
+            if (r.SN == f.WorkObjectSN) return (r.Type == resType);
+        return false;
+    };
+    for (auto &f : info.farmers) if (ok(f) && workingOn(f, RESOURCE_STONE)) return &f;
+    for (auto &f : info.farmers) if (ok(f) && workingOn(f, RESOURCE_GOLD))  return &f;
+    for (auto &f : info.farmers) if (ok(f) && workingOn(f, RESOURCE_TREE))  return &f;
+    for (auto &f : info.farmers)
+        if (ok(f) && f.NowState != HUMAN_STATE_IDLE && f.NowState != HUMAN_STATE_ATTACKING) return &f;
     return nullptr;
 }
 tagBuilding* UsrAI::findBuilding(int type) {
