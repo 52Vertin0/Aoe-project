@@ -206,6 +206,19 @@ ins UsrIns;
 //   机制：`HumanAction(祭司, 建筑)` 是"设置转换目标"，重发 = 引擎每帧被重设目标打断、
 //         施法进度永远重置。⇒ 发令后必须进入静默期，让引擎把整段施法做完（实测需 ~340~440 帧）。
 #define PRIEST_SIEGE_CONVERT_LOCKOUT 400
+// ★★★ 2026-09-14 前出感化武器厂：清场半径 / 迟滞锁参数 ★★★
+//   铁证：ll5/ll6/ll8 三局都"已发现武器厂(siegeSN=11099) + 转换冷却 0"，但祭司与武器厂的
+//   距离恒在 20~28 格（感化射程仅 12 格）⇒ 够不到。
+//   根因：旧 localClear 半径 **20 格 > 感化射程 12 格** —— 与 MEMORY 已记的
+//        「18 格安全距离 > 12 格射程」是【同一类结构死锁】：祭司一进 20 格内，
+//        守在武器厂旁的敌人就进半径 ⇒ localClear 翻假 ⇒ 转走"后撤"分支；
+//        一退出 20 格又翻真 ⇒ 转走"前出"分支 ⇒ 逐帧交替、净位移≈0、永远够不到 12 格。
+//   修 ①：清场半径压到 12 格以下（军队 8 / 箭塔 14），使"前出到 11 格"成为可能；
+//   修 ②：加迟滞锁 priestSiegeApproach，防止半径缩小后仍在边界处逐帧翻转。
+#define PRIEST_SIEGE_CLEAR_ARMY_R  8.0   // 清场判据：敌【军队】须距祭司 < 此值才算"未清场"
+#define PRIEST_SIEGE_CLEAR_TOWER_R 14.0  // 清场判据：敌【箭塔】须距祭司 < 此值才算"未清场"（塔是静态远程，留更大余量）
+#define PRIEST_SIEGE_ABORT_R       4.5   // 迟滞锁解除阈值：敌贴到祭司此半径内 ⇒ 视为真危险，解除前出
+#define PRIEST_SIEGE_ABORT_HP      0.35  // 迟滞锁解除阈值：祭司血量低于此值 ⇒ 解除前出（交给保命逻辑）
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
@@ -5325,15 +5338,27 @@ void UsrAI::manageCounterAttack() {
         for (auto &e : info.enemy_armies) if (e.Blood > 0) enemyMil++;
         int enemyTowers = 0;
         for (auto &b : info.enemy_buildings) if (b.Type == BUILDING_ARROWTOWER) enemyTowers++;
-        // 局部清场：祭司 20 格内无活敌军队、无箭塔
+        // 局部清场：祭司周边无敌【活敌军队】、无【箭塔】
+        // ★ 2026-09-14 半径 20→8/14：旧 20 格 > 感化射程 12 格 ⇒ 结构死锁（祭司永远够不到）。
         bool localClear = true;
         for (auto &e : info.enemy_armies)
-            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < 20.0 * BL) { localClear = false; break; }
+            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_CLEAR_ARMY_R * BL) { localClear = false; break; }
         if (localClear)
             for (auto &b : info.enemy_buildings)
                 if (b.Type == BUILDING_ARROWTOWER &&
-                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 20.0 * BL) { localClear = false; break; }
-        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear;
+                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_CLEAR_TOWER_R * BL) { localClear = false; break; }
+        // ★★ 2026-09-14 前出感化【迟滞锁】：防 localClear 在半径边界处逐帧翻转 ★★
+        //   进入：清场成立 + 武器厂已发现；退出：敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP)。
+        if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear && enemySiegeSN != -1) {
+            priestSiegeApproach = 1;
+        } else if (priestSiegeApproach == 1) {
+            bool hardAbort = false;
+            for (auto &e : info.enemy_armies)
+                if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_ABORT_R * BL) { hardAbort = true; break; }
+            double pBRap = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
+            if (hardAbort || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1) priestSiegeApproach = 0;
+        }
+        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (localClear || priestSiegeApproach == 1);
         // ★【2026-09-08 二次修】原"扩到 28 格后 priestEnemy>=0 return"——WRONG-LAYER return 又踩坑:
         //   反攻期祭司前出后 28 格内**恒有敌** → return 几乎每帧触发 → 祭司段永远跑不到 → 停在 TC 不动。
         //   改为：只查询,不 return——managePriest 仍独立按"投石车→近战→远程→村民"优先级感化

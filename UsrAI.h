@@ -44,7 +44,7 @@ public:
               scoutIssueDR(0), scoutIssueUR(0), scoutIssueFrame(-999999),
               priestIssueDR(0), priestIssueUR(0), priestIssueFrame(-999999),
               priestNearTCTry(0), priestFleeTry(0), priestMode(0), priestFleeLastX(0), priestFleeLastY(0), priestFleeLastFrame(-999999),
-              priestConvSN(-1), priestConvFrame(-999999)
+              priestConvSN(-1), priestConvFrame(-999999), priestSiegeApproach(0)
     { this->id = 0; }
     ~UsrAI() {}
 
@@ -178,6 +178,12 @@ private:
     int priestFleeLastFrame;           // 上次下发逃跑指令的帧号
     int priestConvSN;                  // 上次下发感化的目标SN（引导跟踪：拒收检测/防打断重发）
     int priestConvFrame;               // 上次下发感化指令的帧号
+    // ★ 2026-09-14 前出感化武器厂【迟滞锁】：0=关, 1=正在前出感化
+    //   背景：allowConvertSiege 由 localClear(周边无敌军) 决定，而祭司一靠近武器厂，
+    //   守在厂旁的敌人就进半径 ⇒ 判据逐帧翻转 ⇒ 祭司在【前出】与【后撤】间抖动、
+    //   净位移≈0，永远够不到 12 格感化射程（ll5 f=44531~44981 实测落点每 30 帧翻转）。
+    //   修：一旦成立就锁定，除非【真贴身(<=PRIEST_SIEGE_ABORT_R)】或【血量过低】才解除。
+    int priestSiegeApproach;
     // ★ 军事单位回TC旁待命的绕路状态（与主城建筑中心不可达导致的刷屏卡死对应，刀斧兵/弓箭手等通用）★
     std::map<int,int> armyReturnTry;      // 单位SN → 多半径×多角度螺旋重试计数(0~23)
     std::map<int,double> armyIssueDR, armyIssueUR; // 上次下发回TC移动指令时的位置（卡死检测）
