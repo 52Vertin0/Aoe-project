@@ -44,7 +44,8 @@ public:
               scoutIssueDR(0), scoutIssueUR(0), scoutIssueFrame(-999999),
               priestIssueDR(0), priestIssueUR(0), priestIssueFrame(-999999),
               priestNearTCTry(0), priestFleeTry(0), priestMode(0), priestFleeLastX(0), priestFleeLastY(0), priestFleeLastFrame(-999999),
-              priestConvSN(-1), priestConvFrame(-999999), priestSiegeApproach(0)
+              priestConvSN(-1), priestConvFrame(-999999), priestSiegeApproach(0),
+              priestGuardTarget(-1), priestGuardTargetFrame(-999999)
     { this->id = 0; }
     ~UsrAI() {}
 
@@ -184,6 +185,19 @@ private:
     //   净位移≈0，永远够不到 12 格感化射程（ll5 f=44531~44981 实测落点每 30 帧翻转）。
     //   修：一旦成立就锁定，除非【真贴身(<=PRIEST_SIEGE_ABORT_R)】或【血量过低】才解除。
     int priestSiegeApproach;
+    // ★★★★★ 2026-09-14「祭司反攻期阵亡」根因修复（manageMilitary D-1/D0 护驾）★★★★★
+    //   旧代码每帧重算护驾目标：`for (e : enemy_armies) if (e.WorkObjectSN == priestSN) { pick; break; }`
+    //   ——取"第一个"锁定祭司的敌人，而 info.enemy_armies 遍历顺序逐帧可变
+    //   ⇒ 两个等价敌人之间反复翻转（实测 pu5 死前 400 帧：91163/91141 各 77 次精确交替）。
+    //   下游去重条件 `a.WorkObjectSN != guardSN` 因此【恒为真】⇒ 每帧重发 HumanAction
+    //   ⇒ 引擎攻击瞄准进度永远归零（铁律 14）⇒ 全军零输出：
+    //     pu5 发令 1232 / 真出手 595；pu7 91406 发令 141 / 出手 0；ez3 91425 发令 67 / 出手 0。
+    //   祭司遂在原地被慢慢磨死（pu7 hp 1.00→0.55→0.31→0.19→0.07，700 帧）。
+    //   修复：护驾目标【粘滞】(铁律 17) + 每单位发令节流，见 manageMilitary() D-1 前置段。
+    int priestGuardTarget;         // 当前护驾目标 SN（-1=无）；粘滞，避免在等价近敌间逐帧跳变
+    int priestGuardTargetFrame;    // 护驾目标选定帧（诊断用）
+    // 单位SN → 上次下发护驾令的帧号（节流：同一单位 15 帧内不重发，即便目标在跳变）
+    std::map<int,int> guardCmdFrame;
     // ★ 军事单位回TC旁待命的绕路状态（与主城建筑中心不可达导致的刷屏卡死对应，刀斧兵/弓箭手等通用）★
     std::map<int,int> armyReturnTry;      // 单位SN → 多半径×多角度螺旋重试计数(0~23)
     std::map<int,double> armyIssueDR, armyIssueUR; // 上次下发回TC移动指令时的位置（卡死检测）

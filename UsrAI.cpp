@@ -2741,39 +2741,23 @@ void UsrAI::assignIdleSimple() {
     int woodWorkers = 0;
     int stoneWorkers = 0;   // ★ 采石工计数
     int foodWorkers  = 0;   // ★ 食物工计数（浆果/瞪羚/大象/农场）
-    int totalFarmers = 0;   // ★ 村民总数（供 goldTarget 基数与诊断打印使用）
-    // ★★★ 2026-09-14 修【工人统计双重计数】—— 本轮唯一的确定性 bug ★★★
-    //   事实：`ResourceSort` = 人物【手持资源种类】（config.h「人物手持资源种类」，HUMAN_UNKNOWN=0 为空），
-    //        `WorkObjectSN` = 【工作目标】；两者语义完全不同，旧写法却对二者【各自 ++】。
-    //        而引擎把 WorkObjectSN 当"上次工作目标"长期保留（村民早已改派，字段仍指着旧目标）
-    //        ⇒ 同一人必被计两次。铁证：开局日志旧版字段 `Frm:8`（全场只有 8 个村民），
-    //        而 workers 之和 `F3 + W7 + G0 + S2 = 12` —— 虚高 50%。
-    //   后果链：woodWorkers 虚高 ⇒ `woodWorkers < woodTarget` 恒假 ⇒ 从不派伐木工；
-    //        回撤判据 `woodWorkers > WOOD_KEEP_MIN` 同样被虚高值误触发（实际 3 人却被当 5 人撤到 2 人）。
-    //   改法：互斥 else-if 链，每人至多计 1 次。手持资源【优先】（引擎实时写入、不被残留污染），
-    //        手上没资源（正在采集/赶路）才回落到工作目标。
     for (auto &f : info.farmers) {
         if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-        totalFarmers++;
-        bool counted = false;
-        if (f.ResourceSort == HUMAN_GOLD)       { goldWorkers++;  counted = true; }
-        else if (f.ResourceSort == HUMAN_WOOD)  { woodWorkers++;  counted = true; }
-        else if (f.ResourceSort == HUMAN_STONE) { stoneWorkers++; counted = true; }
-        else if (f.ResourceSort == HUMAN_GRANARYFOOD || f.ResourceSort == HUMAN_STOCKFOOD
-                 || f.ResourceSort == HUMAN_DOCKFOOD) { foodWorkers++; counted = true; }
-        if (!counted && f.WorkObjectSN > 0) {
+        if (f.ResourceSort == HUMAN_GOLD) goldWorkers++;
+        if (f.ResourceSort == HUMAN_WOOD) woodWorkers++;
+        if (f.ResourceSort == HUMAN_STONE) stoneWorkers++;
+        if (f.ResourceSort == HUMAN_GRANARYFOOD || f.ResourceSort == HUMAN_STOCKFOOD) foodWorkers++;
+        if (f.WorkObjectSN > 0) {
             for (auto &r : info.resources)
                 if (r.SN == f.WorkObjectSN) {
                     if (r.Type == RESOURCE_GOLD) goldWorkers++;
                     else if (r.Type == RESOURCE_TREE) woodWorkers++;
                     else if (r.Type == RESOURCE_STONE) stoneWorkers++;
                     else if (r.Type == RESOURCE_BUSH || r.Type == RESOURCE_GAZELLE || r.Type == RESOURCE_ELEPHANT) foodWorkers++;
-                    counted = true;
                     break;
                 }
-            if (!counted)
-                for (auto &b : info.buildings)
-                    if (b.SN == f.WorkObjectSN && b.Type == BUILDING_FARM) { foodWorkers++; counted = true; break; }
+            for (auto &b : info.buildings)
+                if (b.SN == f.WorkObjectSN && b.Type == BUILDING_FARM) { foodWorkers++; break; }
         }
     }
 
@@ -2808,19 +2792,12 @@ void UsrAI::assignIdleSimple() {
     //   ★ 2026-09-03 修正：铜器升级要 800 食物，铜器前停采阈值必须 >800，
     //     否则食物到 500 就停采+撤食物工，永远攒不到 800 → 升级拖到 20 分钟。铜器前 850、铜器后 500。
     const bool foodStop = (info.Meat >= (postBronze ? FOOD_CAP_STOP : FOOD_CAP_STOP_PREBRONZE));
-    // ★★★ 黄金目标人数（2026-09-14 重写【基数】）★★★
-    //   原公式 `goldTarget = foodWorkers × 3/5`，其基数【食物工数】在修好工人统计后语义变了：
-    //     · 改前 foodWorkers 因双重计数虚高 ≈1.5×，而食物工约占人口 45%：
-    //       goldTarget ≈ (1.5 × 0.45N) × 0.6 ≈ 0.4N —— 虚高**意外地**把金工配额撑到 ~9 人；
-    //     · 若不动这里，修复双重计数后基数缩回真实值 ⇒ 配额腰斩到 ~3
-    //       ⇒ 实测反攻期黄金 59.7 → 10.8（峰值 230→80）⇒ 复合弓兵(20金)/方阵兵(40金)造不出 ⇒ 0 胜。
-    //   改法：基数换成【总人口】，不受统计口径影响。系数取 2/5 —— 它精确还原"修复前被虚高掩盖的
-    //     有效配额"（0.4N），保证本轮只修 bug、不改变金/食的实际产出水平（实测食物本就充足：
-    //     均值 245~293，黄金才是瓶颈；若沿用 3/8 之类会得到 6 人，仍低于改前有效值 9）。
-    //   黄金过剩时仍压到保底人数，把人力让给食物与木头。
+    // ★ 黄金目标人数：与食物工数按 5:3 配比（复合弓兵40食+20金 / 方阵兵60食+40金 → 100:60=5:3）。
+    //   黄金过剩时压到保底人数，把人力让给食物与木头。★
     int goldTarget = (!postBronze) ? 0
         : goldRich ? MIN_GOLD_WORKERS
-        : std::max(MIN_GOLD_WORKERS, (int)((double)totalFarmers * 2.0 / 5.0 + 0.999));
+        : std::max(MIN_GOLD_WORKERS,
+                   (int)((double)foodWorkers * FOOD_GOLD_DEN / FOOD_GOLD_NUM + 0.999));
 
     // ============================================================
     // ★★★ 猎象整队（2026-09-13 用户需求：「狩猎大象必须 4 个人一起狩猎，单个村民狩猎会死」）
@@ -3132,14 +3109,12 @@ void UsrAI::assignIdleSimple() {
     }
 
     // ★ 资源调度自检打印（便于实测调参）：存量 / 各资源工数 / 门禁状态
-    //   ★ 2026-09-14 加 tot（村民总数）与 gT（金工配额）：
-    //     tot 用于核对"工人统计不再双重计数"（工人数之和必须 ≤ tot）；gT 用于核对金工配额。
     if (frame % 600 == 0) {
-        DebugText(QString("ECO | Fd:%1 Wd:%2 St:%3 Gd:%4 || workers F%5 W%6 G%7 S%8 tot:%9 || rich:%10 wStop:%11 sStop:%12 fStop:%13 wT:%14 gT:%15 twr:%16/%17")
+        DebugText(QString("ECO | Fd:%1 Wd:%2 St:%3 Gd:%4 || workers F%5 W%6 G%7 S%8 || goldRich:%9 woodStop:%10 stoneStop:%11 foodStop:%12 woodTarget:%13 twr:%14/%15")
                   .arg((int)info.Meat).arg((int)info.Wood).arg((int)info.Stone).arg((int)info.Gold)
-                  .arg(foodWorkers).arg(woodWorkers).arg(goldWorkers).arg(stoneWorkers).arg(totalFarmers)
+                  .arg(foodWorkers).arg(woodWorkers).arg(goldWorkers).arg(stoneWorkers)
                   .arg(goldRich ? 1 : 0).arg(woodStop ? 1 : 0).arg(stoneStop ? 1 : 0).arg(foodStop ? 1 : 0)
-                  .arg(woodTarget).arg(goldTarget)
+                  .arg(woodTarget)
                   .arg(countBuildingsExisting(BUILDING_ARROWTOWER)).arg(MAX_TOWERS));
     }
 
@@ -4092,27 +4067,81 @@ void UsrAI::manageMilitary() {
         priestThreatened = (priestEnemySN2 >= 0);
     }
 
+    // ===== D-1 前置：解算【护驾目标】(粘滞) ——— 2026-09-14 祭司反攻期阵亡根因修复 =====
+    //   ⚠ 必须在 D-1 与 D0 之前一次性算好，两处共用同一个 guardSN。若各处自算，
+    //     两处互相覆盖同样会造成逐帧跳变（铁律 14）。
+    //   旧行为：`for (e : enemy_armies) if (e.WorkObjectSN == priestSN) { pick; break; }`
+    //     → 取"第一个"锁定祭司的敌人，而 info.enemy_armies 遍历顺序逐帧可变
+    //     ⇒ 目标在两个等价敌人之间翻转 ⇒ 下游 `a.WorkObjectSN != guardSN` 恒为真
+    //     ⇒ 每帧重发 HumanAction ⇒ 引擎攻击瞄准进度永远归零 ⇒ 全军零输出（铁律 14）。
+    //     铁证（pu5/pu7/ez3 祭司死亡局，死前 400 帧）：
+    //       pu5 发令 1232 / 真出手 595，单位目标精确 77:77 两两交替；
+    //       pu7 91406 发令 141 / 出手 0；ez3 91425 发令 67 / 出手 0。
+    //   新行为：① 候选取【最近】(决定性，与容器顺序无关)；
+    //          ② 目标【粘滞】(铁律 17)：旧目标仍存活且仍锁祭司/仍在预警圈内 → 不切换；
+    //          ③ 发令再加 15 帧/单位节流（兜底，防任何残余跳变打断输出）。
+    int priestGuardCand = -1;
+    bool priestGuardLocked = false;
+    if (priestAlive) {
+        // 候选A：最近的"正在攻击祭司"的敌人（不限距离——祭司死=立刻失败，铁律优先）
+        double bestCandD = 1e12;
+        for (auto &e : info.enemy_armies) {
+            if (e.WorkObjectSN != priestSN) continue;
+            double d = calDistance(priestDR, priestUR, e.DR, e.UR);
+            if (d < bestCandD) { bestCandD = d; priestGuardCand = e.SN; }
+        }
+        if (priestGuardCand >= 0) {
+            priestGuardLocked = true;
+        } else {
+            // 候选B：祭司预警圈内最近敌（优先非投石车，投石车留给祭司感化）
+            int u = findNearestEnemyNoStone(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
+            if (u < 0) u = findNearestEnemySN(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
+            if (u >= 0) priestGuardCand = u;
+        }
+        // ★ 粘滞：旧目标仍存活且仍具护驾价值 → 保留旧目标，绝不因"新目标略近"而切换。
+        //   ⚠ 优先级不可搞反：若新候选【正在攻击祭司】而旧目标【没在攻击祭司】，
+        //     必须切换到新候选——否则会出现"真正的凶手在 2 格外杀祭司，我们却仍在打
+        //     19 格外的路人"这种致命失误。粘滞只用于"两个候选同类(都在锁祭司)"的翻转场景。
+        if (priestGuardCand >= 0 && priestGuardTarget > 0 && priestGuardTarget != priestGuardCand) {
+            bool oAlive = false, oLocks = false; double od = 1e12;
+            for (auto &e : info.enemy_armies)
+                if (e.SN == priestGuardTarget) {
+                    oAlive = true; od = calDistance(priestDR, priestUR, e.DR, e.UR);
+                    oLocks = (e.WorkObjectSN == priestSN); break;
+                }
+            if (!oAlive)
+                for (auto &e : info.enemy_farmers)
+                    if (e.SN == priestGuardTarget) { oAlive = true; od = calDistance(priestDR, priestUR, e.DR, e.UR); break; }
+            // 保留旧目标的两种情形：
+            //   ① 旧目标仍锁祭司（同类翻转场景——本次 bug 的正体）→ 保留，消除 77:77 交替；
+            //   ② 新候选并未锁祭司，且旧目标仍在预警圈内 → 保留（避免"最近敌"逐帧漂移）。
+            const bool candLocks = priestGuardLocked;   // priestGuardLocked 此刻 = 候选是否锁祭司
+            bool keepOld = (oLocks) || (!candLocks && od <= PRIEST_GUARD_ALERT * BL + 4.0 * BL);
+            if (oAlive && keepOld) {
+                priestGuardCand = priestGuardTarget;   // ★ 粘滞命中：沿用旧目标
+                priestGuardLocked = priestGuardLocked || oLocks;
+            }
+        }
+        // ★ 诊断：仅当目标【真正变化】才刷新时间戳，使 `age = frame - priestGuardTargetFrame`
+        //   反映"当前目标已被稳定持有多少帧"（原为每帧刷新 ⇒ age 恒 0，失去诊断价值）。
+        //   纯诊断字段，不影响行为。
+        if (priestGuardCand != priestGuardTarget) priestGuardTargetFrame = frame;
+        priestGuardTarget = priestGuardCand;
+    } else {
+        priestGuardTarget = -1;
+    }
+
     // --- D-1: 祭司护驾（★最高优先级，先于士兵自卫/守家/前出；祭司死=立刻失败） ---
     //   三级：紧急(敌≤8格)→所有兵回防(可打断战斗)；预警(敌≤15格)→空闲/行军兵前往护驾。
     //   目标优先选非投石车(留给祭司感化)；若威胁祭司的只有投石车，保命优先照打。
     //   只召回距祭司 PRIEST_GUARD_RECALL 内的兵，避免把反攻大军从全图拉回。
     std::map<int,int> guardIssued;   // 本帧已下达护驾令的兵：下方 D1/D2 不得抢占覆盖
     if (priestAlive) {
-        // ★★ 最高优先级：有敌人正以祭司为目标(WorkObjectSN==priestSN) → 立刻全军扑上拉仇恨。
-        //    无视 8/15 距离门槛(远程敌可站 12 格外射祭司)、打断一切战斗、不计召回距离(生死攸关)。
-        int attackingPriestSN = -1;
-        for (auto &e : info.enemy_armies) {
-            if (e.WorkObjectSN == priestSN) { attackingPriestSN = e.SN; break; }
-        }
-
-        // 优先非投石车目标；没有再退化为任意敌(含投石车)
+        const int attackingPriestSN = priestGuardLocked ? priestGuardTarget : -1;
         int urgentSN = findNearestEnemyNoStone(priestDR, priestUR, PRIEST_GUARD_URGENT * BL);
         if (urgentSN < 0) urgentSN = findNearestEnemySN(priestDR, priestUR, PRIEST_GUARD_URGENT * BL);
-        int alertSN  = findNearestEnemyNoStone(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
-        if (alertSN < 0) alertSN = findNearestEnemySN(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
 
-        int guardSN = (attackingPriestSN >= 0) ? attackingPriestSN
-                    : ((urgentSN >= 0) ? urgentSN : alertSN);
+        const int guardSN = priestGuardTarget;   // ★ 已含粘滞（D-1 前置段解算）
         if (guardSN >= 0) {
             const bool lockedOn = (attackingPriestSN >= 0);   // 敌人已锁定祭司：最高紧急，不计召回距离
             const bool urgent = lockedOn || (urgentSN >= 0);
@@ -4125,15 +4154,22 @@ void UsrAI::manageMilitary() {
                 // 已接令/正在攻击该目标(引擎 Core.cpp:433 会把 WorkObjectSN 设为目标SN)→不重发，
                 // 否则每帧重复 HumanAction 会不断打断攻击动作→兵原地横跳、输出为零。
                 if (a.WorkObjectSN == guardSN) continue;
+                // ★ 节流兜底（2026-09-14）：即便目标仍发生跳变，同一单位 15 帧内也只重发一次，
+                //   保证攻击瞄准至少 ~0.6 秒不被打断（粘滞为主，本闸为兜底）。
+                auto gcf = guardCmdFrame.find(a.SN);
+                if (gcf != guardCmdFrame.end() && frame - gcf->second < 15) continue;
                 // 预警级不打断正在战斗的兵；紧急级(敌已锁祭司/贴到8格内)一律召回
                 if (a.NowState == HUMAN_STATE_ATTACKING && !urgent) continue;
                 if (!lockedOn && calDistance(a.DR, a.UR, priestDR, priestUR) > PRIEST_GUARD_RECALL * BL) continue;
                 HumanAction(a.SN, guardSN);
+                guardCmdFrame[a.SN] = frame;
                 guardIssued[a.SN] = 1;
                 guardCmds++;
             }
             if (urgent && frame % 50 == 0)
-                DebugText(QString("[PRIEST GUARD] %1 SN=%2 cmds=%3").arg(lockedOn ? "LOCKED-ON" : "urgent").arg(guardSN).arg(guardCmds));
+                DebugText(QString("[PRIEST GUARD] %1 SN=%2 cmds=%3 age=%4")
+                          .arg(lockedOn ? "LOCKED-ON" : "urgent").arg(guardSN).arg(guardCmds)
+                          .arg(frame - priestGuardTargetFrame));
         }
     }
 
@@ -4156,13 +4192,15 @@ void UsrAI::manageMilitary() {
 
             // ★ 优先级1（护驾）：正在攻击祭司的敌人 → 全军扑上去
             //   （★取消原 enemyNearTC "敌须在TC 25格内"门槛：祭司在哪就保到哪，保命高于守家）
-            int attackingPriest = -1;
-            for (auto &e : info.enemy_armies) {
-                if (e.WorkObjectSN == priestSN) { attackingPriest = e.SN; break; }
-            }
+            // ★ 优先级1（护驾）：正在攻击祭司的敌人 → 全军扑上去
+            //   ★ 2026-09-14 复用 D-1 前置段解算好的【粘滞】目标，绝不在此处重算：
+            //     旧版在此 `for(...) if (WorkObjectSN==priestSN) {pick; break;}` 取"第一个"，
+            //     与 D-1 的取值可能不同 ⇒ 同帧两处互相覆盖 + 逐帧翻转 ⇒ 攻击进度归零。
+            int attackingPriest = priestGuardLocked ? priestGuardTarget : -1;
             if (attackingPriest >= 0) {
                 if (a.WorkObjectSN != attackingPriest) {   // 已在打它→不重发，防打断输出
                     HumanAction(a.SN, attackingPriest);
+                    guardCmdFrame[a.SN] = frame;
                     attackCmds++;
                 }
                 continue;
@@ -4176,22 +4214,33 @@ void UsrAI::manageMilitary() {
             //     修复：反攻期(COUNTERATTACK)加 PRIEST_GUARD_RECALL(30格) 闸——远征军交给
             //     manageCounterAttack 的推进调度，护驾只由祭司身边的就近兵力承担。
             //     ⚠ 优先级1（敌已锁祭司）不受此限——祭司死=立刻失败，铁律优先。
+            //   ★ 2026-09-14：目标改用 D-1 前置段的【粘滞】值（旧版用 priestEnemySN2=逐帧最近敌 ⇒ 抖）。
             if (priestThreatened) {
+                int guardTgt = (priestGuardTarget > 0) ? priestGuardTarget : priestEnemySN2;
                 bool tooFarInCounter = (state == COUNTERATTACK) &&
                     (calDistance(a.DR, a.UR, priestDR, priestUR) > PRIEST_GUARD_RECALL * BL);
-                if (!tooFarInCounter && a.WorkObjectSN != priestEnemySN2) {    // 已在打它→不重发，防打断输出
-                    HumanAction(a.SN, priestEnemySN2);
+                if (!tooFarInCounter && a.WorkObjectSN != guardTgt) {    // 已在打它→不重发，防打断输出
+                    HumanAction(a.SN, guardTgt);
+                    guardCmdFrame[a.SN] = frame;
                     attackCmds++;
                 }
                 continue;
             }
 
             // ★ 优先级3（自卫）：身边8格内有敌才反击——★ 排在护驾之后（用户要求：士兵优先保护祭司）
+            //   ★ 2026-09-14：加 `WorkObjectSN != selfEnemy` 去重 + 15 帧节流——旧版每帧无条件重发，
+            //     目标不变也会把攻击瞄准进度重置（铁律 14：同一目标的重复指令＝重置进度）。
             int selfEnemy = findNearestEnemyNoStone(a.DR, a.UR, 8 * BL);
             if (a.NowState != HUMAN_STATE_IDLE && selfEnemy < 0) continue;
             if (selfEnemy >= 0) {
-                HumanAction(a.SN, selfEnemy);
-                attackCmds++;
+                if (a.WorkObjectSN != selfEnemy) {
+                    auto scf = guardCmdFrame.find(a.SN);
+                    if (scf == guardCmdFrame.end() || frame - scf->second >= 15) {
+                        HumanAction(a.SN, selfEnemy);
+                        guardCmdFrame[a.SN] = frame;
+                        attackCmds++;
+                    }
+                }
                 continue;
             }
 
@@ -4655,32 +4704,50 @@ void UsrAI::manageCounterAttack() {
     }
 
     // ====== 1.5 祭司护驾（★优先于反攻推进：祭司死=立刻失败） ======
-    //   manageMilitary 的护驾令会被本函数的推进令【同帧覆盖】(UsrAI.cpp 124/127-129 每帧先跑
+    //   manageMilitary 的护驾令会被本函数的推进令【同帧覆盖】(UsrAI.cpp 434/438 每帧先跑
     //   manageMilitary、反攻期再追加本函数)，故反攻期必须在此再判一次，紧急时直接 return 停止推进。
+    //   ★★★ 2026-09-14 「祭司反攻期阵亡」真·根因修复 ★★★
+    //   旧版在此【第二次独立重算】护驾目标：`for(...) if (WorkObjectSN==priestSN) {pick; break;}`
+    //   ——取"第一个"锁祭司的敌人(容器顺序相关)，而 manageMilitary 取的是"最近"⇒ 两者取值不同
+    //   且都逐帧漂移 ⇒ 同一单位在同一帧先收 91163、再被覆盖成 91146，下一帧又反回来
+    //   ⇒ 目标在 91146/91163 之间【精确交替】(实测 103:102) ⇒ 引擎攻击瞄准进度永远归零
+    //   ⇒ 全军零输出(铁律 14) ⇒ 祭司被原地磨死(pg1 hp 0.54→0.42→0.30→0.18→死，护驾 cmds=0)。
+    //   修：① 目标改为【只读】manageMilitary 已裁决的粘滞值 priestGuardTarget（含"最近"决定性
+    //         选取 + 同类翻转粘滞），本函数不再自算，从根上消除两函数互相覆盖；
+    //       ② 发令加 WorkObjectSN 去重 + 15 帧/单位节流（与 D-1 同口径）。
     {
         double pDR = 0, pUR = 0; bool pAlive = false;
         for (auto &a : info.armies) if (a.Sort == AT_PRIEST) { pDR = a.DR; pUR = a.UR; pAlive = true; break; }
         if (pAlive) {
-            // ★ 敌人已锁祭司(WorkObjectSN==priestSN) 或 紧急(敌≤PRIEST_GUARD_URGENT 格) → 叫停反攻回防。
+            // ★ 敌人已锁祭司(WorkObjectSN==priestSN) → 最高紧急
             int attackingPriestSN = -1;
             for (auto &e : info.enemy_armies) {
                 if (e.WorkObjectSN == priestSN) { attackingPriestSN = e.SN; break; }
             }
-            int guardSN = attackingPriestSN;
-            if (guardSN < 0) {
-                guardSN = findNearestEnemyNoStone(pDR, pUR, PRIEST_GUARD_URGENT * BL);
-                if (guardSN < 0) guardSN = findNearestEnemySN(pDR, pUR, PRIEST_GUARD_URGENT * BL);
-            }
+            int urgentSN = findNearestEnemyNoStone(pDR, pUR, PRIEST_GUARD_URGENT * BL);
+            if (urgentSN < 0) urgentSN = findNearestEnemySN(pDR, pUR, PRIEST_GUARD_URGENT * BL);
+
+            // ① 发令目标：优先复用 manageMilitary 的粘滞裁决（跨函数唯一真源）
+            int guardSN = (priestGuardTarget > 0) ? priestGuardTarget
+                        : ((attackingPriestSN >= 0) ? attackingPriestSN : urgentSN);
             if (guardSN >= 0) {
                 for (auto &a : info.armies) {
                     if (a.Sort == AT_PRIEST) continue;
                     if (a.WorkObjectSN == guardSN) continue;   // 已在打它→不重发，防打断输出
+                    auto gcf = guardCmdFrame.find(a.SN);
+                    if (gcf != guardCmdFrame.end() && frame - gcf->second < 15) continue;  // 节流兜底
                     if (attackingPriestSN < 0 && calDistance(a.DR, a.UR, pDR, pUR) > PRIEST_GUARD_RECALL * BL) continue;
                     HumanAction(a.SN, guardSN);
+                    guardCmdFrame[a.SN] = frame;
                 }
-                if (frame % 50 == 0)
-                    DebugText(QString("[PRIEST GUARD] counterattack HALT -> defend priest, target SN=%1").arg(guardSN));
-                return;
+                // ② 叫停反攻的门槛保持原判据（敌已锁祭司 或 敌≤URGENT 8 格）——
+                //    不可放宽到 ALERT(15)：那会让"祭司附近路过的任何敌人"都令全军停止推进，
+                //    反攻可能永远推不出去（2026-09-11 同类教训）。
+                if (attackingPriestSN >= 0 || urgentSN >= 0) {
+                    if (frame % 50 == 0)
+                        DebugText(QString("[PRIEST GUARD] counterattack HALT -> defend priest, target SN=%1").arg(guardSN));
+                    return;
+                }
             }
         }
     }
@@ -5718,30 +5785,30 @@ tagFarmer* UsrAI::findIdleFarmerNear(double dr, double ur) {
 }
 
 tagFarmer* UsrAI::findAnyFarmer() {
-    // ★★★ 2026-09-14 修【优先级死代码】★★★
-    //   原判据 `f.NowState == HUMAN_STATE_WORKING && f.ResourceSort == HUMAN_STONE`（金/木同构）
-    //   把【手持资源】当【正在采集的资源】用 —— 而 WORKING = 正在采集，此刻手上恰恰【没有】资源
-    //   ⇒ 前三轮（石→金→木）恒返回 nullptr，是死代码；实际每次都落到第 4 轮"任取一个在干活的人"，
-    //   "优先抽采石工、其次采金工、最后伐木工"的设计优先级从未生效（抽谁全凭遍历顺序）。
-    //   改用 WorkObjectSN 指向的资源类型来判定"正在采什么"，优先级才真正落地。
-    //   抽人损失由小到大：采石工(仅1人且塔建完即停) < 采金工 < 伐木工 < 其他。
-    auto ok = [&](tagFarmer &f)->bool {
-        if (f.FarmerSort != FARMERTYPE_FARMER) return false;
-        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) return false;
-        if (f.Resource > 0) return false;
-        return true;
-    };
-    auto workingOn = [&](tagFarmer &f, int resType)->bool {
-        if (f.NowState != HUMAN_STATE_WORKING || f.WorkObjectSN <= 0) return false;
-        for (auto &r : info.resources)
-            if (r.SN == f.WorkObjectSN) return (r.Type == resType);
-        return false;
-    };
-    for (auto &f : info.farmers) if (ok(f) && workingOn(f, RESOURCE_STONE)) return &f;
-    for (auto &f : info.farmers) if (ok(f) && workingOn(f, RESOURCE_GOLD))  return &f;
-    for (auto &f : info.farmers) if (ok(f) && workingOn(f, RESOURCE_TREE))  return &f;
-    for (auto &f : info.farmers)
-        if (ok(f) && f.NowState != HUMAN_STATE_IDLE && f.NowState != HUMAN_STATE_ATTACKING) return &f;
+    for (auto &f : info.farmers) {
+        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) continue;
+        if (f.Resource > 0) continue;
+        if (f.NowState == HUMAN_STATE_WORKING && f.ResourceSort == HUMAN_STONE) return &f;
+    }
+    for (auto &f : info.farmers) {
+        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) continue;
+        if (f.Resource > 0) continue;
+        if (f.NowState == HUMAN_STATE_WORKING && f.ResourceSort == HUMAN_GOLD) return &f;
+    }
+    for (auto &f : info.farmers) {
+        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) continue;
+        if (f.Resource > 0) continue;
+        if (f.NowState == HUMAN_STATE_WORKING && f.ResourceSort == HUMAN_WOOD) return &f;
+    }
+    for (auto &f : info.farmers) {
+        if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+        if (buildingFarmerType.count(f.SN) || waveBlockers.count(f.SN)) continue;
+        if (f.Resource > 0) continue;
+        if (f.NowState != HUMAN_STATE_IDLE && f.NowState != HUMAN_STATE_ATTACKING) return &f;
+    }
     return nullptr;
 }
 tagBuilding* UsrAI::findBuilding(int type) {
