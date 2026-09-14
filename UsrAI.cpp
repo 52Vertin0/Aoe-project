@@ -205,6 +205,9 @@ ins UsrIns;
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 2026-09-13 保祭司：反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
+// ★★★ 2026-09-14 感化前出许可（放宽 localClear）★★★
+#define PRIEST_SIEGE_NEAR_TOWER 15.0  // 敌方箭塔距祭司 < 此值 = 塔压制，禁止前出感化武器厂
+#define PRIEST_SIEGE_GUARD_R    20.0  // 掩护统计半径(格)：此半径内【我军数 >= 敌军数】才允许前出
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
 //   马厩 = 学院前置（Development.cpp:804 addPreCondition(STABLE.buildCon)），不解马厩则学院永远建不出。
@@ -5279,18 +5282,43 @@ void UsrAI::manageCounterAttack() {
         //     实测 8 局里"全局敌全灭"从未出现的概率极高（7/8 局敌军队一直存在），
         //     而用户描述的场景本质是"祭司身边已经安全了，就该去干活"。
         //     ⇒ 局部清场判据既覆盖用户场景，又不会让祭司在有兵有塔时莽撞前出。
-        int enemyMil = 0;
-        for (auto &e : info.enemy_armies) if (e.Blood > 0) enemyMil++;
+        //   ⚠ 2026-09-14：enemyMil（全局敌军数）统计已删除——新判据不再用它，留着会新增 unused 警告。
         int enemyTowers = 0;
         for (auto &b : info.enemy_buildings) if (b.Type == BUILDING_ARROWTOWER) enemyTowers++;
-        // 局部清场：祭司 20 格内无活敌军队、无箭塔
-        bool localClear = true;
-        for (auto &e : info.enemy_armies)
-            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < 20.0 * BL) { localClear = false; break; }
-        if (localClear)
-            for (auto &b : info.enemy_buildings)
-                if (b.Type == BUILDING_ARROWTOWER &&
-                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 20.0 * BL) { localClear = false; break; }
+        // ★★★ 2026-09-14 放宽局部清场判据（用户拍板"直接做"）★★★
+        //   旧判据 = 祭司 20 格内【存在】活敌军队 / 敌箭塔 → localClear=false。
+        //   反攻期祭司随军推进，20 格内几乎必有敌军与箭塔 ⇒ localClear 恒 false
+        //     ⇒ allowConvertSiege 恒 false ⇒ 祭司被 18 格安全距离钉在后方
+        //     ⇒ 永远够不到 12 格射程内的武器厂 ⇒ 感化 0 次。
+        //   实测 ce 批次：8 局里 6 局已"发现武器厂"却只赢 1 局，全部卡在此判据
+        //     （ce6 在 f=34800 就发现、剩 10270 帧 ≈6.8 分钟仍失败 ⇒ 不是"太晚"，是"够不着"）。
+        //   新判据 = 【祭司自身是否被直接威胁】+【是否有掩护】，而非"附近有没有敌人"：
+        //     ① 无敌人进入其自身攻击半径（远程 12 格 / 近战 2.5 格，与 cpp:759 同口径）→ 真威胁
+        //     ② 敌方箭塔不在 PRIEST_SIEGE_NEAR_TOWER(15) 格内 → 无塔压制
+        //     ③ 掩护：PRIEST_SIEGE_GUARD_R(20) 格内我军数量 >= 敌军数量 → 有军队顶着，非孤军深入
+        //     ④ 祭司血量 > PRIEST_COUNTER_FLEE_HP → 与保命闸同源（保命优先于感化）
+        //   ⇒ 保命闸 / 迟滞锁 / PRIEST_COUNTER_FLEE_HP 全部保留兜底；
+        //     一旦①成立（敌人真能打到祭司）立即回到禁止前出，祭司随 5348 行 else 分支后撤。
+        bool nearThreat = false;          // ① 有敌人已进入自身攻击半径
+        int  nearAlly = 0, nearEnemy = 0; // ③ 掩护对比
+        for (auto &a : info.armies)
+            if (a.SN != priestSN && a.Blood > 0 &&
+                calDistance(priest->DR, priest->UR, a.DR, a.UR) < PRIEST_SIEGE_GUARD_R * BL) nearAlly++;
+        for (auto &e : info.enemy_armies) {
+            if (e.Blood <= 0) continue;
+            double dE = calDistance(priest->DR, priest->UR, e.DR, e.UR);
+            if (dE < PRIEST_SIEGE_GUARD_R * BL) nearEnemy++;
+            double eR = (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
+                         e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
+                         e.Sort == AT_STONE_THROWER) ? 12.0 * BL : 2.5 * BL;
+            if (dE <= eR) nearThreat = true;
+        }
+        bool nearTower = false;           // ② 敌箭塔压制
+        for (auto &b : info.enemy_buildings)
+            if (b.Type == BUILDING_ARROWTOWER &&
+                calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_NEAR_TOWER * BL) { nearTower = true; break; }
+        double pBRg = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
+        bool localClear = !nearThreat && !nearTower && (nearAlly >= nearEnemy) && (pBRg > PRIEST_COUNTER_FLEE_HP);
         bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear;
         // ★【2026-09-08 二次修】原"扩到 28 格后 priestEnemy>=0 return"——WRONG-LAYER return 又踩坑:
         //   反攻期祭司前出后 28 格内**恒有敌** → return 几乎每帧触发 → 祭司段永远跑不到 → 停在 TC 不动。
@@ -5304,12 +5332,13 @@ void UsrAI::manageCounterAttack() {
         //   新方案：祭司冲到反攻目标 PRIEST_MIN_DIST_TARGET 格内(太靠前)→本帧强制后撤到【大队后方安全距离】，
         //   不感化武器厂(避免被钉在前线送命)；只有已在安全范围才允许【被动】感化武器厂(不主动前出)。
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
-        // ★ 2026-09-13：敌方已清场(enemyMil==0 && enemyTowers==0)时，安全距离约束失效 ——
-        //   否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂（这就是"不感化"的根因）。
+        // ★ 2026-09-13 制定 / 2026-09-14 放宽判据：祭司自身无直接威胁且我军不输于敌军时，
+        //   解除 18 格安全距离约束 —— 否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂
+        //   （这就是"发现武器厂却感化不了"的根因；放宽后的判据见上方 localClear 段）。
         if (allowConvertSiege) priestTooClose = false;
 
-        // ★★★ 2026-09-13 用户需求：敌方军队全灭 + 箭塔全拆 → 祭司主动前出感化武器厂 ★★★
-        //   优先级高于"后撤保命"（清场后无威胁，前出不会送命）。
+        // ★★★ 2026-09-13 用户需求：祭司前出感化敌方武器厂 ★★★
+        //   优先级高于"后撤保命"（allowConvertSiege 已保证祭司自身无直接威胁，前出不会送命）。
         if (allowConvertSiege && siege && priest->ConvertCooldown <= 0) {
             double dSiege = calDistance(priest->DR, priest->UR, targetDR, targetUR);
             if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
@@ -5317,8 +5346,8 @@ void UsrAI::manageCounterAttack() {
                 HumanAction(priestSN, siege->SN);
                 priestCounterCooldown = 60; priestMoveCooldown = 60;
                 if (frame % 50 == 0)
-                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 敌已清场(mil=%3 twr=%4)")
-                              .arg(frame).arg(dSiege / BL, 0, 'f', 1).arg(enemyMil).arg(enemyTowers));
+                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 ally=%3 enemy=%4 towers=%5")
+                              .arg(frame).arg(dSiege / BL, 0, 'f', 1).arg(nearAlly).arg(nearEnemy).arg(enemyTowers));
             } else if (priestCounterCooldown <= 0) {
                 // 在射程外 → 主动朝武器厂推进（清场状态，不怕前出）
                 double ux2 = (targetDR - priest->DR), uy2 = (targetUR - priest->UR);
