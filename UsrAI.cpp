@@ -178,14 +178,18 @@ ins UsrIns;
 //   → 大部队直接全图寻路直达，省去逐格摸索。故侦察骑兵训练开关设 false。
 #define ENABLE_SCOUT_RECON false
 // ★ 2026-09-07 由 20 下调到 12（用户实测驱动）：
-//   反攻态已由 updateState 在「三波全清 / frame>27000 强制」时进入，此时敌方主力已被消灭，
+//   反攻态已由 updateState 在「三波全清 / frame>COUNTER_ATTACK_FORCE_TIME 强制」时进入，此时敌方主力已被消灭，
 //   再等 20 人已无意义；而实测军队长期停在 12 人左右（复合弓 15 分钟前停产 + 战损），
 //   导致 readyToAttack 恒 false ⇒ ① kiting 整段被跳过（"反攻时不会后撤"）
 //   ② 全军被 4143 段反复 HumanMove 回 TC 同一点（"复合弓兵在 TC 附近来回走"）。
 //   ⚠ 改小=更早推进、更零散；改大=更保守但要等更久（24 分钟强制兜底仍在）。
 #define COUNTER_ATTACK_MIN_ARMY 12   // ★ 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
-#define COUNTER_ATTACK_FORCE_TIME 36000 // 24分钟强制反攻(=36000帧,1500帧/分钟)：即使人数不足也一起进攻
-                                        // （2026-09-04 用户要求：22分钟→24分钟，多留2分钟集结攒兵）
+#define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
+                                        // （2026-09-14 用户要求：24分钟→22分钟，提前2分钟反攻，
+                                        //   目的是给"发现敌方武器厂"留更长的窗口——实测胜局均在
+                                        //   26~28.5 分钟才探到武器厂，距 45000 帧上限仅剩 1~4 分钟）
+                                        // 沿革：2026-09-04 用户要求 22→24 分钟(多留2分钟集结攒兵)；
+                                        //       本次按新需求回调至 22 分钟。
 // ★ 祭司护驾三级半径(格)：祭司死=立刻失败，故护驾优先于士兵自卫/守家/前出等一切军事行为
 #define PRIEST_GUARD_URGENT 8.0   // 紧急：敌进入祭司此半径 → 所有兵(可打断战斗)立即回防
 #define PRIEST_GUARD_ALERT  15.0  // 预警：敌进入祭司此半径 → 空闲/行军兵前往护驾(不打断正在战斗的兵，防反复横跳)
@@ -605,11 +609,14 @@ void UsrAI::updateState() {
                 DebugText(QString(">> ALL WAVES DEFEATED! Counterattack! Frame=%1").arg(frame));
             }
         }
-        // 超时强制反击：与 COUNTER_ATTACK_FORCE_TIME 对齐(=24 分钟=36000 帧)
+        // 超时强制反击：与 COUNTER_ATTACK_FORCE_TIME 对齐(=22 分钟=33000 帧)
         //   【修正 2026-09-08】原 27000 帧(18 分钟)与反攻内部门槛 36000 不一致 →
         //     用户实测 19 分钟(28500 帧)就触发反攻，导致 armyCount 远未达 12 即提前全军出击，
         //     零散士兵+祭司被敌方集火送命。改：对齐 COUNTER_ATTACK_FORCE_TIME，
-        //     给 W3~CounterAttack 之间留足集结时间(14 分 W3 开打 → 24 分反攻，整 10 分钟缓冲)。
+        //     给 W3~CounterAttack 之间留足集结时间(14 分 W3 开打 → 22 分反攻，整 8 分钟缓冲)。
+        //   【2026-09-14】用户要求提前 2 分钟反攻(24→22)，缓冲由 10 分钟收缩到 8 分钟；
+        //     兵力门槛 COUNTER_ATTACK_MIN_ARMY=12 不变——早于门槛仍会被 readyToAttack 拦住，
+        //     不会出现"兵力不足强推"的旧问题(旧问题源于 27000 与内部门槛不一致)。
         if (frame > COUNTER_ATTACK_FORCE_TIME && state == DEFENSE_WAVE3) {
             state = COUNTERATTACK;
             DebugText("!! Force COUNTERATTACK (timeout)");
@@ -4632,7 +4639,7 @@ void UsrAI::manageCounterAttack() {
     int armyCount = 0;
     for (auto &a : info.armies) if (a.Sort != AT_PRIEST) armyCount++;  // 非祭司军队总数(近战集结门槛用)
     // ★ 全体反攻门槛：所有军事单位(非祭司，含远程/近战/投石车)≥COUNTER_ATTACK_MIN_ARMY 才一起反攻；
-    //   或到 COUNTER_ATTACK_FORCE_TIME(24分钟) 强制一起进攻——避免人数不足时零散冲出被敌方集火。
+    //   或到 COUNTER_ATTACK_FORCE_TIME(22分钟) 强制一起进攻——避免人数不足时零散冲出被敌方集火。
     bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY) || (frame >= COUNTER_ATTACK_FORCE_TIME);
     // 集结中心：未达门槛时全军回己方 TC 附近集结待命(形成密集兵力，来敌也能抱团防守)
     tagBuilding* rallyTC = findBuilding(BUILDING_CENTER);
