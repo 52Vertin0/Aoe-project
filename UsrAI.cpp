@@ -227,6 +227,19 @@ ins UsrIns;
 #define PRIEST_SIEGE_CLEAR_TOWER_R 14.0  // 清场判据：敌【箭塔】须距祭司 < 此值才算"未清场"（塔是静态远程，留更大余量）
 #define PRIEST_SIEGE_ABORT_R       4.5   // 迟滞锁解除阈值：敌贴到祭司此半径内 ⇒ 视为真危险，解除前出
 #define PRIEST_SIEGE_ABORT_HP      0.35  // 迟滞锁解除阈值：祭司血量低于此值 ⇒ 解除前出（交给保命逻辑）
+// ★ 2026-09-14 新增（起因：用户追问「祭司为什么在敌方箭塔没全部拆完的情况下就去感化武器厂？」）：
+//   迟滞锁 priestSiegeApproach 的【置位】含"14 格内无箭塔"，【复位】却只有"敌军队 4.5 格 + 血量 0.35"
+//   ⇒ 箭塔维度只在置位那一帧被评估一次，此后永远不再参与判据 = 单向闩锁（违反铁律 9：复位须与置位同源）。
+//   铁证 pg7：f=41458 发现武器厂 → f=41768 敌塔 11107 开火打祭司 → f=41865 祭司仍被下令感化
+//   → f=42176 祭司死（0.85 血一路被打空）。
+//   半径取 12.0 = 箭塔射程（与 cpp:786 chkThreat 的 12.0*BL 口径一致）⇒ 只有"塔真能打到"才算危险。
+//   ★ 为什么不用 13/14：tl 批次首测（13 格版）实测把"本来能赢的推进"也挡了——赢局的感化起手
+//     发生在祭司距塔 12~17 格时（起手后祭司走进去，塔距才降到 6~8 格），13 格闸覆盖面过大。
+#define PRIEST_SIEGE_ABORT_TOWER_R 12.0  // 迟滞闩锁【置位】半径：敌箭塔进入此半径(=射程) ⇒ 视为真危险
+// ★ 2026-09-14 迟滞带（本轮血的教训）：首测版只用"置位 13 / 复位 13"= 1 格带 ⇒ 边界处逐帧翻转：
+//   tl 批次 41 次"解除→重锁"抖动，祭司在"前出点/后撤点"之间 30~60 帧一换向、净位移≈0（tl4 f=42900~45000
+//   dS 恒在 14.6~15.0 空转 900 帧）。现按铁律 13 拉开迟滞带：危险线 12、重新放行线 18。
+#define PRIEST_SIEGE_REARM_TOWER_R 18.0  // 迟滞闩锁【复位】半径：全部敌箭塔退出此半径，才重新放行前出
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
@@ -4067,81 +4080,27 @@ void UsrAI::manageMilitary() {
         priestThreatened = (priestEnemySN2 >= 0);
     }
 
-    // ===== D-1 前置：解算【护驾目标】(粘滞) ——— 2026-09-14 祭司反攻期阵亡根因修复 =====
-    //   ⚠ 必须在 D-1 与 D0 之前一次性算好，两处共用同一个 guardSN。若各处自算，
-    //     两处互相覆盖同样会造成逐帧跳变（铁律 14）。
-    //   旧行为：`for (e : enemy_armies) if (e.WorkObjectSN == priestSN) { pick; break; }`
-    //     → 取"第一个"锁定祭司的敌人，而 info.enemy_armies 遍历顺序逐帧可变
-    //     ⇒ 目标在两个等价敌人之间翻转 ⇒ 下游 `a.WorkObjectSN != guardSN` 恒为真
-    //     ⇒ 每帧重发 HumanAction ⇒ 引擎攻击瞄准进度永远归零 ⇒ 全军零输出（铁律 14）。
-    //     铁证（pu5/pu7/ez3 祭司死亡局，死前 400 帧）：
-    //       pu5 发令 1232 / 真出手 595，单位目标精确 77:77 两两交替；
-    //       pu7 91406 发令 141 / 出手 0；ez3 91425 发令 67 / 出手 0。
-    //   新行为：① 候选取【最近】(决定性，与容器顺序无关)；
-    //          ② 目标【粘滞】(铁律 17)：旧目标仍存活且仍锁祭司/仍在预警圈内 → 不切换；
-    //          ③ 发令再加 15 帧/单位节流（兜底，防任何残余跳变打断输出）。
-    int priestGuardCand = -1;
-    bool priestGuardLocked = false;
-    if (priestAlive) {
-        // 候选A：最近的"正在攻击祭司"的敌人（不限距离——祭司死=立刻失败，铁律优先）
-        double bestCandD = 1e12;
-        for (auto &e : info.enemy_armies) {
-            if (e.WorkObjectSN != priestSN) continue;
-            double d = calDistance(priestDR, priestUR, e.DR, e.UR);
-            if (d < bestCandD) { bestCandD = d; priestGuardCand = e.SN; }
-        }
-        if (priestGuardCand >= 0) {
-            priestGuardLocked = true;
-        } else {
-            // 候选B：祭司预警圈内最近敌（优先非投石车，投石车留给祭司感化）
-            int u = findNearestEnemyNoStone(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
-            if (u < 0) u = findNearestEnemySN(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
-            if (u >= 0) priestGuardCand = u;
-        }
-        // ★ 粘滞：旧目标仍存活且仍具护驾价值 → 保留旧目标，绝不因"新目标略近"而切换。
-        //   ⚠ 优先级不可搞反：若新候选【正在攻击祭司】而旧目标【没在攻击祭司】，
-        //     必须切换到新候选——否则会出现"真正的凶手在 2 格外杀祭司，我们却仍在打
-        //     19 格外的路人"这种致命失误。粘滞只用于"两个候选同类(都在锁祭司)"的翻转场景。
-        if (priestGuardCand >= 0 && priestGuardTarget > 0 && priestGuardTarget != priestGuardCand) {
-            bool oAlive = false, oLocks = false; double od = 1e12;
-            for (auto &e : info.enemy_armies)
-                if (e.SN == priestGuardTarget) {
-                    oAlive = true; od = calDistance(priestDR, priestUR, e.DR, e.UR);
-                    oLocks = (e.WorkObjectSN == priestSN); break;
-                }
-            if (!oAlive)
-                for (auto &e : info.enemy_farmers)
-                    if (e.SN == priestGuardTarget) { oAlive = true; od = calDistance(priestDR, priestUR, e.DR, e.UR); break; }
-            // 保留旧目标的两种情形：
-            //   ① 旧目标仍锁祭司（同类翻转场景——本次 bug 的正体）→ 保留，消除 77:77 交替；
-            //   ② 新候选并未锁祭司，且旧目标仍在预警圈内 → 保留（避免"最近敌"逐帧漂移）。
-            const bool candLocks = priestGuardLocked;   // priestGuardLocked 此刻 = 候选是否锁祭司
-            bool keepOld = (oLocks) || (!candLocks && od <= PRIEST_GUARD_ALERT * BL + 4.0 * BL);
-            if (oAlive && keepOld) {
-                priestGuardCand = priestGuardTarget;   // ★ 粘滞命中：沿用旧目标
-                priestGuardLocked = priestGuardLocked || oLocks;
-            }
-        }
-        // ★ 诊断：仅当目标【真正变化】才刷新时间戳，使 `age = frame - priestGuardTargetFrame`
-        //   反映"当前目标已被稳定持有多少帧"（原为每帧刷新 ⇒ age 恒 0，失去诊断价值）。
-        //   纯诊断字段，不影响行为。
-        if (priestGuardCand != priestGuardTarget) priestGuardTargetFrame = frame;
-        priestGuardTarget = priestGuardCand;
-    } else {
-        priestGuardTarget = -1;
-    }
-
     // --- D-1: 祭司护驾（★最高优先级，先于士兵自卫/守家/前出；祭司死=立刻失败） ---
     //   三级：紧急(敌≤8格)→所有兵回防(可打断战斗)；预警(敌≤15格)→空闲/行军兵前往护驾。
     //   目标优先选非投石车(留给祭司感化)；若威胁祭司的只有投石车，保命优先照打。
     //   只召回距祭司 PRIEST_GUARD_RECALL 内的兵，避免把反攻大军从全图拉回。
     std::map<int,int> guardIssued;   // 本帧已下达护驾令的兵：下方 D1/D2 不得抢占覆盖
     if (priestAlive) {
-        const int attackingPriestSN = priestGuardLocked ? priestGuardTarget : -1;
+        // ★★ 最高优先级：有敌人正以祭司为目标(WorkObjectSN==priestSN) → 立刻全军扑上拉仇恨。
+        //    无视 8/15 距离门槛(远程敌可站 12 格外射祭司)、打断一切战斗、不计召回距离(生死攸关)。
+        int attackingPriestSN = -1;
+        for (auto &e : info.enemy_armies) {
+            if (e.WorkObjectSN == priestSN) { attackingPriestSN = e.SN; break; }
+        }
+
+        // 优先非投石车目标；没有再退化为任意敌(含投石车)
         int urgentSN = findNearestEnemyNoStone(priestDR, priestUR, PRIEST_GUARD_URGENT * BL);
         if (urgentSN < 0) urgentSN = findNearestEnemySN(priestDR, priestUR, PRIEST_GUARD_URGENT * BL);
+        int alertSN  = findNearestEnemyNoStone(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
+        if (alertSN < 0) alertSN = findNearestEnemySN(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
 
-        const int guardSN = priestGuardTarget;   // ★ 已含粘滞（D-1 前置段解算）
+        int guardSN = (attackingPriestSN >= 0) ? attackingPriestSN
+                    : ((urgentSN >= 0) ? urgentSN : alertSN);
         if (guardSN >= 0) {
             const bool lockedOn = (attackingPriestSN >= 0);   // 敌人已锁定祭司：最高紧急，不计召回距离
             const bool urgent = lockedOn || (urgentSN >= 0);
@@ -4154,22 +4113,15 @@ void UsrAI::manageMilitary() {
                 // 已接令/正在攻击该目标(引擎 Core.cpp:433 会把 WorkObjectSN 设为目标SN)→不重发，
                 // 否则每帧重复 HumanAction 会不断打断攻击动作→兵原地横跳、输出为零。
                 if (a.WorkObjectSN == guardSN) continue;
-                // ★ 节流兜底（2026-09-14）：即便目标仍发生跳变，同一单位 15 帧内也只重发一次，
-                //   保证攻击瞄准至少 ~0.6 秒不被打断（粘滞为主，本闸为兜底）。
-                auto gcf = guardCmdFrame.find(a.SN);
-                if (gcf != guardCmdFrame.end() && frame - gcf->second < 15) continue;
                 // 预警级不打断正在战斗的兵；紧急级(敌已锁祭司/贴到8格内)一律召回
                 if (a.NowState == HUMAN_STATE_ATTACKING && !urgent) continue;
                 if (!lockedOn && calDistance(a.DR, a.UR, priestDR, priestUR) > PRIEST_GUARD_RECALL * BL) continue;
                 HumanAction(a.SN, guardSN);
-                guardCmdFrame[a.SN] = frame;
                 guardIssued[a.SN] = 1;
                 guardCmds++;
             }
             if (urgent && frame % 50 == 0)
-                DebugText(QString("[PRIEST GUARD] %1 SN=%2 cmds=%3 age=%4")
-                          .arg(lockedOn ? "LOCKED-ON" : "urgent").arg(guardSN).arg(guardCmds)
-                          .arg(frame - priestGuardTargetFrame));
+                DebugText(QString("[PRIEST GUARD] %1 SN=%2 cmds=%3").arg(lockedOn ? "LOCKED-ON" : "urgent").arg(guardSN).arg(guardCmds));
         }
     }
 
@@ -4192,15 +4144,13 @@ void UsrAI::manageMilitary() {
 
             // ★ 优先级1（护驾）：正在攻击祭司的敌人 → 全军扑上去
             //   （★取消原 enemyNearTC "敌须在TC 25格内"门槛：祭司在哪就保到哪，保命高于守家）
-            // ★ 优先级1（护驾）：正在攻击祭司的敌人 → 全军扑上去
-            //   ★ 2026-09-14 复用 D-1 前置段解算好的【粘滞】目标，绝不在此处重算：
-            //     旧版在此 `for(...) if (WorkObjectSN==priestSN) {pick; break;}` 取"第一个"，
-            //     与 D-1 的取值可能不同 ⇒ 同帧两处互相覆盖 + 逐帧翻转 ⇒ 攻击进度归零。
-            int attackingPriest = priestGuardLocked ? priestGuardTarget : -1;
+            int attackingPriest = -1;
+            for (auto &e : info.enemy_armies) {
+                if (e.WorkObjectSN == priestSN) { attackingPriest = e.SN; break; }
+            }
             if (attackingPriest >= 0) {
                 if (a.WorkObjectSN != attackingPriest) {   // 已在打它→不重发，防打断输出
                     HumanAction(a.SN, attackingPriest);
-                    guardCmdFrame[a.SN] = frame;
                     attackCmds++;
                 }
                 continue;
@@ -4214,33 +4164,22 @@ void UsrAI::manageMilitary() {
             //     修复：反攻期(COUNTERATTACK)加 PRIEST_GUARD_RECALL(30格) 闸——远征军交给
             //     manageCounterAttack 的推进调度，护驾只由祭司身边的就近兵力承担。
             //     ⚠ 优先级1（敌已锁祭司）不受此限——祭司死=立刻失败，铁律优先。
-            //   ★ 2026-09-14：目标改用 D-1 前置段的【粘滞】值（旧版用 priestEnemySN2=逐帧最近敌 ⇒ 抖）。
             if (priestThreatened) {
-                int guardTgt = (priestGuardTarget > 0) ? priestGuardTarget : priestEnemySN2;
                 bool tooFarInCounter = (state == COUNTERATTACK) &&
                     (calDistance(a.DR, a.UR, priestDR, priestUR) > PRIEST_GUARD_RECALL * BL);
-                if (!tooFarInCounter && a.WorkObjectSN != guardTgt) {    // 已在打它→不重发，防打断输出
-                    HumanAction(a.SN, guardTgt);
-                    guardCmdFrame[a.SN] = frame;
+                if (!tooFarInCounter && a.WorkObjectSN != priestEnemySN2) {    // 已在打它→不重发，防打断输出
+                    HumanAction(a.SN, priestEnemySN2);
                     attackCmds++;
                 }
                 continue;
             }
 
             // ★ 优先级3（自卫）：身边8格内有敌才反击——★ 排在护驾之后（用户要求：士兵优先保护祭司）
-            //   ★ 2026-09-14：加 `WorkObjectSN != selfEnemy` 去重 + 15 帧节流——旧版每帧无条件重发，
-            //     目标不变也会把攻击瞄准进度重置（铁律 14：同一目标的重复指令＝重置进度）。
             int selfEnemy = findNearestEnemyNoStone(a.DR, a.UR, 8 * BL);
             if (a.NowState != HUMAN_STATE_IDLE && selfEnemy < 0) continue;
             if (selfEnemy >= 0) {
-                if (a.WorkObjectSN != selfEnemy) {
-                    auto scf = guardCmdFrame.find(a.SN);
-                    if (scf == guardCmdFrame.end() || frame - scf->second >= 15) {
-                        HumanAction(a.SN, selfEnemy);
-                        guardCmdFrame[a.SN] = frame;
-                        attackCmds++;
-                    }
-                }
+                HumanAction(a.SN, selfEnemy);
+                attackCmds++;
                 continue;
             }
 
@@ -4704,50 +4643,32 @@ void UsrAI::manageCounterAttack() {
     }
 
     // ====== 1.5 祭司护驾（★优先于反攻推进：祭司死=立刻失败） ======
-    //   manageMilitary 的护驾令会被本函数的推进令【同帧覆盖】(UsrAI.cpp 434/438 每帧先跑
+    //   manageMilitary 的护驾令会被本函数的推进令【同帧覆盖】(UsrAI.cpp 124/127-129 每帧先跑
     //   manageMilitary、反攻期再追加本函数)，故反攻期必须在此再判一次，紧急时直接 return 停止推进。
-    //   ★★★ 2026-09-14 「祭司反攻期阵亡」真·根因修复 ★★★
-    //   旧版在此【第二次独立重算】护驾目标：`for(...) if (WorkObjectSN==priestSN) {pick; break;}`
-    //   ——取"第一个"锁祭司的敌人(容器顺序相关)，而 manageMilitary 取的是"最近"⇒ 两者取值不同
-    //   且都逐帧漂移 ⇒ 同一单位在同一帧先收 91163、再被覆盖成 91146，下一帧又反回来
-    //   ⇒ 目标在 91146/91163 之间【精确交替】(实测 103:102) ⇒ 引擎攻击瞄准进度永远归零
-    //   ⇒ 全军零输出(铁律 14) ⇒ 祭司被原地磨死(pg1 hp 0.54→0.42→0.30→0.18→死，护驾 cmds=0)。
-    //   修：① 目标改为【只读】manageMilitary 已裁决的粘滞值 priestGuardTarget（含"最近"决定性
-    //         选取 + 同类翻转粘滞），本函数不再自算，从根上消除两函数互相覆盖；
-    //       ② 发令加 WorkObjectSN 去重 + 15 帧/单位节流（与 D-1 同口径）。
     {
         double pDR = 0, pUR = 0; bool pAlive = false;
         for (auto &a : info.armies) if (a.Sort == AT_PRIEST) { pDR = a.DR; pUR = a.UR; pAlive = true; break; }
         if (pAlive) {
-            // ★ 敌人已锁祭司(WorkObjectSN==priestSN) → 最高紧急
+            // ★ 敌人已锁祭司(WorkObjectSN==priestSN) 或 紧急(敌≤PRIEST_GUARD_URGENT 格) → 叫停反攻回防。
             int attackingPriestSN = -1;
             for (auto &e : info.enemy_armies) {
                 if (e.WorkObjectSN == priestSN) { attackingPriestSN = e.SN; break; }
             }
-            int urgentSN = findNearestEnemyNoStone(pDR, pUR, PRIEST_GUARD_URGENT * BL);
-            if (urgentSN < 0) urgentSN = findNearestEnemySN(pDR, pUR, PRIEST_GUARD_URGENT * BL);
-
-            // ① 发令目标：优先复用 manageMilitary 的粘滞裁决（跨函数唯一真源）
-            int guardSN = (priestGuardTarget > 0) ? priestGuardTarget
-                        : ((attackingPriestSN >= 0) ? attackingPriestSN : urgentSN);
+            int guardSN = attackingPriestSN;
+            if (guardSN < 0) {
+                guardSN = findNearestEnemyNoStone(pDR, pUR, PRIEST_GUARD_URGENT * BL);
+                if (guardSN < 0) guardSN = findNearestEnemySN(pDR, pUR, PRIEST_GUARD_URGENT * BL);
+            }
             if (guardSN >= 0) {
                 for (auto &a : info.armies) {
                     if (a.Sort == AT_PRIEST) continue;
                     if (a.WorkObjectSN == guardSN) continue;   // 已在打它→不重发，防打断输出
-                    auto gcf = guardCmdFrame.find(a.SN);
-                    if (gcf != guardCmdFrame.end() && frame - gcf->second < 15) continue;  // 节流兜底
                     if (attackingPriestSN < 0 && calDistance(a.DR, a.UR, pDR, pUR) > PRIEST_GUARD_RECALL * BL) continue;
                     HumanAction(a.SN, guardSN);
-                    guardCmdFrame[a.SN] = frame;
                 }
-                // ② 叫停反攻的门槛保持原判据（敌已锁祭司 或 敌≤URGENT 8 格）——
-                //    不可放宽到 ALERT(15)：那会让"祭司附近路过的任何敌人"都令全军停止推进，
-                //    反攻可能永远推不出去（2026-09-11 同类教训）。
-                if (attackingPriestSN >= 0 || urgentSN >= 0) {
-                    if (frame % 50 == 0)
-                        DebugText(QString("[PRIEST GUARD] counterattack HALT -> defend priest, target SN=%1").arg(guardSN));
-                    return;
-                }
+                if (frame % 50 == 0)
+                    DebugText(QString("[PRIEST GUARD] counterattack HALT -> defend priest, target SN=%1").arg(guardSN));
+                return;
             }
         }
     }
@@ -5472,7 +5393,36 @@ void UsrAI::manageCounterAttack() {
         //   ⇒ 这才是历次"发现了武器厂却感化不了"的【最终根因】（ce/lc/lj 批次通病）。
         //   修：感化检查提到最前，仅受 ①武器厂已发现(enemySiegeSN) ②引擎转换冷却 ③已在射程内 约束；
         //       本路径【不发移动令】（前出仍走下方原逻辑），故不增加祭司暴露风险，只增加"够得着就用"的命中率。
-        if (enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
+        // ★★ 2026-09-14 新增：祭司【箭塔危险】判据 + 迟滞闩锁（本段三处共用同一把尺子，铁律 9）★★
+        //   ① 早路径（下方）感化【起手】硬闸  → 用瞬时值 priestTowerDanger（只挡"塔已在射程 12 格内"）
+        //   ② 迟滞锁 priestSiegeApproach 的复位维度 → 同样用瞬时值
+        //   ③ 前出许可 allowConvertSiege 的总闸 → 用闩锁值 priestTowerHold（防边界抖动，见下方注释）
+        bool priestTowerDanger = false;   // 瞬时：有敌塔已进射程(12 格)
+        bool priestTowerNear   = false;   // 瞬时：有敌塔仍在迟滞带内(18 格)
+        double priestTowerD = -1.0;       // 最近敌箭塔距祭司的距离(像素)，无塔则 -1（仅供诊断打印）
+        for (auto &b : info.enemy_buildings) {
+            if (b.Type != BUILDING_ARROWTOWER) continue;
+            double dT = calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL);
+            if (priestTowerD < 0 || dT < priestTowerD) priestTowerD = dT;
+        }
+        if (priestTowerD >= 0) {
+            priestTowerDanger = (priestTowerD < PRIEST_SIEGE_ABORT_TOWER_R * BL);
+            priestTowerNear   = (priestTowerD < PRIEST_SIEGE_REARM_TOWER_R * BL);
+        }
+        // ★ 迟滞闩锁（本轮第二次迭代，首测血的教训）：置位 12 格 / 复位 18 格，带内保持原值。
+        //   为什么必须闩锁而不能用瞬时值：塔距在阈值上逐帧跨线时，"前出分支"与"后撤分支"
+        //   各自 30 帧节流 ⇒ 两个相反移动令交替下发、净位移≈0（首测 41 次抖动、tl4 空转 900 帧）。
+        if (priestTowerDanger)     priestTowerHold = 1;
+        else if (!priestTowerNear) priestTowerHold = 0;
+
+        // ★★ 2026-09-14 修：早路径感化也必须过箭塔闸（此前它【完全绕过】localClear/迟滞锁）★★
+        //   旧代码只有 `siegeSN != -1 && ConvertCooldown <= 0 && sD0 <= 12格` 三个条件 ⇒ 只要祭司
+        //   人在武器厂 12 格内就下发感化令，并 `priestMoveCooldown = 60; return;` **每帧钉住**祭司
+        //   ⇒ 施法期间祭司一步都动不了（pg7: f=41865 发令后 311 帧零条 HumanMove，站着被塔打死）。
+        //   修：塔进 13 格 ⇒ 不下发/不钉住，落回下方后撤逻辑（HumanMove 会清空 WorkObjectSN ⇒ 中断施法）。
+        //   ★ 因箭塔是【静态建筑】+ 施法期祭司被钉住 ⇒ "施法中途才有塔进 13 格"不可能发生，
+        //     故只要"起手时无塔"即可保证整段施法无塔（无需再加中途中断逻辑）。
+        if (enemySiegeSN != -1 && priest->ConvertCooldown <= 0 && !priestTowerDanger) {
             double sD0 = calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL);
             if (sD0 <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
                 // ★★ 2026-09-14 二次修（lk6 铁证）：感化令【绝不能每帧重发】★★
@@ -5493,11 +5443,13 @@ void UsrAI::manageCounterAttack() {
         }
         // 诊断（低频/ASCII，放在两道闸之前 ⇒ 真实反映本段执行率与卡点）
         if (frame % 300 == 0)
-            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9")
+            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 tD=%10 tDgr=%11 lock=%12 hold=%13")
                       .arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
                       .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
                       .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
-                      .arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown));
+                      .arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown)
+                      .arg((priestTowerD >= 0) ? priestTowerD / BL : -1.0, 0, 'f', 1)
+                      .arg(priestTowerDanger ? 1 : 0).arg(priestSiegeApproach).arg(priestTowerHold));
 
         if (priest->NowState != HUMAN_STATE_IDLE && priest->NowState != HUMAN_STATE_WALKING) {
             // 祭司在 ATTACKING（治愈）或 CONVERTING（感化）中,避免本段覆盖其引擎托管动作
@@ -5544,14 +5496,14 @@ void UsrAI::manageCounterAttack() {
         //   12 < 18 ⇒ 二者**永远不可能同时成立**！实测 k8/cb8 的 [PRST-REAR] dTgt 恒在 22.6~36.4 格，
         //   祭司被安全距离钉死在后方 ⇒ 感化武器厂 0 次（全部 9 局 352 条转换令**无一条是建筑**）。
         //   修复：当祭司【自身周边无军事威胁】时，解除 18 格安全距离约束，允许祭司主动前出感化武器厂。
-        //   ★ 判据用【祭司周边 20 格内无敌方军队 + 无敌方箭塔】（局部清场），而非"全局敌全灭"——
+        //   ★ 判据用【祭司周边局部清场】（而非"全局敌全灭"）——
         //     实测 8 局里"全局敌全灭"从未出现的概率极高（7/8 局敌军队一直存在），
         //     而用户描述的场景本质是"祭司身边已经安全了，就该去干活"。
         //     ⇒ 局部清场判据既覆盖用户场景，又不会让祭司在有兵有塔时莽撞前出。
-        int enemyMil = 0;
-        for (auto &e : info.enemy_armies) if (e.Blood > 0) enemyMil++;
-        int enemyTowers = 0;
-        for (auto &b : info.enemy_buildings) if (b.Type == BUILDING_ARROWTOWER) enemyTowers++;
+        //     ★ 半径口径见下方 PRIEST_SIEGE_CLEAR_*（军队 8 格 / 箭塔 14 格；20 格是 2026-09-13 的旧值，已废）
+        // ★ 2026-09-14 清理：原此处有 enemyMil / enemyTowers 两个【全局计数】，算出后
+        //   只出现在注释文字里、从未参与任何判据 ⇒ 死代码 + 误导（让人误以为用的是"全局清场"口径）。
+        //   真正生效的是下方【局部】清场（以祭司自身为圆心）。已删除。
         // 局部清场：祭司周边无敌【活敌军队】、无【箭塔】
         // ★ 2026-09-14 半径 20→8/14：旧 20 格 > 感化射程 12 格 ⇒ 结构死锁（祭司永远够不到）。
         bool localClear = true;
@@ -5562,7 +5514,13 @@ void UsrAI::manageCounterAttack() {
                 if (b.Type == BUILDING_ARROWTOWER &&
                     calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_CLEAR_TOWER_R * BL) { localClear = false; break; }
         // ★★ 2026-09-14 前出感化【迟滞锁】：防 localClear 在半径边界处逐帧翻转 ★★
-        //   进入：清场成立 + 武器厂已发现；退出：敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP)。
+        //   进入：清场成立(敌军队>=8格 且 敌箭塔>=14格) + 武器厂已发现；
+        //   退出：敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP) 或 **敌箭塔进 12 格(=塔射程)**。
+        //   ★ 2026-09-14 修（本轮）：退出条件原本【没有箭塔维度】——而进入条件有。
+        //     即"14 格内无箭塔"只在置位那一帧验一次，之后塔怎么压上来都不解锁 ⇒ 单向闩锁。
+        //     pg7 就是被它坑死：塔 11107 从 f=41768 起持续打祭司，祭司却一路被允许前出到
+        //     11 格并施法，f=42176 死。现按铁律 9 补齐：退出含箭塔维度（与进入同源、同一把尺子）。
+        //   ★ 防抖由 priestTowerHold(12→18 迟滞带) 负责，见上方常量注释。
         if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear && enemySiegeSN != -1) {
             priestSiegeApproach = 1;
         } else if (priestSiegeApproach == 1) {
@@ -5570,9 +5528,15 @@ void UsrAI::manageCounterAttack() {
             for (auto &e : info.enemy_armies)
                 if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_ABORT_R * BL) { hardAbort = true; break; }
             double pBRap = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
-            if (hardAbort || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1) priestSiegeApproach = 0;
+            if (hardAbort || priestTowerDanger || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1) {
+                // 诊断：本行是"箭塔把前出许可收回来"的直接证据（= 本轮修复点本身；低频、ASCII）
+                if (priestTowerDanger)
+                    DebugText(QString("[PRST-TOWER-ABORT f=%1] nearest enemy tower %2 blocks (limit %3) -> release lock, set hold")
+                              .arg(frame).arg(priestTowerD / BL, 0, 'f', 1).arg(PRIEST_SIEGE_ABORT_TOWER_R, 0, 'f', 1));
+                priestSiegeApproach = 0;
+            }
         }
-        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (localClear || priestSiegeApproach == 1);
+        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && !priestTowerHold && (localClear || priestSiegeApproach == 1);
         // ★【2026-09-08 二次修】原"扩到 28 格后 priestEnemy>=0 return"——WRONG-LAYER return 又踩坑:
         //   反攻期祭司前出后 28 格内**恒有敌** → return 几乎每帧触发 → 祭司段永远跑不到 → 停在 TC 不动。
         //   改为：只查询,不 return——managePriest 仍独立按"投石车→近战→远程→村民"优先级感化
@@ -5585,7 +5549,7 @@ void UsrAI::manageCounterAttack() {
         //   新方案：祭司冲到反攻目标 PRIEST_MIN_DIST_TARGET 格内(太靠前)→本帧强制后撤到【大队后方安全距离】，
         //   不感化武器厂(避免被钉在前线送命)；只有已在安全范围才允许【被动】感化武器厂(不主动前出)。
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
-        // ★ 2026-09-13：敌方已清场(enemyMil==0 && enemyTowers==0)时，安全距离约束失效 ——
+        // ★ 2026-09-13：前出感化成立(allowConvertSiege)时，安全距离约束失效 ——
         //   否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂（这就是"不感化"的根因）。
         // ★ 2026-09-14 副作用修复：只有【确实存在武器厂目标】才解除后撤距离约束。
         //   旧写法 `if (allowConvertSiege)` 在未发现武器厂时也会解除 ⇒ 祭司不进后撤分支、
