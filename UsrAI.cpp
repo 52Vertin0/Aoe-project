@@ -32,11 +32,17 @@ ins UsrIns;
 //     · 旧 ring 枚举"由内到外第一个可用"且同圈内 dx 升序（从最左端起）⇒ 布局偏向一侧、不均匀。
 //     · triedBuildPositions 对近处位置是【永久拉黑】的一次失败即被踢到外圈。
 //   新选址 findFarmSiteBest：
-//     锚点集合 = TC（平局优先）+ 全部已建成【谷仓 GRANARY / 仓库 STOCK】；
-//     在 [R_MIN, R_MAX] 环上枚举候选，取「到最近锚点中心距离最小」者。
+//     候选空间 = TC 环 ∪ 全部已建成【谷仓 GRANARY / 仓库 STOCK】环；
+//     评分基准 = **到 TC 的距离**（不是"到最近锚点"——见下）。
 //     几何：锚点与农场都是 3x3，隔 1 格(BUILD_GAP=1) ⇒ 最近环 R_MIN = 3 + BUILD_GAP = 4（与旧代码同口径）。
-//     ⇒ TC 旁有空位就吃 TC 旁（正方向 5.0 格 < 角落 5.7 格，天然更紧凑、更均匀）；
-//       TC 旁饱和后自动落到"就近的谷仓/仓库"旁，而不是被 findBuildSite 甩到远处的矩形边框上。
+//     ⇒ TC 旁优先（正方向 5.0 格 < 角落 5.7 格，天然更紧凑、更均匀）；
+//       TC 环半径内全满才轮到谷仓/仓库旁 = 用户原话「基地附近位置不够的话」。
+//   ★★ 为什么评分锚定 TC 而不是"到最近锚点最近"（fl 批次实测证伪）★★
+//     谷仓恒在 TC 上方约 52 格（96/96 局）。按"到最近锚点"评分时，
+//     谷仓旁 r=4 的「4 格」会压过 TC 旁 r=5 的「5 格」⇒ 农场整批飞去 52~60 格外的
+//     谷仓/瞪羚仓库旁：实测 >10 格占比 6.8%→39.2%、到 TC 中位 5.7→12.4、最大 60.8。
+//     而 AoE3 农场原地生产、食物自动入库，村民从 TC 出发 ⇒ 真代价是 TC→农场通勤距离。
+//     ⇒ 评分改为「到 TC 的距离」，远端锚点用三角不等式下界整段剪掉（不再被误选）。
 #define FARM_ANCHOR_R_MIN 4      // 锚点外的最近可行环（3x3 锚点 + 隔 1 格 + 3x3 农场）
 #define FARM_ANCHOR_R_MAX 12     // 单锚点搜索半径上限；超出即认为不划算，交给 tryBuild 的 findBuildSite 兜底
 // ★ 建农场时为【瞪羚中心仓库】预留的木头（2026-09-06 用户要求「建造瞪羚的仓库前先不要建农场，预留120木头」）。
@@ -6529,12 +6535,14 @@ bool UsrAI::findFarmNearGranarySite(int &x, int &y) {
 }
 
 // ============================================================
-// ★★★ 2026-09-15 农场统一锚点就近选址（用户需求：尽量分布在 TC 和谷仓周围）★★★
-//   锚点 = TC（平局优先）+ 全部已建成【谷仓 GRANARY / 仓库 STOCK】。
-//   在每个锚点外 [FARM_ANCHOR_R_MIN, FARM_ANCHOR_R_MAX] 的 4 条环带上枚举 3x3 农场位，
-//   取「到最近锚点中心距离最小」者；距离相同时因锚点顺序为 TC 第一 ⇒ TC 优先。
+// ★★★ 2026-09-15 农场选址（用户需求：尽量分布在 TC 和谷仓周围）★★★
+//   候选空间 = TC 环 ∪ 各已建成【谷仓 GRANARY / 仓库 STOCK】环（半径 [R_MIN, R_MAX]，隔 1 格几何）。
+//   评分基准 = 【到 TC 的距离最小】—— 刻意不用"到最近锚点最近"：
+//     AoE3 农场原地生产、食物自动入库，村民从 TC 出发去农场 ⇒ 代价 = TC→农场通勤距离。
+//     按"到最近锚点"评分会让谷仓旁 r=4(4格) 压过 TC 旁 r=5(5格)，实测 39.2% 农场被甩到 >10 格。
+//   ⇒ TC 旁优先；只有 TC 环半径内全满，谷仓/仓库旁才会胜出 = 用户原话「基地附近位置不够的话」。
 //   判据顺序（便宜的先做，降开销）：黑名单 → isPositionFree（地形/建筑间距/资源/狮子）→ isFarmAdjacent。
-//   全部锚点都找不到空位 ⇒ 返回 false，由 tryBuild 的 findBuildSite 兜底（保留原兜底能力）。
+//   全部候选都不可用 ⇒ 返回 false，由 tryBuild 的 findBuildSite(avoidFarmAdjacent=true) 兜底。
 bool UsrAI::findFarmSiteBest(int &x, int &y) {
     auto center = findBuilding(BUILDING_CENTER);
     if (!center) return false;
@@ -6551,46 +6559,71 @@ bool UsrAI::findFarmSiteBest(int &x, int &y) {
     anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
     const int NA = (int)anchors.size();
 
-    // 锚点中心（块格坐标 +1），用于"到最近锚点"的度量
-    std::vector<double> acx(NA), acy(NA);
-    for (int i = 0; i < NA; ++i) { acx[i] = anchors[i].first + 1.0; acy[i] = anchors[i].second + 1.0; }
+    // ---- 评分基准 = 到【TC】的距离（块格中心坐标）----
+    //   ★ 关键：为什么不是"到最近锚点最近"？
+    //     AoE3 农场原地生产、食物自动入库，村民是【从 TC 出发】去农场的
+    //     ⇒ 真正的代价是「TC→农场的通勤距离」。
+    //     谷仓恒在 TC 上方约 52 格（96/96 局实测）；若按"到最近锚点最近"评分，
+    //     谷仓旁 r=4 的 4 格会胜过 TC 旁 r=5 的 5 格 ⇒ 实测（fl 批次）
+    //     39.2% 的农场被甩到 >10 格、最远 60.8 格，中位到 TC 从 5.7 恶化到 12.4 —— 已证伪。
+    //   ⇒ 谷仓/仓库旁只有在"TC 环 [R_MIN, R_MAX] 内全满"时才会胜出，
+    //     正合用户原话「基地附近位置不够的话可以建在谷仓周围」。
+    const double tcx = center->BlockDR + 1.0, tcy = center->BlockUR + 1.0;
+    std::vector<double> dAT(NA, 0.0);        // 各锚点中心 → TC 的距离（用于三角不等式剪枝）
+    for (int i = 0; i < NA; ++i) {
+        double ax = anchors[i].first + 1.0, ay = anchors[i].second + 1.0;
+        dAT[i] = std::sqrt((ax - tcx) * (ax - tcx) + (ay - tcy) * (ay - tcy));
+    }
 
-    double bestD2 = 1e18;      // 到最近锚点距离的平方（避免 sqrt）
+    double bestD2 = 1e18;                    // 到 TC 距离的平方（避免 sqrt）
     int bx = -1, by = -1;
+    // 候选评定（两段共用）：黑名单 → isPositionFree → isFarmAdjacent → 按「到 TC 距离」刷新最优
+    auto consider = [&](int nx, int ny, bool useBlack) {
+        if (nx < 0 || ny < 0) return;
+        if (useBlack && triedBuildPositions.count(nx * 1000 + ny)) return;
+        if (!isPositionFree(nx, ny, 3)) return;
+        if (isFarmAdjacent(nx, ny)) return;
+        double fcx = nx + 1.0, fcy = ny + 1.0;
+        double d2 = (fcx - tcx) * (fcx - tcx) + (fcy - tcy) * (fcy - tcy);
+        if (d2 < bestD2) { bestD2 = d2; bx = nx; by = ny; }
+    };
+    // 锚点外 r 环的 4 条带（上/下/左/右）；几何与旧 findFarmRingSite 一致（3x3 + 隔 1 格 ⇒ r>=4）
+    auto ringOf = [&](int ax, int ay, int r, bool useBlack) {
+        const int n = 2 * r + 3;
+        for (int side = 0; side < 4; ++side) {
+            for (int k = 0; k < n; ++k) {
+                int nx, ny;
+                if (side == 0)      { nx = ax - r + k; ny = ay + r; }       // 上带
+                else if (side == 1) { nx = ax - r + k; ny = ay - r; }       // 下带
+                else if (side == 2) { nx = ax - r;     ny = ay - r + k; }   // 左带
+                else                { nx = ax + r;     ny = ay - r + k; }   // 右带
+                consider(nx, ny, useBlack);
+            }
+        }
+    };
+
     // 两遍：第 1 遍尊重 triedBuildPositions（避免反复在同一失败点丢令）；
     //        第 1 遍完全无解时第 2 遍忽略它（近处位置可能早已空出却被永久拉黑 —— 旧代码外扩的成因之一）。
     for (int pass = 0; pass < 2 && bx < 0; ++pass) {
         const bool useBlack = (pass == 0);
-        // 由内到外逐环扫描；环内比较【全部锚点】的候选取"到最近锚点最近"者。
+        // ---- 第 1 段：TC 环（主锚点）----
+        //   r 层候选到 TC 的最小距离恰为 r（nx==ax 时 Δx=0、Δy=r）⇒ 一旦 r² 超过当前最优，
+        //   本层及所有更外层都不可能更优，直接 break。
         for (int r = FARM_ANCHOR_R_MIN; r <= FARM_ANCHOR_R_MAX; ++r) {
-            // ★ 剪枝（精确、非近似）：r 层候选到其锚点的最小距离恰为 r
-            //   （当 nx==ax 时 Δx=0、Δy=r），故 r² 一旦超过当前最优，
-            //   本层及所有更外层都不可能更优 ⇒ 提前结束。实测扫描通常止于 r≈6。
             if ((double)r * (double)r > bestD2) break;
-            const int n = 2 * r + 3;                          // 每条环带上的候选个数
-            for (int ai = 0; ai < NA; ++ai) {
-                const int ax = anchors[ai].first, ay = anchors[ai].second;
-                for (int side = 0; side < 4; ++side) {
-                    for (int k = 0; k < n; ++k) {
-                        int nx, ny;
-                        if (side == 0)      { nx = ax - r + k; ny = ay + r; }       // 上带
-                        else if (side == 1) { nx = ax - r + k; ny = ay - r; }       // 下带
-                        else if (side == 2) { nx = ax - r;     ny = ay - r + k; }   // 左带
-                        else                { nx = ax + r;     ny = ay - r + k; }   // 右带
-                        if (nx < 0 || ny < 0) continue;
-                        if (useBlack && triedBuildPositions.count(nx * 1000 + ny)) continue;
-                        if (!isPositionFree(nx, ny, 3)) continue;
-                        if (isFarmAdjacent(nx, ny)) continue;
-                        // 评分：到最近锚点中心的距离（平方比较）；锚点顺序 TC 第一 ⇒ 平局时 TC 优先
-                        double fcx = nx + 1.0, fcy = ny + 1.0;
-                        double d2 = 1e18;
-                        for (int j = 0; j < NA; ++j) {
-                            double t = (fcx - acx[j]) * (fcx - acx[j]) + (fcy - acy[j]) * (fcy - acy[j]);
-                            if (t < d2) d2 = t;
-                        }
-                        if (d2 < bestD2) { bestD2 = d2; bx = nx; by = ny; }
-                    }
-                }
+            ringOf(anchors[0].first, anchors[0].second, r, useBlack);
+        }
+        // ---- 第 2 段：谷仓/仓库环（备选空间；只有 TC 环更远时才会胜出）----
+        //   剪枝用三角不等式下界：d(TC,候选) >= d(TC,锚点) - max|锚点→候选|；
+        //   该下界 >= 真实值 ⇒ 只会少剪、不会误剪。锚点离 TC 越远越容易被整体剪掉
+        //   （例如 52 格外的谷仓：dAT≈52、rMaxD≈7 ⇒ lb≈45 ⇒ lb² 远超 TC 旁的 25，直接跳过）。
+        for (int ai = 1; ai < NA; ++ai) {
+            for (int r = FARM_ANCHOR_R_MIN; r <= FARM_ANCHOR_R_MAX; ++r) {
+                const double rMaxD = std::sqrt((double)((r + 2) * (r + 2) + r * r));
+                double lb = dAT[ai] - rMaxD;
+                if (lb < 0) lb = 0;
+                if (lb * lb > bestD2) continue;
+                ringOf(anchors[ai].first, anchors[ai].second, r, useBlack);
             }
         }
     }
