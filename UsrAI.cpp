@@ -4437,106 +4437,6 @@ void UsrAI::manageCounterAttack() {
         return true;
     };
 
-    // 绕路兜底：当直行/偏转锥都找不到可走落点(被大片树林或海拦住)时，从当前格做 BFS——
-    // 仅沿"可走已探索格"扩散，在可达范围内选"离目标最近的可走格"作为航点→自然绕开障碍、沿已探明陆地推进。
-    // 不用 std::queue(本文件未包含<queue>)，用 vector 当环形队列；bestD 初值取大常数避免依赖 climits。
-    auto findDetourWaypoint = [&](double fx, double fy, double tx, double ty,
-                                  double &wx, double &wy) -> bool {
-        int sx = (int)(fx / BL), sy = (int)(fy / BL);
-        int gx = (int)(tx / BL), gy = (int)(ty / BL);
-        if (sx < 0 || sy < 0 || sx >= MAP_L || sy >= MAP_U) return false;
-        const int R = 24;            // BFS 最大半径(格)
-        const int MAXVISIT = 2200;   // 访问上限，防极端卡顿时开销爆炸
-        std::vector<std::vector<int>> dist(MAP_L, std::vector<int>(MAP_U, -1));
-        std::vector<std::pair<int,int>> q; q.reserve(MAXVISIT + 8);
-        q.push_back({sx, sy}); dist[sx][sy] = 0;
-        int head = 0, bestCX = -1, bestCY = -1, bestD = 1000000000, visited = 0;
-        const int d4x[4] = {1, -1, 0, 0}, d4y[4] = {0, 0, 1, -1};
-        while (head < (int)q.size() && visited < MAXVISIT) {
-            int cx = q[head].first, cy = q[head].second; head++; visited++;
-            // 候选航点：非起点且可走→取离目标(格)最近者
-            if (!(cx == sx && cy == sy) && isPassableAt(cx*BL + BL*0.5, cy*BL + BL*0.5)) {
-                int dd = (cx - gx)*(cx - gx) + (cy - gy)*(cy - gy);
-                if (dd < bestD) { bestD = dd; bestCX = cx; bestCY = cy; }
-            }
-            if (dist[cx][cy] >= R) continue;   // 超出半径不再扩展
-            for (int d = 0; d < 4; ++d) {
-                int nx = cx + d4x[d], ny = cy + d4y[d];
-                if (nx < 0 || ny < 0 || nx >= MAP_L || ny >= MAP_U) continue;
-                if (dist[nx][ny] != -1) continue;
-                if (!isPassableAt(nx*BL + BL*0.5, ny*BL + BL*0.5)) continue;  // 仅扩展可走格
-                dist[nx][ny] = dist[cx][cy] + 1;
-                q.push_back({nx, ny});
-            }
-        }
-        if (bestCX < 0) return false;
-        wx = bestCX*BL + BL*0.5; wy = bestCY*BL + BL*0.5;
-        return true;
-    };
-
-    // 坐标轴步进：对角正前方被海/石/林拦住时，先沿单一坐标轴(±X 或 ±Y)走一步、再走另一轴，
-    // 形成 L 形绕行——沿障碍边缘(海岸/林缘/矿缘)稳步推进，比纯角度偏转更稳、不会卡死。
-    // 候选：全步→半步→1/4步，依次试 X 轴与 Y 轴方向(朝目标靠近的符号)，取"可走且离目标最近"者。
-    auto axisAlignedTry = [&](double fx, double fy, double tx, double ty,
-                              double STEP, double &wx, double &wy) -> bool {
-        double dx = tx - fx, dy = ty - fy;
-        int sx = (dx >= 0 ? 1 : -1), sy = (dy >= 0 ? 1 : -1);
-        double bestWx = 0, bestWy = 0, bestD = 1e18; bool found = false;
-        const double fr[3] = {1.0, 0.5, 0.25};
-        for (int i = 0; i < 3; ++i) {          // 全步 → 半步 → 1/4步
-            for (int j = 0; j < 2; ++j) {      // 先 X 轴 → 再 Y 轴
-                double cx = fx + (j == 0 ? sx * fr[i] * STEP : 0.0);
-                double cy = fy + (j == 1 ? sy * fr[i] * STEP : 0.0);
-                if (!isPassableAt(cx, cy)) continue;
-                double d = (cx - tx) * (cx - tx) + (cy - ty) * (cy - ty);
-                if (d < bestD) { bestD = d; bestWx = cx; bestWy = cy; found = true; }
-            }
-        }
-        if (found) { wx = bestWx; wy = bestWy; return true; }
-        return false;
-    };
-
-    // 朝目标走“一步”：步长不超过单位视野，落点必须是已探索可走格(非海/非林/非矿)；
-    // 直行点不可走时缩短步长/坐标轴 L 形绕行/左右偏转；锥内全不可走则启用 BFS 绕路兜底(选可达且离目标最近的可走航点)。
-    auto nextVisibleStep = [&](double fx, double fy, double tx, double ty,
-                               double stepBlocks, double &wx, double &wy) -> bool {
-        double dx = tx - fx, dy = ty - fy;
-        double len = std::sqrt(dx*dx + dy*dy);
-        if (len < 0.01) return false;
-        const double STEP = stepBlocks * BL;
-        double gx, gy;
-        if (len <= STEP) { gx = tx; gy = ty; }
-        else { gx = fx + dx / len * STEP; gy = fy + dy / len * STEP; }
-        if (isPassableAt(gx, gy)) { wx = gx; wy = gy; return true; }
-
-        // 逐步缩短，直到落在可走格
-        for (int k = 1; k <= 5; ++k) {
-            double r = 1.0 - 0.15 * k;
-            double cx = fx + dx / len * STEP * r;
-            double cy = fy + dy / len * STEP * r;
-            if (isPassableAt(cx, cy)) { wx = cx; wy = cy; return true; }
-        }
-
-        // 坐标轴 L 形绕行：对角被海/石/林拦住→先沿任一坐标轴(±X或±Y)走一步再走另一轴，
-        // 沿障碍边缘推进，自然地"先走一个方向再走另一个方向"，避免卡死。
-        if (axisAlignedTry(fx, fy, tx, ty, STEP, wx, wy)) return true;
-
-        // 左右偏转找“更接近目标且可走”的点
-        double baseAng = std::atan2(dy, dx);
-        for (int off = 1; off <= 8; ++off) {
-            for (int sign = -1; sign <= 1; sign += 2) {
-                double ang = baseAng + sign * off * 12.0 * 3.141592653589793 / 180.0;
-                double cx = fx + std::cos(ang) * STEP;
-                double cy = fy + std::sin(ang) * STEP;
-                if (!isPassableAt(cx, cy)) continue;
-                if (std::cos(ang - baseAng) > 0.3) { wx = cx; wy = cy; return true; }
-            }
-        }
-
-        // 锥内全不可走(被大片树林/海拦住)→BFS 绕路：选可达且离目标最近的可走航点
-        return findDetourWaypoint(fx, fy, tx, ty, wx, wy);
-    };
-
     auto isRanged = [&](int sort) -> bool {
         return sort == AT_STONE_THROWER || sort == AT_BOWMAN ||
                sort == AT_COMPOSITE_BOWMAN || sort == AT_SLINGER ||
@@ -4646,6 +4546,21 @@ void UsrAI::manageCounterAttack() {
         targetUR = (tcUR < MAP_U * BL * 0.5) ? (MAP_U - CORNER_INSET) * BL : CORNER_INSET * BL;
     }
 
+    // ★ 2026-09-15 直达推进的前提：目标点必须落在可走格上（非海/非林/非矿）。
+    //   敌建筑的块坐标可能压在资源堆或海格上，HumanMove 直达会被引擎拒 ⇒ 全军原地不动。
+    //   故就近（半径 ≤4 格，由内向外）吸附到最近可走格——一次性静态修正，不引入步进/绕路。
+    auto snapWalkable = [&](double &x, double &y) {
+        if (isPassableAt(x, y)) return;
+        for (int r = 1; r <= 4; ++r)
+            for (int dx = -r; dx <= r; ++dx)
+                for (int dy = -r; dy <= r; ++dy) {
+                    if (dx > -r && dx < r && dy > -r && dy < r) continue;   // 只扫该半径的外环
+                    double cx = x + dx * BL, cy = y + dy * BL;
+                    if (isPassableAt(cx, cy)) { x = cx; y = cy; return; }
+                }
+    };
+    snapWalkable(targetDR, targetUR);
+
     // ====== 1.5 祭司护驾（★优先于反攻推进：祭司死=立刻失败） ======
     //   manageMilitary 的护驾令会被本函数的推进令【同帧覆盖】(UsrAI.cpp 124/127-129 每帧先跑
     //   manageMilitary、反攻期再追加本函数)，故反攻期必须在此再判一次，紧急时直接 return 停止推进。
@@ -4690,83 +4605,15 @@ void UsrAI::manageCounterAttack() {
     double rallyCtrUR = rallyTC ? (rallyTC->BlockUR + 1) * BL : MAP_U * BL * 0.5;
     tagArmy* priest = nullptr;
 
-    // 脱困航点：正常时用 nextVisibleStep 朝目标步进；判定卡死后按档位把"朝目标"方向逐档偏转 45°
-    // 做扇形扫描(8格远)，优先取可走落点 → 绕出死角(L形口袋/林间空地/海岸死胡同)；
-    // 扫描点仍不可走则退回 nextVisibleStep(内部含 BFS 绕路兜底)。
-    auto marchWaypoint = [&](double fx, double fy, double &wx, double &wy, int stuckTry,
-                             double stepBlocks) -> bool {
-        if (stuckTry <= 0) return nextVisibleStep(fx, fy, targetDR, targetUR, stepBlocks, wx, wy);
-        double dx = targetDR - fx, dy = targetUR - fy;
-        if (std::sqrt(dx*dx + dy*dy) < 0.01)
-            return nextVisibleStep(fx, fy, targetDR, targetUR, stepBlocks, wx, wy);
-        double base = std::atan2(dy, dx);
-        double fanR = 8.0;                                  // 扇形扫描半径(格)：大部队 8 格
-        if (stepBlocks < 5.0) fanR = stepBlocks + 3.0;      // 探路小步长(4格)→扇形 7 格，别跳太远踩进 UNKNOWN
-
-        // ★ 2026-09-05 修探路卡死（原用户反馈："战车弓兵 91079 每 4 秒 HumanMove 到同一坐标 1168.38,2596.11 永不变"）：
-        //   旧逻辑：扇形单档点不可走 → fallback nextVisibleStep → nextVisibleStep 永远先尝试"朝目标 4 格"，
-        //     而 isPassableAt 把"朝目标 4 格"那个点判为可通过（点本身可走，但中间有 UNKNOWN 格寻路被引擎拒），
-        //     单位原地不动 → fx,fy 不变 → nextVisibleStep 每次输出同一 wx,wy → 30 帧节流一过就 HumanMove 同一坐标。
-        //   stuckTry 一直在涨（marchMoveFrame 不刷新），但扇形 fallback 把航点锁死回 nextVisibleStep 同一点。
-        //   修复：扇形 8 个角度(stuckTry 决定起点档)全扫一遍；全失败才 fallback findDetourWaypoint BFS，
-        //     不再 fallback nextVisibleStep——它的"朝目标 4 格"是原点航点问题来源。
-        int startSlot = (stuckTry - 1) % 8;
-        // ★ 2026-09-07 再修（用户实测"复合弓兵还是在 TC 附近来回走"，上次已标注此处未修）：
-        //   旧扫描有两个缺陷：
-        //   ① **slot=4 是正后方 180°**（base+180°）→ 档位涨到 4 时航点直接指向"背离目标"方向，
-        //      观感就是"往回走/朝家里走"，而且它同样满足 isPassableAt，会被优先采纳（off 顺序命中即 return）。
-        //   ② **只判"格子可走"、不判"是否更接近目标"** → 可能选到绕远路的档位，越走越远。
-        //   修复：① 显式跳过 slot=4(正后方)；② 优先采纳【比当前更接近目标】的档位，
-        //      若 7 个档位都不更接近，才退而求其次用"任一可走点"（避免全拒后只能 BFS）。
-        const double curD = calDistance(fx, fy, targetDR, targetUR);
-        bool anyOk = false; double anyX = 0, anyY = 0;
-        for (int off = 0; off < 8; ++off) {
-            int slot = (startSlot + off) % 8;
-            if (slot == 4) continue;                       // ① 禁用正后方
-            double ang = base + (double)slot * (3.141592653589793 / 4.0);
-            double tx = fx + std::cos(ang) * fanR * BL;
-            double ty = fy + std::sin(ang) * fanR * BL;
-            tx = max(0.0, min((double)MAP_L * BL, tx));
-            ty = max(0.0, min((double)MAP_U * BL, ty));
-            if (!isPassableAt(tx, ty)) continue;
-            if (!anyOk) { anyOk = true; anyX = tx; anyY = ty; }
-            // ② 更接近目标 → 立刻采用
-            if (calDistance(tx, ty, targetDR, targetUR) < curD) { wx = tx; wy = ty; return true; }
-        }
-        if (anyOk) { wx = anyX; wy = anyY; return true; }   // 都不更接近 → 用任一可走点(仍排除正后方)
-        // 8 个扇形角度全不可走 → BFS 兜底找"任何可达且离目标最近"的航点（不限定方向）
-        return findDetourWaypoint(fx, fy, targetDR, targetUR, wx, wy);
-    };
-
-    // 统一推进出口：直接 HumanMove(目标坐标)，交给引擎全图寻路直奔目标（7e 起 HumanMove 可穿越
-    //   未探索区全图寻路，无需再逐格摸索已探索区）；卡死(stuckTry>0)才退回 marchWaypoint 扇形脱困。
-    //   ★ 2026-09-08 改（用户需求"反攻寻路不要一步步走，直接以敌方基地附近为目标点"）：
-    //     去掉 `directMarch` 条件——旧版未探到敌基地时(directMarch=false)走 marchWaypoint 逐格步进，
-    //     现在 7e 引擎全图寻路直达，目标点(武器厂/已探基地/对角角落猜测)一律直接 HumanMove。
-    //   ★ canReissue：直奔必须节流——否则每帧重发同一(可能不可达)目标点→刷新 marchCmdFrame
-    //     → canReissue 永假 → stuckTry 永不涨 → 单位卡死打转(2026-09-03 踩坑)。
+    // 统一推进出口：直达敌方基地附近的目标点，交给引擎 7e 全图寻路（可穿越未探索区）。
+    //   ★ 2026-09-15 用户要求「反攻时探路不用步进或绕路，直接以敌方基地附近为目标点，实现尽量最简」：
+    //     已删除 marchWaypoint 扇形脱困 / nextVisibleStep 小步 / axisAlignedTry 轴向绕行 / findDetourWaypoint BFS 绕路。
+    //   canReissue（30 帧节流）必须保留：每帧重发同一目标会刷新 marchCmdFrame ⇒ stuckTry 永不涨 ⇒ 卡死打转。
     auto issueMarch = [&](double fx, double fy, int sn, int sort, int stuckTry, bool canReissue) {
-        if (stuckTry <= 0 && canReissue) {
-            HumanMove(sn, targetDR, targetUR);   // ★ 引擎完整寻路：直接走到目标(敌方基地附近)
-            marchCmdFrame[sn] = frame;
-        } else if (stuckTry <= 0) {
-            // 未到节流窗口：本帧静默，不重复发指令，等 stuckNow 累积 stuckTry 触发脱困
-            ;
-        } else if (canReissue) {
-            // ★ 2026-09-07 修：本分支原先【完全没有节流】——只要 marchWaypoint 返回 true 就每帧
-            //   HumanMove。卡死(stuckTry>0)时单位原地不动 → wx,wy 每帧算出来都一样 →
-            //   AI 每帧下发同一坐标的移动令（用户日志"每 4 帧 HumanMove 至 (2396.82,1973.67)"即此），
-            //   既刷屏又让引擎不断重置寻路、单位永远走不出去。加上与直奔分支一致的 30 帧节流。
-            double wx = 0, wy = 0;
-            if (marchWaypoint(fx, fy, wx, wy, stuckTry, 5.0)) {
-                HumanMove(sn, wx, wy);
-                marchCmdFrame[sn] = frame;
-            } else if (stuckTry > 0 && frame % 150 == 0) {
-                DebugText(QString("[MARCH STUCK] army SN=%1 sort=%2 try=%3 无可用航点")
-                          .arg(sn).arg(sort).arg(stuckTry));
-            }
-        }
-        // 未到节流窗口 → 本帧静默（等 canReissue），不再重复下发
+        (void)fx; (void)fy; (void)sort; (void)stuckTry;
+        if (!canReissue) return;                 // 未到节流窗口：本帧静默，不重复下发
+        HumanMove(sn, targetDR, targetUR);       // 引擎完整寻路：直奔敌方基地附近目标点
+        marchCmdFrame[sn] = frame;
     };
 
     for (int pass = 0; pass < 2 && marchCmds < 8; ++pass) {
@@ -4804,22 +4651,10 @@ void UsrAI::manageCounterAttack() {
             //   不造侦察骑兵，改派感化的战车弓兵/骑兵探路；投石车 SPEED 极慢，不参与（会把攻城火力锁死在 TC）。
             //   ★ 7e 起引擎 HumanMove 可穿越未探索区全图寻路，旧的"4格小步贴已探索边界"机制已删除：
             //     stuckTry==0 → 直奔目标(对角角落猜测)，探到 enemy_buildings 即点亮 enemyBaseScouted → directMarch；
-            //     stuckTry >0 → 目标本身不可达(海/林/矿)，退回 marchWaypoint 扇形脱困。
+            //     stuckTry >0 → 目标本身不可达(海/林/矿)：保持同点重发（已无步进/绕路兜底），仍不前进则继续升档。
             if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) &&
                 !enemyBaseScouted && enemySiegeSN == -1) {
-                if (stuckTry <= 0 && canReissue) {
-                    HumanMove(a.SN, targetDR, targetUR);
-                    marchCmdFrame[a.SN] = frame;
-                } else if (stuckTry > 0 && canReissue) {
-                    double wx = 0, wy = 0;
-                    if (marchWaypoint(a.DR, a.UR, wx, wy, stuckTry, 5.0)) {
-                        HumanMove(a.SN, wx, wy);
-                        marchCmdFrame[a.SN] = frame;
-                    } else if (frame % 150 == 0) {
-                        DebugText(QString("[SCOUT STUCK] SN=%1 sort=%2 try=%3 无可用航点")
-                                  .arg(a.SN).arg(a.Sort).arg(stuckTry));
-                    }
-                }
+                issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);   // 先锋直插敌方基地方位
                 marchCmds++;
                 continue;
             }
@@ -5264,19 +5099,8 @@ void UsrAI::manageCounterAttack() {
                 //     立刻暴露：实测 kt4 投石车 91129 在 f=33003~45000 每帧一条 HumanMove（9555 条刷屏、
                 //     全部指向同一个点）⇒ 又会把 standoff/后撤令顶掉 = 拉扯再次失败。
                 if (canReissue) {
-                    if (stuckTry <= 0) {
-                        HumanMove(a.SN, targetDR, targetUR);
-                        marchCmdFrame[a.SN] = frame;
-                    } else {
-                        double wx = 0, wy = 0;
-                        if (marchWaypoint(a.DR, a.UR, wx, wy, stuckTry, 5.0)) {
-                            HumanMove(a.SN, wx, wy);
-                            marchCmdFrame[a.SN] = frame;
-                        } else if (stuckTry > 0 && frame % 150 == 0) {
-                            DebugText(QString("[MARCH STUCK] catapult SN=%1 try=%2 无可用航点")
-                                      .arg(a.SN).arg(stuckTry));
-                        }
-                    }
+                    HumanMove(a.SN, targetDR, targetUR);   // 投石车：直达敌方基地附近目标点
+                    marchCmdFrame[a.SN] = frame;
                 }
                 marchCmds++;
                 continue;
