@@ -4610,8 +4610,12 @@ void UsrAI::manageCounterAttack() {
     //     已删除 marchWaypoint 扇形脱困 / nextVisibleStep 小步 / axisAlignedTry 轴向绕行 / findDetourWaypoint BFS 绕路。
     //     唯一保留的退路 = 卡死时朝集结 TC 内缩 stuckTry 格重发（退一步重新寻路，非步进/绕路）。
     //   canReissue（30 帧节流）必须保留：每帧重发同一目标会刷新 marchCmdFrame ⇒ stuckTry 永不涨 ⇒ 卡死打转。
+    //   ⚠ marchGoal* = 本轮【实际下发点】（可能含退让）。卡死判据必须以它为参照：若仍以 targetDR/UR 为参照，
+    //     单位朝"退让点"走会使"到原目标距离"变大 ⇒ 被误判为仍在卡死 ⇒ 每 90 帧再退一档 ⇒ 一路退回 TC。
+    //     （实测：以原目标为参照时 8 局里 6 局跑满 45000 帧无结局、全军窝在基地，见 sba*.ait。）
+    static std::map<int, double> marchGoalDR, marchGoalUR;
     auto issueMarch = [&](double fx, double fy, int sn, int sort, int stuckTry, bool canReissue) {
-        (void)fx; (void)fy; (void)sort;
+        (void)sort;
         if (!canReissue) return;                 // 未到节流窗口：本帧静默，不重复下发
         double mx = targetDR, my = targetUR;
         // ★ 卡死最小脱困（不引入步进/绕路）：朝我方集结 TC 方向内缩 stuckTry 格后重发同一目标。
@@ -4621,7 +4625,11 @@ void UsrAI::manageCounterAttack() {
             double back = (d > BL) ? ((stuckTry * BL < d - BL) ? stuckTry * BL : d - BL) : 0.0;
             if (d > 1e-6) { mx -= dx / d * back; my -= dy / d * back; }
             snapWalkable(mx, my);                // 内缩后可能落进海/林/矿 → 再吸附一次
+            // 退让点算一个【新目标】：基准与计时一起重锚，"能否走到退让点"成为新一轮判据；走到即复位，不累积。
+            marchIssueDist[sn] = calDistance(fx, fy, mx, my);
+            marchMoveFrame[sn] = frame;
         }
+        marchGoalDR[sn] = mx; marchGoalUR[sn] = my;   // 判据参照 = 本轮实际下发点
         HumanMove(sn, mx, my);                   // 引擎完整寻路：直奔敌方基地附近目标点
         marchCmdFrame[sn] = frame;
     };
@@ -4636,7 +4644,9 @@ void UsrAI::manageCounterAttack() {
             //   都 >0.5BL，会持续刷新计时 → 永不判卡死 → 反复 HumanMove 同一坐标（用户实测日志正是此现象）。
             //   ⚠ 旧逻辑 `NowState != IDLE → continue` 有致命漏洞：领到走不到的航点会一直停在 WALKING，
             //   永不变回 IDLE → 再也收不到新指令 → 永久卡死。故必须"长时间无推进即强制重下令脱困"。
-            const double curDistToTgt = calDistance(a.DR, a.UR, targetDR, targetUR);
+            const double gDR = marchGoalDR.count(a.SN) ? marchGoalDR[a.SN] : targetDR;
+            const double gUR = marchGoalUR.count(a.SN) ? marchGoalUR[a.SN] : targetUR;
+            const double curDistToTgt = calDistance(a.DR, a.UR, gDR, gUR);   // ★ 参照 = 本轮实际下发点
             if (!marchIssueDist.count(a.SN)) {          // 首次见到→建立基准
                 marchIssueDist[a.SN] = curDistToTgt;
                 marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
@@ -4856,8 +4866,11 @@ void UsrAI::manageCounterAttack() {
                         HumanMove(a.SN, rx, ry);
                         marchCmdFrame[a.SN] = frame;
                         lastRetreatFrame[a.SN] = frame;
-                        marchIssueDist[a.SN] = calDistance(a.DR, a.UR, targetDR, targetUR);
+                        // ★ 判据参照必须同步到"本轮落点"：撤退/退让落点都远离原目标，若仍按原目标算距离，
+                        //   撤退到位反而被判成"更卡死" ⇒ 90 帧后触发退让，与打-拉相位机互相拉扯。
+                        marchIssueDist[a.SN] = calDistance(a.DR, a.UR, rx, ry);
                         marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
+                        marchGoalDR[a.SN] = rx; marchGoalUR[a.SN] = ry;
                         kitMoved = true; kitStage = stage; kitX = rx; kitY = ry;
                         return true;
                     };
@@ -5111,6 +5124,7 @@ void UsrAI::manageCounterAttack() {
                 if (canReissue) {
                     HumanMove(a.SN, targetDR, targetUR);   // 投石车：直达敌方基地附近目标点
                     marchCmdFrame[a.SN] = frame;
+                    marchGoalDR[a.SN] = targetDR; marchGoalUR[a.SN] = targetUR;   // 判据参照同步
                 }
                 marchCmds++;
                 continue;
