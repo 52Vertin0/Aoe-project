@@ -4608,11 +4608,21 @@ void UsrAI::manageCounterAttack() {
     // 统一推进出口：直达敌方基地附近的目标点，交给引擎 7e 全图寻路（可穿越未探索区）。
     //   ★ 2026-09-15 用户要求「反攻时探路不用步进或绕路，直接以敌方基地附近为目标点，实现尽量最简」：
     //     已删除 marchWaypoint 扇形脱困 / nextVisibleStep 小步 / axisAlignedTry 轴向绕行 / findDetourWaypoint BFS 绕路。
+    //     唯一保留的退路 = 卡死时朝集结 TC 内缩 stuckTry 格重发（退一步重新寻路，非步进/绕路）。
     //   canReissue（30 帧节流）必须保留：每帧重发同一目标会刷新 marchCmdFrame ⇒ stuckTry 永不涨 ⇒ 卡死打转。
     auto issueMarch = [&](double fx, double fy, int sn, int sort, int stuckTry, bool canReissue) {
-        (void)fx; (void)fy; (void)sort; (void)stuckTry;
+        (void)fx; (void)fy; (void)sort;
         if (!canReissue) return;                 // 未到节流窗口：本帧静默，不重复下发
-        HumanMove(sn, targetDR, targetUR);       // 引擎完整寻路：直奔敌方基地附近目标点
+        double mx = targetDR, my = targetUR;
+        // ★ 卡死最小脱困（不引入步进/绕路）：朝我方集结 TC 方向内缩 stuckTry 格后重发同一目标。
+        //   语义仍是"直奔敌方基地附近"，只是退一步让引擎重新算一条路；最多退到 TC 前 1 格(不越过集结中心)。
+        if (stuckTry > 0) {
+            double dx = mx - rallyCtrDR, dy = my - rallyCtrUR, d = std::sqrt(dx * dx + dy * dy);
+            double back = (d > BL) ? ((stuckTry * BL < d - BL) ? stuckTry * BL : d - BL) : 0.0;
+            if (d > 1e-6) { mx -= dx / d * back; my -= dy / d * back; }
+            snapWalkable(mx, my);                // 内缩后可能落进海/林/矿 → 再吸附一次
+        }
+        HumanMove(sn, mx, my);                   // 引擎完整寻路：直奔敌方基地附近目标点
         marchCmdFrame[sn] = frame;
     };
 
@@ -4651,7 +4661,7 @@ void UsrAI::manageCounterAttack() {
             //   不造侦察骑兵，改派感化的战车弓兵/骑兵探路；投石车 SPEED 极慢，不参与（会把攻城火力锁死在 TC）。
             //   ★ 7e 起引擎 HumanMove 可穿越未探索区全图寻路，旧的"4格小步贴已探索边界"机制已删除：
             //     stuckTry==0 → 直奔目标(对角角落猜测)，探到 enemy_buildings 即点亮 enemyBaseScouted → directMarch；
-            //     stuckTry >0 → 目标本身不可达(海/林/矿)：保持同点重发（已无步进/绕路兜底），仍不前进则继续升档。
+            //     stuckTry >0 → 目标/路径不可达(海/林/矿/拥挤)：朝集结 TC 内缩 stuckTry 格重发，逐步退回去重新找路。
             if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) &&
                 !enemyBaseScouted && enemySiegeSN == -1) {
                 issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);   // 先锋直插敌方基地方位
