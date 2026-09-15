@@ -262,6 +262,12 @@ private:
     tagBuilding* findBuildingIncludingUnderConstruction(int type);
     tagBuilding* findEnemyBuilding(int type);
     int findNearestEnemyBuilding(double dr, double ur, double range);  // 范围内最近敌方建筑SN(反攻直奔基地后拆建筑用)
+    // ★ 2026-09-15 去重：敌方建筑里找距 (dr,ur) 最近者。
+    //   findNearestEnemyBuilding / findNearestEnemyTower / findCatapultTarget 三者原先各抄一份
+    //   同样的"建筑中心距离"扫描（口径 = (BlockDR+1, BlockUR+1) × BLOCKSIDELENGTH），改一处易漏两处。
+    //   bestD2 传入【当前最优距离²(像素)】并在命中时被更新 —— 便于与"单位候选"混在同一池里比较；
+    //   typeFilter < 0 = 不限建筑类型，否则只看该 Type。返回 SN，无命中返回 -1。
+    int nearestEnemyBuildingFrom(double dr, double ur, double &bestD2, int typeFilter);
     // ★ 2026-09-13：范围内【距离自己最近的敌方箭塔】SN（无则 -1）。士兵选建筑目标时优先打它。
     int findNearestEnemyTower(double dr, double ur, double range);
     tagResource* findNearestResource(int type, double dr, double ur);
@@ -289,14 +295,15 @@ private:
     bool findRemoteBushCluster(int &bx, int &by, int &outCnt);
     bool findMarketSite(int &x, int &y);
     bool findHouseSite(int &x, int &y);
-    bool findFarmRingSite(int &x, int &y);  // TC周围隔1格环形选址
-    bool findFarmNearGranarySite(int &x, int &y);  // ★ 2026-09-12：谷仓周围外扩张展选址（MAX_FARMS 7→12 后必用）
     // ★ 2026-09-15（用户需求「优化农场布局，尽量分布在 TC 和谷仓周围」）：
-    //   统一锚点就近择优 —— 锚点 = TC + 全部已建成谷仓(GRANARY)/仓库(STOCK)，
-    //   在 [FARM_ANCHOR_R_MIN, FARM_ANCHOR_R_MAX] 环上取「到最近锚点最近」的空位。
-    //   ★ 取代 findFarmRingSite + findFarmNearGranarySite 的组合（后两者因
-    //     findFarmRingSite 内部自带 findBuildSite 兜底而双双失效：第二步永不可达）。
-    //   保留旧两函数仅为回滚方便，正常路径不再调用。
+    //   统一锚点候选 + 评分择优 —— 锚点 = TC + 全部已建成谷仓(GRANARY)/仓库(STOCK)，
+    //   在 [FARM_ANCHOR_R_MIN, FARM_ANCHOR_R_MAX] 环上枚举空位，评分 = 到 TC 的距离
+    //   （不用"到最近锚点"：该口径实测被证伪，会让 39.2% 的农场飞到 52 格外的谷仓旁）。
+    //   ★ 取代旧三段式链 findFarmRingSite → findFarmNearGranarySite → findBuildSite：
+    //     旧链第一步 findFarmRingSite 内部自带 findBuildSite 兜底 ⇒ 恒返回 true ⇒
+    //     第二步 findFarmNearGranarySite 永不可达。
+    //   旧两函数已于 2026-09-15 清理中删除（它们只被上面这条失效链调用，链一换即为死代码）。
+    //   回滚参照：UsrAI.cpp.bak_20260915_pre_cleanup。
     bool findFarmSiteBest(int &x, int &y);
     bool isFarmAdjacent(int blockDR, int blockUR);  // 农场不相邻：候选农场外扩1格内不得有其他农场(至少隔1格)
     // noFallback=true：指定 prefX/prefY 但周边放不下时【直接失败】，不再回退到默认选址

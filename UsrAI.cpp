@@ -700,15 +700,22 @@ void UsrAI::managePriest() {
 
     if (priestMoveCooldown > 0) priestMoveCooldown--;
 
-    // ★ 落点合法性过滤：目标格被建筑/单位占据时引擎判定移动失败（"被占据/不可达"）→单位原地不动、
-    //   每次冷却到期又重发同一坐标刷屏。所有祭司移动指令的落点都必须先过这一关。
-    auto occupiedLanding = [&](double x, double y) {
+    // ★ 2026-09-15 去重：落点的【己方】占用判据（建筑 2.5 格 / 我方军队 2.0 / 我方村民 2.0）。
+    //   两处共用：occupiedLanding（前出感化落点）与 badLanding（逃跑落点）。原先各抄一份（铁律 26）。
+    auto ownOccupied = [&](double x, double y) -> bool {
         for (auto &b : info.buildings)
             if (calDistance(x, y, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 2.5 * BL) return true;
         for (auto &a : info.armies)
             if (a.SN != priestSN && calDistance(x, y, a.DR, a.UR) < 2.0 * BL) return true;
         for (auto &f : info.farmers)
             if (calDistance(x, y, f.DR, f.UR) < 2.0 * BL) return true;
+        return false;
+    };
+
+    // ★ 落点合法性过滤：目标格被建筑/单位占据时引擎判定移动失败（"被占据/不可达"）→单位原地不动、
+    //   每次冷却到期又重发同一坐标刷屏。所有祭司移动指令的落点都必须先过这一关。
+    auto occupiedLanding = [&](double x, double y) {
+        if (ownOccupied(x, y)) return true;
         for (auto &e : info.enemy_armies)
             if (calDistance(x, y, e.DR, e.UR) < 4.0 * BL) return true;
         for (auto &e : info.enemy_farmers)
@@ -944,12 +951,7 @@ void UsrAI::managePriest() {
         // 落点合法性:不压己方建筑/单位;且不落在任何威胁射程内(否则逃出又进射程,继续被远程消耗)。
         auto badLanding = [&](double x, double y) -> bool {
             if (x < 0 || y < 0 || x > MAP_L * BL || y > MAP_U * BL) return true;
-            for (auto &b : info.buildings)
-                if (calDistance(x, y, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 2.5 * BL) return true;
-            for (auto &a : info.armies)
-                if (a.SN != priestSN && calDistance(x, y, a.DR, a.UR) < 2.0 * BL) return true;
-            for (auto &f : info.farmers)
-                if (calDistance(x, y, f.DR, f.UR) < 2.0 * BL) return true;
+            if (ownOccupied(x, y)) return true;   // 己方建筑/单位占用（与 occupiedLanding 共用同一判据）
             for (int t = 0; t < nT; ++t)
                 if (calDistance(x, y, thX[t], thY[t]) < thR[t]) return true;  // 仍在威胁射程内→不安全
             return false;
@@ -2340,6 +2342,26 @@ void UsrAI::assignIdleFarmers() {
     if (!isWar && state != COUNTERATTACK && scoutPhase < 16) {
         double BL = (double)BLOCKSIDELENGTH;
 
+        // ★ 2026-09-15 去重：路径 (sDR,sUR)→(wx,wy) 的【前 8 格】内是否撞上狮/象（1.5 格容差）。
+        //   两处共用（去程绕障判定 / 返程绕障判定）。原先各抄一份（铁律 26）。
+        //   口径：把资源点投影到路径线段上，t<0（在身后）或 t*pathLen>8格（远端）一律不管。
+        auto beastOnPathAhead = [&](double sDR, double sUR, double wx, double wy) -> bool {
+            double pathDX = wx - sDR, pathDY = wy - sUR;
+            double pathLen = std::sqrt(pathDX*pathDX + pathDY*pathDY);
+            if (pathLen <= 0.01) return false;
+            for (auto &r : info.resources) {
+                if (r.Cnt <= 0) continue;
+                if (r.Type != RESOURCE_LION && r.Type != RESOURCE_ELEPHANT) continue;
+                double t = ((r.DR - sDR)*pathDX + (r.UR - sUR)*pathDY) / (pathLen*pathLen);
+                if (t < 0 || t * pathLen > 8 * BL) continue;   // 只检查前8格，远端不管
+                if (t > 1) t = 1;
+                double nearX = sDR + t * pathDX;
+                double nearY = sUR + t * pathDY;
+                if (calDistance(r.DR, r.UR, nearX, nearY) < 1.5 * BL) return true;
+            }
+            return false;
+        };
+
         // ★ 返回绕路：多半径×多角度螺旋（被石头/障碍堵住时逐级放大半径重试，降低死循环）★
         const int SCOUT_RETURN_RADII[3] = {4, 7, 10};   // 单位 BL
         const int SCOUT_RETURN_ANGLES = 8;
@@ -2386,6 +2408,23 @@ void UsrAI::assignIdleFarmers() {
             for (auto &a : info.armies) {
                 if (a.SN == priestSN) { scout = &a; break; }
             }
+
+            // ★ 2026-09-15 去重：探路祭司「背向威胁点走 12 格」逃跑（两处共用：遇野兽 / 被缠斗）。
+            //   含越界夹取与下发记账；调用方按需补 fledThisFrame。原先两处各抄一份（铁律 26）。
+            //   ⚠ 必须定义在 scout 解析【之后】——lambda 体内解引用 scout。
+            auto scoutStepAwayFrom = [&](double fromX, double fromY) {
+                double dx = scout->DR - fromX, dy = scout->UR - fromY;
+                double len = std::sqrt(dx*dx + dy*dy);
+                if (len < 0.01) { dx = 1; dy = 0; len = 1; }
+                double tx = scout->DR + (dx / len) * 12 * BL;
+                double ty = scout->UR + (dy / len) * 12 * BL;
+                tx = max(0.0, min((double)MAP_L * BL, tx));
+                ty = max(0.0, min((double)MAP_U * BL, ty));
+                HumanMove(scout->SN, tx, ty);
+                scoutIssueDR = scout->DR; scoutIssueUR = scout->UR; scoutIssueFrame = frame;
+                scoutCooldown = 30;
+                scoutWalkTimer = 0;
+            };
 
             // ★ 每帧检测：敌方军队→回TC换方向；野兽/敌村民→逃12格（禁止感化！）
             bool fledThisFrame = false;
@@ -2435,18 +2474,7 @@ void UsrAI::assignIdleFarmers() {
                         fledThisFrame = true;
                     } else if (beastNearby) {
                         // ★ 野兽→远离12格，继续当前方向
-                        double awayDX = scout->DR - beastX;
-                        double awayDY = scout->UR - beastY;
-                        double awayLen = std::sqrt(awayDX*awayDX + awayDY*awayDY);
-                        if (awayLen < 0.01) { awayDX = 1; awayDY = 0; awayLen = 1; }
-                        double tx = scout->DR + (awayDX / awayLen) * 12 * BL;
-                        double ty = scout->UR + (awayDY / awayLen) * 12 * BL;
-                        tx = max(0.0, min((double)MAP_L * BL, tx));
-                        ty = max(0.0, min((double)MAP_U * BL, ty));
-                        HumanMove(scout->SN, tx, ty);
-                        scoutIssueDR = scout->DR; scoutIssueUR = scout->UR; scoutIssueFrame = frame;
-                        scoutCooldown = 30;
-                        scoutWalkTimer = 0;
+                        scoutStepAwayFrom(beastX, beastY);
                         fledThisFrame = true;
                     }
                 }
@@ -2524,18 +2552,7 @@ void UsrAI::assignIdleFarmers() {
                     if (d < nearestDist) { nearestDist = d; fleeX = e.DR; fleeY = e.UR; }
                 }
                 // 远离最近威胁，跑12格
-                double awayDX = scout->DR - fleeX;
-                double awayDY = scout->UR - fleeY;
-                double awayLen = std::sqrt(awayDX*awayDX + awayDY*awayDY);
-                if (awayLen < 0.01) { awayDX = 1; awayDY = 0; awayLen = 1; }
-                double tx = scout->DR + (awayDX / awayLen) * 12 * BL;
-                double ty = scout->UR + (awayDY / awayLen) * 12 * BL;
-                tx = max(0.0, min((double)MAP_L * BL, tx));
-                ty = max(0.0, min((double)MAP_U * BL, ty));
-                HumanMove(scout->SN, tx, ty);
-                scoutIssueDR = scout->DR; scoutIssueUR = scout->UR; scoutIssueFrame = frame;
-                scoutCooldown = 30;
-                scoutWalkTimer = 0;
+                scoutStepAwayFrom(fleeX, fleeY);
             } else if (scout && scout->NowState == HUMAN_STATE_IDLE) {
                 auto center = findBuilding(BUILDING_CENTER);
                 if (center) {
@@ -2632,27 +2649,14 @@ void UsrAI::assignIdleFarmers() {
                             nearTarget = (goalLen < 3.0 * BL);
 
                             // ★ 危险检测：目标12格+路径前8格避开狮/象
+                            // 威胁 = 目标点 12 格内有狮/象，或路径前 8 格撞上狮/象
                             bool dangerNearby = false;
-                            double pathDX = wx - sDR, pathDY = wy - sUR;
-                            double pathLen = std::sqrt(pathDX*pathDX + pathDY*pathDY);
                             for (auto &r : info.resources) {
                                 if (r.Cnt <= 0) continue;
                                 if (r.Type != RESOURCE_LION && r.Type != RESOURCE_ELEPHANT) continue;
-                                double lx = r.DR, ly = r.UR;
-                                if (calDistance(wx, wy, lx, ly) < 12 * BL) {
-                                    dangerNearby = true; break;
-                                }
-                                if (pathLen > 0.01) {
-                                    double t = ((lx - sDR)*pathDX + (ly - sUR)*pathDY) / (pathLen*pathLen);
-                                    if (t < 0 || t * pathLen > 8 * BL) continue;  // 只检查前8格，远端不管
-                                    if (t > 1) t = 1;
-                                    double nearX = sDR + t * pathDX;
-                                    double nearY = sUR + t * pathDY;
-                                    if (calDistance(lx, ly, nearX, nearY) < 1.5 * BL) {
-                                        dangerNearby = true; break;
-                                    }
-                                }
+                                if (calDistance(wx, wy, r.DR, r.UR) < 12 * BL) { dangerNearby = true; break; }
                             }
+                            if (!dangerNearby) dangerNearby = beastOnPathAhead(sDR, sUR, wx, wy);
 
                             if (nearTarget || dangerNearby) {
                                 if (nearTarget) scoutDirsDone++;
@@ -2691,24 +2695,7 @@ void UsrAI::assignIdleFarmers() {
                                      (calDistance(sDR, sUR, baseDR, baseUR) < 8 * BL);
 
                         // ★ 返程也要检测路径前8格是否有狮/象
-                        bool dangerNearby = false;
-                        double pathDX = wx - sDR, pathDY = wy - sUR;
-                        double pathLen = std::sqrt(pathDX*pathDX + pathDY*pathDY);
-                        for (auto &r : info.resources) {
-                            if (r.Cnt <= 0) continue;
-                            if (r.Type != RESOURCE_LION && r.Type != RESOURCE_ELEPHANT) continue;
-                            double lx = r.DR, ly = r.UR;
-                            if (pathLen > 0.01) {
-                                double t = ((lx - sDR)*pathDX + (ly - sUR)*pathDY) / (pathLen*pathLen);
-                                if (t < 0 || t * pathLen > 8 * BL) continue;  // 只检查前8格
-                                if (t > 1) t = 1;
-                                double nearX = sDR + t * pathDX;
-                                double nearY = sUR + t * pathDY;
-                                if (calDistance(lx, ly, nearX, nearY) < 1.5 * BL) {
-                                    dangerNearby = true; break;
-                                }
-                            }
-                        }
+                        bool dangerNearby = beastOnPathAhead(sDR, sUR, wx, wy);
 
                         if (nearTarget || dangerNearby) {
                             scoutReturnTry = 0;  // 成功回到TC旁→重置绕路计数
@@ -4099,6 +4086,17 @@ void UsrAI::manageMilitary() {
     //   目标优先选非投石车(留给祭司感化)；若威胁祭司的只有投石车，保命优先照打。
     //   只召回距祭司 PRIEST_GUARD_RECALL 内的兵，避免把反攻大军从全图拉回。
     std::map<int,int> guardIssued;   // 本帧已下达护驾令的兵：下方 D1/D2 不得抢占覆盖
+
+    // ★ 2026-09-15 去重：D1/D2 共用的「可被就近攻击调度」过滤链
+    //   （排除祭司/投石车/已派护驾/正在猎狮/非空闲）。两处原先各抄一份，改一处漏一处就出事（铁律 26）。
+    auto autoAttackEligible = [&](const tagArmy &a) -> bool {
+        if (a.Sort == AT_PRIEST) return false;
+        if (a.Sort == AT_STONE_THROWER) return false;   // ★ 投石车只在反攻期攻击（2026-09-06）
+        if (guardIssued.count(a.SN)) return false;      // 本帧已去护驾→不得抢占覆盖
+        if (lionHunterSN.count(a.SN)) return false;     // ★ 正在猎狮，别把指令覆盖掉
+        if (a.NowState != HUMAN_STATE_IDLE) return false;
+        return true;
+    };
     if (priestAlive) {
         // ★★ 最高优先级：有敌人正以祭司为目标(WorkObjectSN==priestSN) → 立刻全军扑上拉仇恨。
         //    无视 8/15 距离门槛(远程敌可站 12 格外射祭司)、打断一切战斗、不计召回距离(生死攸关)。
@@ -4285,11 +4283,7 @@ void UsrAI::manageMilitary() {
         int tcEnemy = findNearestEnemyNoStone(centerDR, centerUR, 25 * BL);
         if (tcEnemy >= 0) {
             for (auto &a : info.armies) {
-                if (a.Sort == AT_PRIEST) continue;
-                if (a.Sort == AT_STONE_THROWER) continue;   // ★ 投石车只在反攻期攻击（2026-09-06）
-                if (guardIssued.count(a.SN)) continue;   // 本帧已去护驾→不得抢占覆盖
-                if (lionHunterSN.count(a.SN)) continue;  // ★ 正在猎狮，别把指令覆盖掉
-                if (a.NowState != HUMAN_STATE_IDLE) continue;
+                if (!autoAttackEligible(a)) continue;
                 if (attackCmds >= maxAttackCmds) break;
                 HumanAction(a.SN, tcEnemy);
                 attackCmds++;
@@ -4304,11 +4298,7 @@ void UsrAI::manageMilitary() {
         // 反攻期单位调度完全交给 manageCounterAttack 的拉扯逻辑，此处不额外下发攻击令。
     } else
     for (auto &a : info.armies) {
-        if (a.Sort == AT_PRIEST) continue;
-        if (a.Sort == AT_STONE_THROWER) continue;   // ★ 投石车只在反攻期攻击（2026-09-06）
-        if (guardIssued.count(a.SN)) continue;   // 本帧已去护驾→不得抢占覆盖
-        if (lionHunterSN.count(a.SN)) continue;  // ★ 正在猎狮，别把指令覆盖掉
-        if (a.NowState != HUMAN_STATE_IDLE) continue;
+        if (!autoAttackEligible(a)) continue;
         if (attackCmds >= maxAttackCmds) break;
 
         bool isRanged = (a.Sort == AT_BOWMAN || a.Sort == AT_COMPOSITE_BOWMAN ||
@@ -5011,21 +5001,26 @@ void UsrAI::manageCounterAttack() {
                     }
                     kitingRetPrevDK[a.SN] = dK;
                     bool skipAwayStage = (kitingRetStuck.count(a.SN) && kitingRetStuck[a.SN] > 0);
+                    // ★ 2026-09-15 去重：三档撤退共用的「落点下发」——夹取到地图内 → 可通行则下令并记账。
+                    //   落点越界会被引擎丢弃；记账 5 件套（cmdFrame/retreatFrame/issueDist/moveFrame/stuckTry）
+                    //   任缺一项都会让卡死检测或节流失效 ⇒ 三处原先各抄一份（铁律 26）。
+                    auto tryRetreatLanding = [&](double rx, double ry, int stage) -> bool {
+                        rx = max(0.0, min((double)MAP_L * BL, rx));
+                        ry = max(0.0, min((double)MAP_U * BL, ry));
+                        if (!isPassableAt(rx, ry)) return false;
+                        HumanMove(a.SN, rx, ry);
+                        marchCmdFrame[a.SN] = frame;
+                        lastRetreatFrame[a.SN] = frame;
+                        marchIssueDist[a.SN] = calDistance(a.DR, a.UR, targetDR, targetUR);
+                        marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
+                        kitMoved = true; kitStage = stage; kitX = rx; kitY = ry;
+                        return true;
+                    };
                     // —— 第 1 档:沿"远离敌"方向撤（上一轮撤不动则跳过，改走第 2 档） ——
                     for (int ai = 0; ai < 5 && !kitMoved && !skipAwayStage; ++ai) {
                         double ca = std::cos(angs[ai]), sa = std::sin(angs[ai]);
-                        double rx = kEX + (ux*ca - uy*sa) * R * KITING_RETREAT_MULT;
-                        double ry = kEY + (uy*ca + ux*sa) * R * KITING_RETREAT_MULT;
-                        rx = max(0.0, min((double)MAP_L * BL, rx));
-                        ry = max(0.0, min((double)MAP_U * BL, ry));
-                        if (isPassableAt(rx, ry)) {
-                            HumanMove(a.SN, rx, ry);
-                            marchCmdFrame[a.SN] = frame;
-                            lastRetreatFrame[a.SN] = frame;
-                            marchIssueDist[a.SN] = calDistance(a.DR, a.UR, targetDR, targetUR);
-                            marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
-                            kitMoved = true; kitStage = 1; kitX = rx; kitY = ry;
-                        }
+                        tryRetreatLanding(kEX + (ux*ca - uy*sa) * R * KITING_RETREAT_MULT,
+                                          kEY + (uy*ca + ux*sa) * R * KITING_RETREAT_MULT, 1);
                     }
                     // —— 第 2 档:朝己方 TC 方向撤 12 格(TC 必在已探索空旷区,几乎总可走) ——
                     if (!kitMoved) {
@@ -5036,18 +5031,8 @@ void UsrAI::manageCounterAttack() {
                             const double TC_STEP = 12.0 * BL;
                             for (int ai = 0; ai < 5 && !kitMoved; ++ai) {
                                 double ca = std::cos(angsT[ai]), sa = std::sin(angsT[ai]);
-                                double rx = a.DR + (tcUX*ca - tcUY*sa) * TC_STEP;
-                                double ry = a.UR + (tcUY*ca + tcUX*sa) * TC_STEP;
-                                rx = max(0.0, min((double)MAP_L * BL, rx));
-                                ry = max(0.0, min((double)MAP_U * BL, ry));
-                                if (isPassableAt(rx, ry)) {
-                                    HumanMove(a.SN, rx, ry);
-                                    marchCmdFrame[a.SN] = frame;
-                                    lastRetreatFrame[a.SN] = frame;
-                                    marchIssueDist[a.SN] = calDistance(a.DR, a.UR, targetDR, targetUR);
-                                    marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
-                                    kitMoved = true; kitStage = 2; kitX = rx; kitY = ry;
-                                }
+                                tryRetreatLanding(a.DR + (tcUX*ca - tcUY*sa) * TC_STEP,
+                                                  a.UR + (tcUY*ca + tcUX*sa) * TC_STEP, 2);
                             }
                         }
                     }
@@ -5060,18 +5045,8 @@ void UsrAI::manageCounterAttack() {
                             const double PR_STEP = 6.0 * BL;
                             for (int ai = 0; ai < 3 && !kitMoved; ++ai) {  // 3 个角度足够(祭司附近通常没障碍)
                                 double ca = std::cos(angsT[ai]), sa = std::sin(angsT[ai]);
-                                double rx = a.DR + (prUX*ca - prUY*sa) * PR_STEP;
-                                double ry = a.UR + (prUY*ca + prUX*sa) * PR_STEP;
-                                rx = max(0.0, min((double)MAP_L * BL, rx));
-                                ry = max(0.0, min((double)MAP_U * BL, ry));
-                                if (isPassableAt(rx, ry)) {
-                                    HumanMove(a.SN, rx, ry);
-                                    marchCmdFrame[a.SN] = frame;
-                                    lastRetreatFrame[a.SN] = frame;
-                                    marchIssueDist[a.SN] = calDistance(a.DR, a.UR, targetDR, targetUR);
-                                    marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
-                                    kitMoved = true; kitStage = 3; kitX = rx; kitY = ry;
-                                }
+                                tryRetreatLanding(a.DR + (prUX*ca - prUY*sa) * PR_STEP,
+                                                  a.UR + (prUY*ca + prUX*sa) * PR_STEP, 3);
                             }
                         }
                     }
@@ -5080,13 +5055,12 @@ void UsrAI::manageCounterAttack() {
                     //   RETREAT 窗口 → 无法判断"拉扯到底有没有拉开距离"。改为每次进入撤退窗口必打；
                     //   该块已被 canReissue(30 帧节流)限制，每弓兵每 30 帧最多一条，不会刷屏。
                     //   字段含 aged(相位已持续帧数)/stuck/self/tgt，可直接验证 phaseAged 是否恢复累加。
-                    if (true)
-                        DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 stuck=%6 aged=%7 self=(%8,%9) tgt=(%10,%11)")
-                                  .arg(frame).arg(a.SN).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1)
-                                  .arg(kitStage).arg(kitingRetStuck.count(a.SN) ? kitingRetStuck[a.SN] : 0)
-                                  .arg(phaseAged)
-                                  .arg(a.DR / BL, 0, 'f', 1).arg(a.UR / BL, 0, 'f', 1)
-                                  .arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1));
+                    DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 stuck=%6 aged=%7 self=(%8,%9) tgt=(%10,%11)")
+                              .arg(frame).arg(a.SN).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1)
+                              .arg(kitStage).arg(kitingRetStuck.count(a.SN) ? kitingRetStuck[a.SN] : 0)
+                              .arg(phaseAged)
+                              .arg(a.DR / BL, 0, 'f', 1).arg(a.UR / BL, 0, 'f', 1)
+                              .arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1));
                     marchCmds++;
                     continue;   // RETREAT 段不落站桩/推进
                 }
@@ -5764,18 +5738,26 @@ tagBuilding* UsrAI::findEnemyBuilding(int type) {
     return nullptr;
 }
 
-// 范围内最近敌方建筑SN：反攻直奔已知基地后，部队抵达基地附近需主动拆建筑(不仅打兵)。
-//   建筑坐标用区块中心 (BlockDR+1)*BL 计算距离；range 内无敌方建筑返回 -1。
-int UsrAI::findNearestEnemyBuilding(double dr, double ur, double range) {
+// ★ 2026-09-15 去重：敌方建筑里找距 (dr,ur) 最近者（= 下列三个查找函数共用的底座）。
+//   距离口径 = 建筑中心 (BlockDR+1, BlockUR+1) × BLOCKSIDELENGTH（与旧代码逐字一致）。
+//   bestD2 传入当前最优距离²并在命中时更新 ⇒ 调用方可把它与"单位候选"混在同一池里比较。
+int UsrAI::nearestEnemyBuildingFrom(double dr, double ur, double &bestD2, int typeFilter) {
     int bestSN = -1;
-    double bestDist = range * range;
     for (const auto &b : info.enemy_buildings) {
+        if (typeFilter >= 0 && b.Type != typeFilter) continue;
         double bDR = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
         double bUR = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH;
         double d = (bDR - dr) * (bDR - dr) + (bUR - ur) * (bUR - ur);
-        if (d < bestDist) { bestDist = d; bestSN = b.SN; }
+        if (d < bestD2) { bestD2 = d; bestSN = b.SN; }
     }
     return bestSN;
+}
+
+// 范围内最近敌方建筑SN：反攻直奔已知基地后，部队抵达基地附近需主动拆建筑(不仅打兵)。
+//   建筑坐标用区块中心 (BlockDR+1)*BL 计算距离；range 内无敌方建筑返回 -1。
+int UsrAI::findNearestEnemyBuilding(double dr, double ur, double range) {
+    double bestD2 = range * range;
+    return nearestEnemyBuildingFrom(dr, ur, bestD2, -1);
 }
 
 // ★ 2026-09-13 用户需求「士兵攻击箭塔时选择距离自己最近的箭塔为目标」。
@@ -5784,16 +5766,8 @@ int UsrAI::findNearestEnemyBuilding(double dr, double ur, double range) {
 //   （箭塔是 2×2，+1 即中心；见 cpp:5405 bSize 判据）。
 //   range 为"格"换算后的像素距离（调用方传 N*BL），超出该半径的塔视为不构成即时威胁→返回 -1。
 int UsrAI::findNearestEnemyTower(double dr, double ur, double range) {
-    int bestSN = -1;
-    double bestDist = range * range;
-    for (const auto &b : info.enemy_buildings) {
-        if (b.Type != BUILDING_ARROWTOWER) continue;
-        double bDR = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
-        double bUR = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH;
-        double d = (bDR - dr) * (bDR - dr) + (bUR - ur) * (bUR - ur);
-        if (d < bestDist) { bestDist = d; bestSN = b.SN; }
-    }
-    return bestSN;
+    double bestD2 = range * range;
+    return nearestEnemyBuildingFrom(dr, ur, bestD2, BUILDING_ARROWTOWER);
 }
 
 tagResource* UsrAI::findNearestResource(int type, double dr, double ur) {
@@ -5935,13 +5909,9 @@ int UsrAI::findCatapultTarget(double dr, double ur, double range) {
         double d = (e.DR - dr) * (e.DR - dr) + (e.UR - ur) * (e.UR - ur);
         if (d < bestDist) { bestDist = d; bestSN = e.SN; }
     }
-    for (const auto &b : info.enemy_buildings) {
-        if (b.Type != BUILDING_ARROWTOWER) continue;   // 只打箭塔(其它建筑由后续推进逻辑处理)
-        double bDR = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
-        double bUR = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH;
-        double d = (bDR - dr) * (bDR - dr) + (bUR - ur) * (bUR - ur);
-        if (d < bestDist) { bestDist = d; bestSN = b.SN; }
-    }
+    // 建筑候选（只打箭塔，其它建筑由后续推进逻辑处理）——与上面的单位候选共用同一 bestDist 池
+    int bSN = nearestEnemyBuildingFrom(dr, ur, bestDist, BUILDING_ARROWTOWER);
+    if (bSN >= 0) bestSN = bSN;
     return bestSN;
 }
 
@@ -6417,123 +6387,6 @@ bool UsrAI::isFarmAdjacent(int blockDR, int blockUR) {
         bool separatedX = (blockDR - 1 > b.BlockDR + 2) || (blockDR + 3 < b.BlockDR);
         bool separatedY = (blockUR - 1 > b.BlockUR + 2) || (blockUR + 3 < b.BlockUR);
         if (!separatedX && !separatedY) return true;   // X/Y 轴都有交集 → 相邻
-    }
-    return false;
-}
-
-// ============================================================
-// 农场环形选址：TC周围隔1格，从紧贴TC的环向外扩展
-// ============================================================
-bool UsrAI::findFarmRingSite(int &x, int &y) {
-    auto center = findBuilding(BUILDING_CENTER);
-    if (!center) return findBuildSite(x, y, 3);
-    int cx = center->BlockDR, cy = center->BlockUR;
-    // TC 3x3 占据 [cx, cx+2] x [cy, cy+2]
-    // 隔1格：农场3x3从 cx+4 / cx-4 / cy+4 / cy-4 开始（gap = 1 block）
-
-    // 从内圈向外搜索（r=4 = 隔1格后最内圈）
-    for (int r = 4; r < 30; ++r) {
-        // 上下两行
-        for (int dx = -r; dx <= r + 2; ++dx) {
-            int nx = cx + dx;
-            // 上行：farm bottom = cy+r, farm occupies [cy+r, cy+r+2]
-            int key = nx * 1000 + (cy + r);
-            if (!triedBuildPositions.count(key) && isPositionFree(nx, cy + r, 3) && !isFarmAdjacent(nx, cy + r)) {
-                x = nx; y = cy + r; return true;
-            }
-            // 下行：farm bottom = cy-r, farm occupies [cy-r, cy-r+2]（隔1格）
-            key = nx * 1000 + (cy - r);
-            if (!triedBuildPositions.count(key) && isPositionFree(nx, cy - r, 3) && !isFarmAdjacent(nx, cy - r)) {
-                x = nx; y = cy - r; return true;
-            }
-        }
-        // 左右两列（不含四角，避免重复）
-        for (int dy = -r + 1; dy <= r + 1; ++dy) {
-            int ny = cy + dy;
-            // 右列：farm left = cx+r
-            int key = (cx + r) * 1000 + ny;
-            if (!triedBuildPositions.count(key) && isPositionFree(cx + r, ny, 3) && !isFarmAdjacent(cx + r, ny)) {
-                x = cx + r; y = ny; return true;
-            }
-            // 左列：farm left = cx-r, farm occupies [cx-r, cx-r+2]（隔1格）
-            key = (cx - r) * 1000 + ny;
-            if (!triedBuildPositions.count(key) && isPositionFree(cx - r, ny, 3) && !isFarmAdjacent(cx - r, ny)) {
-                x = cx - r; y = ny; return true;
-            }
-        }
-    }
-    // 环形找不到→回退到默认选址
-    return findBuildSite(x, y, 3);
-}
-
-// ★★★ 2026-09-12：谷仓周围农场选址（MAX_FARMS 7→12 后必用）
-//   场景：TC 周围 4~30 块格已被经济建筑挤满（findFarmRingSite 返回 false），
-//         而 MAX_FARMS=12 还要再建 ⇒ 在已有谷仓（GRANARY 3x3）外扩找 3x3 农场位。
-//   设计要点：
-//   ① 遍历全部已建成谷仓（缺位 fallback ⇒ false 走 tryBuild 后续兜底 findBuildSite）；
-//   ② 在谷仓 3x3 外扩 1~10 块格（即谷仓边缘 1~10 格外）环形搜索；
-//   ③ 必须 isPositionFree + 不与现有农场 footprint 相邻（沿用 isFarmAdjacent）；
-//   ④ 不在 triedBuildPositions 集合中（避免反复在不可建点丢令）；
-//   ⑤ 优先级：谷仓 > TC 距离（先扫近 TC 的谷仓），避免农场分布过散。
-bool UsrAI::findFarmNearGranarySite(int &x, int &y) {
-    auto center = findBuilding(BUILDING_CENTER);
-    if (!center) return false;
-    int cx = center->BlockDR, cy = center->BlockUR;
-
-    // 收集已建成谷仓
-    struct GranaryRef { int bx, by; int dTC; };
-    std::vector<GranaryRef> granaries;
-    for (auto &b : info.buildings) {
-        if (b.Type != BUILDING_GRANARY || b.Percent < 100) continue;
-        GranaryRef g;
-        g.bx = b.BlockDR;
-        g.by = b.BlockUR;
-        int dx = g.bx - cx, dy = g.by - cy;
-        g.dTC = dx * dx + dy * dy;
-        granaries.push_back(g);
-    }
-    if (granaries.empty()) return false;   // ★ 没有谷仓 → false 让 tryBuild 走 findBuildSite 兜底
-    // 按距 TC 由近到远排序（先尝试 TC 附近的谷仓，农场分布不散）
-    std::sort(granaries.begin(), granaries.end(),
-              [](const GranaryRef &a, const GranaryRef &b){ return a.dTC < b.dTC; });
-
-    for (auto &g : granaries) {
-        // 谷仓 footprint = [g.bx, g.bx+2] x [g.by, g.by+2]（谷仓 3x3）；
-        // 农场 footprint = [nx, nx+2] x [ny, ny+2]；
-        // 相邻条件：两 footprint 在 X/Y 任一轴有交集（含边界）即不可；
-        // 安全候选：nx <= g.bx-3 或 nx >= g.bx+3（隔 1 块格 gap），ny 同理。
-        // 实际上 isFarmAdjacent 已经做了"外扩 1 格"判定（cpp:5422），
-        // 这里直接 nx ∈ [g.bx-r-2, g.bx+r+2] 探测即可，让 isFarmAdjacent 兜底判断。
-        for (int r = 1; r <= 10; ++r) {
-            // 上侧 + 下侧：nx 在 [g.bx-r, g.bx+r+2] 扫描
-            for (int dx = -r; dx <= r + 2; ++dx) {
-                int nx = g.bx + dx;
-                int ny = g.by - r - 1;         // 上方：农场 footprint 顶 = ny+2 ≤ g.by - 1 ⇒ ny ≤ g.by - 3 ⇒ 起始 ny = g.by - r - 1
-                int key = nx * 1000 + ny;
-                if (!triedBuildPositions.count(key) && isPositionFree(nx, ny, 3) && !isFarmAdjacent(nx, ny)) {
-                    x = nx; y = ny; return true;
-                }
-                ny = g.by + r + 1;             // 下方（对称）
-                key = nx * 1000 + ny;
-                if (!triedBuildPositions.count(key) && isPositionFree(nx, ny, 3) && !isFarmAdjacent(nx, ny)) {
-                    x = nx; y = ny; return true;
-                }
-            }
-            // 左侧 + 右侧
-            for (int dy = -r; dy <= r + 2; ++dy) {
-                int ny = g.by + dy;
-                int nx = g.bx - r - 1;         // 左侧（对称）
-                int key = nx * 1000 + ny;
-                if (!triedBuildPositions.count(key) && isPositionFree(nx, ny, 3) && !isFarmAdjacent(nx, ny)) {
-                    x = nx; y = ny; return true;
-                }
-                nx = g.bx + r + 1;             // 右侧
-                key = nx * 1000 + ny;
-                if (!triedBuildPositions.count(key) && isPositionFree(nx, ny, 3) && !isFarmAdjacent(nx, ny)) {
-                    x = nx; y = ny; return true;
-                }
-            }
-        }
     }
     return false;
 }
