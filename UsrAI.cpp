@@ -254,6 +254,15 @@ ins UsrIns;
 #define PRIEST_SIEGE_CLEAR_TOWER_R 14.0  // 清场判据：敌【箭塔】须距祭司 < 此值才算"未清场"（塔是静态远程，留更大余量）
 #define PRIEST_SIEGE_ABORT_R       4.5   // 迟滞锁解除阈值：敌贴到祭司此半径内 ⇒ 视为真危险，解除前出
 #define PRIEST_SIEGE_ABORT_HP      0.35  // 迟滞锁解除阈值：祭司血量低于此值 ⇒ 解除前出（交给保命逻辑）
+// ★★★ 2026-09-15「起手保护」：低血 + 敌塔压近 ⇒ 暂不起手 ★★★
+//   证据（fc/dm/sba/sb 四批 32 局）：祭司共 10 次起手，**7 次成功收编、3 次死于施法期**；
+//   起手→收编需 ~333~343 帧（≈14 秒），起手→阵亡 257/410 帧 —— 博弈就是"能否撑过这 340 帧"。
+//   同批证据：10 次起手里 9 次敌方箭塔正在射击祭司，且塔基本拆不完（±300/+600 帧窗口内被摧毁 0~1 座）
+//   ⇒ "等塔清完再感化" = 永不感化（死锁），故**不设"有塔就不去"的硬闸**（towerlock 轮已证伪两次）。
+//   本闸只拦最没希望的一种：**已残血 + 塔就在 14 格内**（顶着塔站桩 340 帧必死）。
+//   半径复用 PRIEST_SIEGE_CLEAR_TOWER_R（同一语义单一真源，不新增第二套塔距判据）。
+//   已起手（WorkObjectSN==武器厂）时不打断——中断施法会重置进度（铁律 14）。
+#define PRIEST_SIEGE_GUARD_HP      0.45  // 起手血量闸：低于此值且最近敌塔 <= CLEAR_TOWER_R 格 ⇒ 本帧不起手
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
@@ -5220,6 +5229,36 @@ void UsrAI::manageCounterAttack() {
     if (priest) {
         if (priestCounterCooldown > 0) priestCounterCooldown--;   // ★ 反攻推进专用节流（与 priestMoveCooldown 解耦）
 
+        // ★★★ 2026-09-15 敌塔态势扫描（起手判据 + 诊断 + 前出日志共用同一份，避免同语义写三遍）★★★
+        //   nearD = 最近敌箭塔到祭司的距离(像素)，cnt = 整个 info.enemy_buildings 里的敌箭塔数。
+        //   ⚠ 只统计【已探明】的敌建筑（Core.cpp:622 受 explored||visible 约束）——
+        //     未侦察到的塔对 AI "不存在"，这是本图共性，不是本函数缺陷。
+        auto scanTowerThreat = [&](double &nearD, int &cnt) {
+            nearD = 1e9; cnt = 0;
+            for (auto &b : info.enemy_buildings)
+                if (b.Type == BUILDING_ARROWTOWER) {
+                    cnt++;
+                    double d = calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL);
+                    if (d < nearD) nearD = d;
+                }
+        };
+
+        // ★★★ 2026-09-15 态势采样【提到早路径之前】★★★
+        //   原位置在早路径 `return` 之后 ⇒ 只要祭司进了 12 格射程就被 return 掉，采样永远打不到，
+        //   造成"起手过程不可观测"（本批 32 局里 path=early/front 的 DebugText 命中 0~2 次，
+        //   而 HumanAction 实际发令 10 次 —— 全是采样偏差，不是没触发）。
+        //   新增 towers=(全局敌箭塔数) nearT=(最近敌塔到祭司的格数, -1=视野内无敌塔)。
+        if (frame % 300 == 0) {
+            double nearTowerD = 1e9; int towerCnt = 0;
+            scanTowerThreat(nearTowerD, towerCnt);
+            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 towers=%10 nearT=%11")
+                      .arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
+                      .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
+                      .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
+                      .arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown)
+                      .arg(towerCnt).arg((nearTowerD > 1e8) ? -1.0 : nearTowerD / BL, 0, 'f', 1));
+        }
+
         // ★★★ 2026-09-14 关键修复：武器厂感化【提前到状态/移动闸之前】★★★
         //   诊断铁证：[LC-DBG] 8 局仅命中 1 次 ⇒ 下方整段实际执行率 <1%（被下面两道闸挡住：
         //     ① NowState 非 IDLE/WALKING 即 return ② priestMoveCooldown>0 即 return）。
@@ -5238,23 +5277,33 @@ void UsrAI::manageCounterAttack() {
                 //   修：仅当 ①引擎当前目标非该武器厂(`WorkObjectSN`) ②不在施法静默窗口 才发令；
                 //       发令后进入 PRIEST_SIEGE_CONVERT_LOCKOUT(400 帧) 静默期，让引擎完成施法。
                 if (priest->WorkObjectSN != enemySiegeSN && priestCounterCooldown <= 0) {
+                    // 现场量（起手判据与日志共用同一份，避免"同语义写两遍"）
+                    double pHp0 = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
+                    double nearT0 = 1e9; int towerN0 = 0;
+                    scanTowerThreat(nearT0, towerN0);
+                    // ★★★ 2026-09-15 起手保护：已残血 + 敌塔压近 ⇒ 本帧不起手 ★★★
+                    //   本分支仅在 WorkObjectSN != 武器厂 时进入 ⇒ 一定"尚未起手"，故不会打断已进行的施法。
+                    //   刻意【不设 priestMoveCooldown】⇒ 交回 managePriest 后撤/治疗，撤出塔射程后再来。
+                    if (pHp0 < PRIEST_SIEGE_GUARD_HP && nearT0 <= PRIEST_SIEGE_CLEAR_TOWER_R * BL) {
+                        if (frame % 100 == 0)
+                            DebugText(QString("[SIEGE-HOLD f=%1] hp=%2 nearT=%3 towers=%4 dS=%5")
+                                      .arg(frame).arg(pHp0, 0, 'f', 2).arg(nearT0 / BL, 0, 'f', 1)
+                                      .arg(towerN0).arg(sD0 / BL, 0, 'f', 1));
+                        return;   // 本帧不接管祭司
+                    }
                     HumanAction(priestSN, enemySiegeSN);
                     priestCounterCooldown = PRIEST_SIEGE_CONVERT_LOCKOUT;
-                    if (frame % 50 == 0)
-                        DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 path=early")
-                                  .arg(frame).arg(sD0 / BL, 0, 'f', 1));
+                    // 每次发令必打（原为 frame%50 采样 ⇒ 起手过程不可观测）；发令本身已被 lockout 节流到 <=1/400 帧
+                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 hp=%3 nearT=%4 towers=%5 path=early")
+                              .arg(frame).arg(sD0 / BL, 0, 'f', 1).arg(pHp0, 0, 'f', 2)
+                              .arg((nearT0 > 1e8) ? -1.0 : nearT0 / BL, 0, 'f', 1).arg(towerN0));
                 }
                 priestMoveCooldown = 60;   // 钉住：施法期禁止后撤/移动打断（移动会清空 WorkObjectSN）
                 return;
             }
         }
-        // 诊断（低频/ASCII，放在两道闸之前 ⇒ 真实反映本段执行率与卡点）
-        if (frame % 300 == 0)
-            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9")
-                      .arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
-                      .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
-                      .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
-                      .arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown));
+        // 诊断（低频/ASCII）：★2026-09-15 已上移到本段最前（早路径之前）——原位置在早路径 return 之后，
+        //   导致"起手帧"永远看不到采样；且新增 towers/nearT 两列（敌塔态势）。
 
         if (priest->NowState != HUMAN_STATE_IDLE && priest->NowState != HUMAN_STATE_WALKING) {
             // 祭司在 ATTACKING（治愈）或 CONVERTING（感化）中,避免本段覆盖其引擎托管动作
@@ -5361,9 +5410,13 @@ void UsrAI::manageCounterAttack() {
                 // 已在感化射程内 → 直接感化武器厂
                 HumanAction(priestSN, enemySiegeSN);
                 priestCounterCooldown = 60; priestMoveCooldown = 60;
-                if (frame % 50 == 0)
-                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 path=front")
-                              .arg(frame).arg(dSiege / BL, 0, 'f', 1));
+                // ★ 2026-09-15：去掉 frame%50 采样（每次发令必打），附敌塔态势
+                double nearT1 = 1e9; int towerN1 = 0;
+                scanTowerThreat(nearT1, towerN1);
+                DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 hp=%3 nearT=%4 towers=%5 path=front")
+                          .arg(frame).arg(dSiege / BL, 0, 'f', 1)
+                          .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
+                          .arg((nearT1 > 1e8) ? -1.0 : nearT1 / BL, 0, 'f', 1).arg(towerN1));
             } else if (priestCounterCooldown <= 0) {
                 // 在射程外 → 主动朝武器厂【记忆坐标】推进
                 double ux2 = (sMemDR - priest->DR), uy2 = (sMemUR - priest->UR);
@@ -5377,9 +5430,11 @@ void UsrAI::manageCounterAttack() {
                 if (isPassableAt(tx, ty)) {
                     HumanMove(priestSN, tx, ty);
                     priestCounterCooldown = 30; priestMoveCooldown = 30;
-                    if (frame % 100 == 0)
-                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 enemy_cleared")
-                                  .arg(frame).arg(dSiege / BL, 0, 'f', 1));
+                    double nearT2 = 1e9; int towerN2 = 0;
+                    scanTowerThreat(nearT2, towerN2);
+                    DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared")
+                              .arg(frame).arg(dSiege / BL, 0, 'f', 1)
+                              .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2));
                 }
             }
             return;   // 清场期：本帧祭司任务就是感化武器厂，不走下方后撤逻辑
