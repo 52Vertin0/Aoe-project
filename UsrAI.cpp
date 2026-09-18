@@ -4717,7 +4717,12 @@ void UsrAI::manageCounterAttack() {
             //     • 任意相位 dK ≤ 0.5R(贴脸/紧急) → 无条件切 RETREAT 作【终止触发】
             if (isRanged(a.Sort) && a.Sort != AT_STONE_THROWER) {
                 const double R = rangedMaxRange(a.Sort);
-                const double BREATH = 1.5 * BL;             // "敌出射程外"额外缓冲
+                // ★ 2026-09-18 迟滞带修正（用户：「与敌方军队交手后就完全不撤退了」）。
+                //   铁证：旧值 1.5 ⇒ RETREAT 退出阈值 = R+1.5 = 8.5 格，而下方【接敌带】给付线上限是 R+2.0 = 9 格。
+                //   8.5 < 9 ⇒ 一撤到 8.5 就立刻被判「仍在接敌带」⇒ 发攻击令 ⇒ 引擎按射程自行逼近
+                //   ⇒ 撤退净效果≈0。实测 gi 批 24 局：96.7% 的撤退窗口在 60 帧内出现攻击令。
+                //   改为 4.0 ⇒ 退出阈值 11 格 > 接敌带 9 格，形成 +2 格迟滞带（撤到 11 格才允许重新接战）。
+                const double BREATH = 4.0 * BL;             // 须 > 接敌带 2.0 格，否则迟滞带为负 = 白撤
                 // ★ AoE3 7e = 25 fps(1500 帧/分钟)：60 帧 = 2.4 秒、30 帧 = 1.2 秒。工程铁律：frame→秒 一律 ÷25。
                 const int SHOOT_FRAMES = 30;               // SHOOT 相位持续 ≈1.2 秒@25fps（用户需求"打一下就走"——打一发就走，不多停留）
                 const int PHASE_COOLDOWN = 20;             // 相位内不重发指令 ≈0.8 秒（让一撤走完）
@@ -4825,7 +4830,12 @@ void UsrAI::manageCounterAttack() {
                     //   ⇒ 退出条件 dK≥R+BREATH 永不满足 ⇒ 永远在射程内被贴脸打。改为 1.4R/1.5R（> R+BREATH）。
                     // ★ 2026-09-12 fallback 链：第1档"远离敌"可能撞海/林（整段 RETREAT 落空）⇒ 二级朝己方 TC 撤、
                     //   三级朝祭司撤；全失败则本帧不下令（下一帧再试），绝不让单位往海里走。
-                    const double KITING_RETREAT_MULT = kMelee ? 1.5 : 1.4;
+                    // ★ 2026-09-18：撤退落点必须【真的越过退出阈值】，否则撤退是白撤。
+                    //   退出阈值 = R+BREATH = 7+4 = 11 格（复合弓/战车弓），而旧 1.4R/1.5R = 9.8/10.5 格 < 11
+                    //   ⇒ 永远撤不到阈值，只能靠 60 帧兜底强制切回 SHOOT ⇒ 被拉回接敌带。
+                    //   实测 78% 的撤退窗口落点距自身 8~15 格，但「实走/应走」仅 39%。
+                    //   改 1.8R/1.9R = 12.6/13.3 格，留 1.6 格余量确保满足退出条件。
+                    const double KITING_RETREAT_MULT = kMelee ? 1.9 : 1.8;
                     double ux = (a.DR - kEX) / (dK + 1e-6), uy = (a.UR - kEY) / (dK + 1e-6);
                     const double angs[5] = {0.0, 0.6, -0.6, 1.2, -1.2};
                     const double angsT[5] = {0.0, 0.5, -0.5, 1.0, -1.0};  // TC fallback 用更窄角度(TC 必存在,角度越准越好)
@@ -4935,6 +4945,19 @@ void UsrAI::manageCounterAttack() {
                 // ★ 2026-09-14：RETREAT 相位内【绝不落到推进段】——旧实现 phase==1 但 !canReissue 时会
                 //   掉进 issueMarch（目标=敌基地=朝前）⇒ 撤退途中被"推回去"，与撤退令互相抵消。
                 if (phase == 1) { marchCmds++; continue; }
+                // ★ 2026-09-18 撤退冷静期 —— 修「交手后完全不撤退」的第二个抵消源。
+                //   铁证（gi 批 24 局 7321 个撤退窗口）：40.4% 的窗口在随后 90 帧内【又冒出完全不同落点】
+                //   的移动令，且都是 issueMarch 的「朝敌方基地对角角落」推进落点（gi 批最高频落点
+                //   1897 / 1503 / 1201 次全部落在这里：(78,83)/(77.3,82.3)/(74,77) 格）——
+                //   方向与撤退完全相反，把刚撤开的单位又推回敌人堆 ⇒ 撤退净位移≈0。
+                //   修：撤退后 120 帧(4.8 秒)内 SHOOT 相位【不落推进段】。接近交给攻击令，
+                //   由引擎按射程自行处理（HumanAction 本就会把单位带到射程边缘），不再朝敌基地冲。
+                const int KITING_REGATHER_FRAMES = 120;
+                if (phase == 0 && kGot && lastRetreatFrame.count(a.SN) &&
+                    (frame - lastRetreatFrame[a.SN] < KITING_REGATHER_FRAMES)) {
+                    marchCmds++;
+                    continue;
+                }
                 // 射程外 / 无敌 / SHOOT 但脱战:落入下方常规推进段
             }
 
