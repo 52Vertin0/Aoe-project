@@ -12,7 +12,7 @@ ins UsrIns;
 
 // ★★★ 完整版：PPT策略——房→市→兵营→靶场→马厩→箭塔 ★★★
 #define MAX_FARMERS 22          // 目标村民数量（PPT建议20-28）
-#define MAX_HOUSES 10           // PPT：50人口=10房
+#define MAX_HOUSES 12           // +2：60人口=12房（2026-09-16，原 10→12）
 #define POP_HEADROOM_BUILD 2    // 人口余量≤此值即补房屋（即 人口达到 人口上限-2 时建房）
 // ★ 农场上限：2026-09-01 二改 8 → 12。
 //   后期野生食物枯竭后，食物产能 = 农场座数 × 1人/座（代码强制"每座农场有且仅有一人"），
@@ -135,6 +135,13 @@ ins UsrIns;
 //   仅在 TOWER_TARGET_RANGE 格内生效（超出则该塔不构成即时威胁，维持"直奔武器厂"的反攻目标语义）。
 //   ⚠ 只影响"选建筑目标"，不改变打敌方【单位】的优先级(单位永远优先于建筑)。
 #define TOWER_TARGET_RANGE 12   // 士兵把敌方箭塔纳入攻击目标的最大距离(格)；箭塔射程≈8格
+// ★ 2026-09-16 用户纠正「复合弓兵还是要攻击箭塔，只是不拉扯撤退、直接攻击」：
+//   2026-09-15 原需求「复合弓兵不要拉扯箭塔（攻击距离比箭塔小）」曾实现成"射程<塔(8格)的兵种全禁打塔"
+//   （复合弓/战车弓 7、弓兵 5、投石兵 4；近战与投石车 10 不受影响）。但用户本意是【允许打塔、只禁拉扯】。
+//   "拉扯箭塔"根因：兵选塔后若走 issueMarch 推进段会绕塔圈被动接战；现改为选塔即 return 站桩直接打（不进推进段），
+//   天然不拉扯。故只【复合弓兵】恢复打塔；战车弓/弓兵/投石兵(slinger)射程仍<塔，保持不打塔（避免冲塔白挨打）。
+//   ⚠ 仅 AT_COMPOSITE_BOWMAN 放行；判据见 attackBuildingOrMarch 内 canHitTower（同源常量 ARROWTOWER_RANGE）。
+#define ARROWTOWER_RANGE 8.0    // 敌方箭塔射程(格)，与 config.json DIS_ARROWTOWER 一致
 // ★★★ 2026-09-12 改：允许多群瞪羚各建 1 座仓库，1+3=MAX_STOCK=4 座上限。
 //   原 MAX_STOCK=2 限制下，多群瞪羚（典型地图 3~4 群）只能有 2 群被覆盖、其余猎人空跑回最近仓库。
 //   现在 4 座可覆盖近距（首发块）+ 远距（远距块）所有主要聚类，无聚类猎人空跑交肉。
@@ -263,6 +270,31 @@ ins UsrIns;
 //   半径复用 PRIEST_SIEGE_CLEAR_TOWER_R（同一语义单一真源，不新增第二套塔距判据）。
 //   已起手（WorkObjectSN==武器厂）时不打断——中断施法会重置进度（铁律 14）。
 #define PRIEST_SIEGE_GUARD_HP      0.45  // 起手血量闸：低于此值且最近敌塔 <= CLEAR_TOWER_R 格 ⇒ 本帧不起手
+// ★★★ 2026-09-16 用户需求：「祭司感化武器厂的【唯一】限制条件 = 敌方全部箭塔拆完」★★★
+//   用户原话：「唯一限制条件：在敌方全部箭塔拆完后再感化，箭塔拆完意味着敌方军队已全灭」。
+//   ① **只留"塔全拆"一道闸**，不加"敌兵全灭"第二道——用户的理由是"塔拆完 ⇒ 兵已全灭"（塔是最后防线）。
+//      这点与 2026-09-16 早前 prieststrict 轮的实测一致：`ps1 f=44900 [SIEGE-WAIT] alive=0 towers=4`
+//      ⇒ 敌兵确实先归零（alive=0 可达），而塔恒在 ⇒ 用"塔"作唯一判据是信息量最大的那个。
+//   ② 判据必须是【全局】敌塔数==0（不是祭司周边 14 格的局部 localClear），否则等于把塔从 14 格外放过。
+//   ③ ⚠ 塔数用 info.enemy_buildings 里的 BUILDING_ARROWTOWER 计数，**受 explored||visible 约束**：
+//      未探明的塔不计入 ⇒ "列表里没有塔"≠"塔全拆"。故必须叠加**已探明保险**：
+//      ①我方确实推进过敌方基地（enemySiegeSN != -1，即武器厂坐标已持久记忆）
+//      ②且已探索到的敌建筑数 > 0（确保是"探到了且没有塔"，而不是"什么都没探到"）。
+#define PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR true   // true = 启用「敌塔全拆」唯一闸；false = 回退为旧的局部清场
+// 已探明保险：要求【当前帧】info.enemy_buildings 里至少有这么多条目，才相信"塔已全拆"。
+//   ★★★ 2026-09-17 修复：由 2 改为 1 ★★★
+//   铁证（fd4.ait）：f=42300 gT=1 seen=2 → f=43500 gT=0 seen=1 → 直到 f=45000 恒 seen=1，
+//     同期祭司 dS=6.9 格(射程 12 内)、hp=1.00、敌塔 0 ⇒ 条件完美却不出手；
+//     日志 [SIEGE-WAIT f=43300] hp=1.00 towers=0 seen=1 dS=6.9 直接坐实是【本保险项】在拦。
+//   机理：enemyBldSeenN 是【当前帧列表长度】(受 explored||visible 约束)，**不是历史累计**。
+//     而终局状态恰恰是"塔被拆光 ⇒ 基地只剩武器厂 1 个建筑" ⇒ seen 必然掉到 1
+//     ⇒ 要求 >=2 就是要求"除了武器厂之外还剩至少 1 个建筑"，与"塔全拆"互斥 ⇒ **结构死锁**。
+//   实证：全库 220 条 gT==0 样本中 seen>=2 的有 **0 条** ⇒ 本闸上线至今通过率 0%
+//     （加闸后各批 pe/fd/dm/ps/pu/mt/ms 起手均为 0，加闸前 path=early 共 116 次）。
+//   保留 seen>=1 的意义：列表全空(seen=0)时无法区分"真拆光"与"视野丢失" ⇒ 仍须拦截（保守）。
+//   组合语义：①武器厂坐标已持久记忆(ssn!=-1 ⇒ 确实推进到过基地) ②当前仍看得见敌建筑(seen>=1)
+//            ③视野里没有塔(gT==0) ⇒ 放行。
+#define PRIEST_TOWERS_CLEAR_MIN_SEEN 1
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
 // ★ 2026-09-13 解封（用户要求"解锁马厩和学院，并在后期建造方阵兵"）：
@@ -370,9 +402,32 @@ ins UsrIns;
 //   3.0.7e 之前的引擎会让 2 人挤同一棵树相互卡位/原地振动，3.0.7f 修好后 2 人可正常协作，效率 +30~50%。
 //   仍保留 2 人上限（不是 4/8）—— 太多人挤同一树仍然效率低（往返路径重叠、砍光后空跑）。
 #define WOOD_MAX_WORKERS_PER_TREE 2   // 单棵树同帧累计工人数上限（3.0.7f: 1→2）
-#define GOLD_RICH_TOL   1.25 // 黄金相对 5:3 目标配比的宽容系数：超出 1.25 倍即判定"黄金相对过剩"
-// ★ 食物:黄金 目标配比 = 复合弓兵(40食+20金) 与 方阵兵(60食+40金) 成本综合 = 100:60 = 5:3
-//   即 食物工数 : 黄金工数 ≈ 5 : 3（黄金工目标 = 食物工数 * 3/5，向上取整）
+#define GOLD_RICH_TOL   1.25 // 黄金相对 食物:黄金 目标配比的宽容系数：超出 1.25 倍即判定"黄金相对过剩"
+// ⛔ 2026-09-18：曾在此处新增 `GOLD_RICH_FOOD_FLOOR 200`（要求食物≥200 才算"黄金相对过剩"），
+//   实测反而全线更差（金工 6.2→5.8、达标 85%→82%、负局 4→7），**已撤销**。
+//   教训：goldRich 命中的场景（食物低谷）正是它**该**触发的场景，不是误判。详见 goldRich 处注释。
+// ⛔⛔ 2026-09-18 方案A（食物:黄金 5:3 → 5:4）—— **已实测无效并回滚** ⛔⛔
+//   背景：用户诉求「采金人数偏少」。改动 = 把黄金工目标从 foodWorkers*3/5 抬到 *4/5（+33%）。
+//   验证：24局(A臂 DEN=3) vs 24局(B臂 DEN=4)，同码同图，仅此一项差异。
+//     ┌ 满时长局口径（15 vs 14 局，先用"末帧≥44000"滤掉早崩局以消除样本偏差）：
+//     │   金工人数   6.4 (31.0%) → 6.4 (31.3%)   ← **完全无变化**（+33% 的目标毫无作用）
+//     │   食物存量   336.7 → 278.0  (−17%)       ← 真实代价
+//     └ 全体口径：金工 6.1→6.2；金矿令 697→880 (+26%)；Fd −13%；Wd −16%；
+//        goldRich 命中 2.7%→2.6%（"阈值抬高会更难触发"的预测被否定，绝对分支与食物低谷场景主导）；
+//        Gd +45%、首金 13.2分→12.0分（这两项是真实改善，但不足以抵消代价）。
+//   根因（逐帧铁证，非推断）：
+//     ① 中期(14~22分) 引擎实况 `Idle=0` 占 **98.0%**，空闲村民均值 **0.03 人**
+//        ⇒ 主循环的黄金派工段只对【空闲村民】生效 ⇒ **根本无人可派**。
+//     ② 中期 `foodStop` 命中仅 1.3%、`woodStop` 仅 1.3% ⇒ **没有任何工种处于"过剩"状态**，
+//        即回撤块（系统的**唯一**重分配机制）也抽不出人。
+//     ③ ⇒ 真实分配由「派工优先级顺序(木→金→石→食) + 资源点容量 + 在岗人员不回撤」决定，
+//        `goldTarget` 这个"目标"在中期**根本不参与决策**。抬高它只让 `goldWorkers < goldTarget`
+//        更频繁成立 ⇒ 对【已经在采金的村民】反复下发同一条命令 ⇒ 金矿令 +26% 而人数不变。
+//        （教训再现：**动作日志量 ≠ 实际工作量**，见铁律 25 的机制量/结果量之分。）
+//   结论：**"提高配比目标"这条路在架构上不成立**。中期人力是硬约束（木7+食9.4+金4.6≈22=全部村民），
+//     要让金工变多，只有两条路：(a) 新建"显式转岗 + 防回路"机制（从超额岗位硬扣人）；
+//     (b) 从消耗侧或采集效率侧入手。详见报告 aoe3_goldplan_20260918.html。
+//   ⇒ 恢复 5:3 = 复合弓(40食+20金)/方阵(60食+40金) 的纯成本比（黄金需求 ≈ 食物的 50%~67%）。
 #define FOOD_GOLD_NUM 5
 #define FOOD_GOLD_DEN 3
 // ★ 石头保底采集（仅在不达停采上限时生效）：石头现仅用于
@@ -709,6 +764,17 @@ void UsrAI::managePriest() {
 
     if (priestMoveCooldown > 0) priestMoveCooldown--;
 
+    // ★ 2026-09-15 去重（铁律 21/26）：远程兵种判定 + "该敌对我的威胁半径"原先在
+    //   【感化目标选择】/【威胁扫描 chkThreat】/【逃跑 priestFlee 的威胁收集】三处各写一遍，
+    //   改一处漏一处即口径分叉。此处收口为两个 lambda。
+    //   ⚠ 威胁半径口径：远程(弓/战车弓/复合弓/投石兵/投石车)≈12 格；近战≈2.5 格（贴身）。
+    auto isRangedSort = [&](int s) -> bool {
+        return s == AT_BOWMAN || s == AT_CHARIOT_ARCHER ||
+               s == AT_COMPOSITE_BOWMAN || s == AT_SLINGER;
+    };
+    auto enemyThreatRange = [&](int s) -> double {
+        return (isRangedSort(s) || s == AT_STONE_THROWER) ? 12.0 * BL : 2.5 * BL;
+    };
     // ★ 2026-09-15 去重：落点的【己方】占用判据（建筑 2.5 格 / 我方军队 2.0 / 我方村民 2.0）。
     //   两处共用：occupiedLanding（前出感化落点）与 badLanding（逃跑落点）。原先各抄一份（铁律 26）。
     auto ownOccupied = [&](double x, double y) -> bool {
@@ -732,70 +798,114 @@ void UsrAI::managePriest() {
         return false;
     };
 
+    // ★ 2026-09-15 去重（铁律 21/26）：治疗落点合法性（地图边界 + 己方建筑 2.5 格 + 敌单位 2.0 格）。
+    //   原先在【趋近治疗】与【闲时治疗】两档各写一份（后者注释还自称"同 healLandOk"）。
+    //   ⚠ 2.0 格是 2026-09-12 从 4.0 格收紧后的值：伤兵几乎总在交火线上，4.0 格会把所有落点
+    //     判否(实测 4013 帧 0 次治疗)；2.0 格仍在近战贴身(≈1 格)之外，允许靠近交火线救人。
+    auto healLandingOk = [&](double x, double y) -> bool {
+        if (x < 0 || y < 0 || x > MAP_L * BL || y > MAP_U * BL) return false;
+        for (auto &b : info.buildings)
+            if (calDistance(x, y, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 2.5 * BL) return false;
+        for (auto &e : info.enemy_armies)
+            if (calDistance(x, y, e.DR, e.UR) < 2.0 * BL) return false;
+        for (auto &e : info.enemy_farmers)
+            if (calDistance(x, y, e.DR, e.UR) < 2.0 * BL) return false;
+        return true;
+    };
+
+    // ★ 2026-09-15 去重：选"最该治的伤兵"= 血量比最低者，同血取近者；原先两档各写一份筛选循环。
+    //   maxRatio    ：只治血量比低于该值的友军（趋近档 0.8=只救明显重伤，免为小伤跨图送命；
+    //                 闲时档 0.9=本职治疗）。
+    //   counterRule ：闲时档在反攻期只认重伤(<50%)，避免祭司回头追基地里的轻伤后方单位而滞留不推进；
+    //                 趋近档不带此规则（保持原行为）。
+    //   输出 outRatio = 命中伤兵的血量比（未命中时 1.0，与原文初值一致，供日志使用）。
+    auto pickHealTarget = [&](double maxRatio, bool counterRule,
+                              double &outDR, double &outUR, double &outRatio) -> int {
+        int bestSN = -1; double worst = 1.0, bestD = 1e12;
+        outDR = 0; outUR = 0;
+        for (auto &a : info.armies) {
+            if (a.SN == priestSN) continue;              // ★ 铁律：绝不把祭司自己当治疗目标(=自毁)
+            if (a.MaxBlood <= 0 || a.Blood <= 0) continue;
+            double r = (double)a.Blood / a.MaxBlood;
+            if (r >= maxRatio) continue;
+            if (counterRule && inCounter && r >= 0.5) continue;
+            double d = calDistance(pDR, pUR, a.DR, a.UR);
+            if (d > 25.0 * BL) continue;                 // 太远不追，防送命/离 TC 过远
+            if (r < worst || (r == worst && d < bestD)) {
+                worst = r; bestSN = a.SN; bestD = d; outDR = a.DR; outUR = a.UR;
+            }
+        }
+        outRatio = worst;
+        return bestSN;
+    };
+
+    // ★ 2026-09-15 去重：贴到伤兵身边。落点 = 伤兵身后 0.6 格，再沿垂直方向 0/±1/±2 格微调，
+    //   取首个合法落点（治疗射程极短：引擎 Core_List.cpp 仅校验 isAttackable 标志，无距离判定，
+    //   故必须贴到友军身边 ≈0.6 格才发得出治疗令）。
+    //   allowFallback：5 档全被否时是否"强行贴近"（改选离最近敌人最远的那档）——
+    //                  闲时档 true（伤兵总在交火线上，不贴上去就永远治不到，且此处已保证非濒死）；
+    //                  趋近档 false（宁可不发令，保持原行为）。
+    auto moveAdjacentToAlly = [&](double allyX, double allyY, double dist, bool allowFallback) -> bool {
+        double ux = (allyX - pDR) / dist;
+        double uy = (allyY - pUR) / dist;
+        const double OFF[5] = {0.0, 1.0, -1.0, 2.0, -2.0};
+        int bestO = 0; double bestClear = -1e18;
+        for (int o = 0; o < 5; ++o) {
+            double cx = allyX - ux * 0.6 * BL - uy * OFF[o] * BL;
+            double cy = allyY - uy * 0.6 * BL + ux * OFF[o] * BL;
+            cx = max(0.0, min((double)MAP_L * BL, cx));
+            cy = max(0.0, min((double)MAP_U * BL, cy));
+            if (healLandingOk(cx, cy)) { HumanMove(priestSN, cx, cy); return true; }
+            if (!allowFallback) continue;
+            double clear = 1e12;
+            for (auto &e : info.enemy_armies)
+                clear = std::min(clear, calDistance(cx, cy, e.DR, e.UR));
+            for (auto &e : info.enemy_farmers)
+                clear = std::min(clear, calDistance(cx, cy, e.DR, e.UR));
+            if (clear > bestClear) { bestClear = clear; bestO = o; }
+        }
+        if (!allowFallback) return false;
+        double cx = allyX - ux * 0.6 * BL - uy * OFF[bestO] * BL;
+        double cy = allyY - uy * 0.6 * BL + ux * OFF[bestO] * BL;
+        cx = max(0.0, min((double)MAP_L * BL, cx));
+        cy = max(0.0, min((double)MAP_U * BL, cy));
+        HumanMove(priestSN, cx, cy);
+        return true;
+    };
+
     auto findConvertTarget = [&](double dr, double ur, double range) -> int {
-        // ★ 转化优先级（2026-09-12 用户连续需求：先"投石车不再最优先"，再"方阵兵为感化最优先"）：
-        //   ① 方阵兵(AT_HOPLITE)最高优先——克制骑兵，转过来即我方反骑主力（挡敌方骑兵冲祭司/弓兵）。
-        //   ② 其余近战(非远程)次之——贴身 2.5 格威胁祭司（祭司死=立刻失败），护驾优先。
-        //   ③ 远程军队(弓/复合弓/战车弓/投石兵)第三——削输出、保祭司与箭塔。
-        //   ④ 投石车降为第四——SPEED 1.63 慢、不直接威胁祭司。
-        //      多同型单位选血量最高者(更耐打、转来更强)，同血取近者。
-        //   ⑤ 兜底：最近敌方村民。
-        // 0) 方阵兵最高优先（克制骑兵，转过来即我方反骑主力）
-        int bestHopSN = -1; int bestHopBlood = -1; double bestHopDist = 1e12;
-        for (auto &e : info.enemy_armies) {
-            if (e.Blood <= 0) continue;
-            if (e.Sort != AT_HOPLITE) continue;
-            double d = calDistance(dr, ur, e.DR, e.UR);
-            if (d > range) continue;
-            if (e.Blood > bestHopBlood || (e.Blood == bestHopBlood && d < bestHopDist)) {
-                bestHopBlood = e.Blood; bestHopSN = e.SN; bestHopDist = d;
+        // ★ 转化优先级（2026-09-12 用户连续需求）：① 方阵兵(AT_HOPLITE，克骑兵、转来即反骑主力)
+        //   → ② 其余近战(贴身 2.5 格，威胁祭司性命) → ③ 远程军队(削输出) → ④ 投石车(慢，不直接威胁祭司)
+        //   → 兜底：最近敌方村民。
+        //   ⚠ 前四档的循环体完全相同（"同型里选血量最高者，同血取近者"），原先各写一份共 ~50 行；
+        //     收口为 pickByBlood(mode)，筛选条件用显式 mode 区分（不改变任何一档的判定与顺序）。
+        auto pickByBlood = [&](int mode) -> int {
+            int bSN = -1, bBlood = -1; double bD = 1e12;
+            for (auto &e : info.enemy_armies) {
+                if (e.Blood <= 0) continue;
+                bool want;
+                switch (mode) {
+                    case 0:  want = (e.Sort == AT_HOPLITE); break;                        // 方阵兵
+                    case 1:  want = (e.Sort != AT_HOPLITE && e.Sort != AT_STONE_THROWER &&
+                                     !isRangedSort(e.Sort)); break;                       // 其余近战
+                    case 2:  want = (e.Sort != AT_HOPLITE && e.Sort != AT_STONE_THROWER &&
+                                     isRangedSort(e.Sort)); break;                        // 远程军队
+                    default: want = (e.Sort == AT_STONE_THROWER); break;                  // 投石车
+                }
+                if (!want) continue;
+                double d = calDistance(dr, ur, e.DR, e.UR);
+                if (d > range) continue;
+                if (e.Blood > bBlood || (e.Blood == bBlood && d < bD)) {
+                    bBlood = e.Blood; bSN = e.SN; bD = d;
+                }
             }
-        }
-        if (bestHopSN >= 0) return bestHopSN;                      // 0) 方阵兵第一优先
-        // 1) 其余近战（投石车/方阵兵已排除）
-        int bestSN = -1; int bestBlood = -1; double bestDist = 1e12;
-        for (auto &e : info.enemy_armies) {
-            if (e.Blood <= 0) continue;
-            if (e.Sort == AT_STONE_THROWER) continue;            // 投石车已移到 ④
-            if (e.Sort == AT_HOPLITE) continue;                 // 方阵兵已在 0) 处理
-            // 近战判定：非远程（远程=弓/复合弓/战车弓/投石兵；投石车虽 DIS=10 但已在 ④ 排除）
-            bool isMelee = !(e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
-                             e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER);
-            if (!isMelee) continue;                              // 只挑近战
-            double d = calDistance(dr, ur, e.DR, e.UR);
-            if (d > range) continue;
-            if (e.Blood > bestBlood || (e.Blood == bestBlood && d < bestDist)) {
-                bestBlood = e.Blood; bestSN = e.SN; bestDist = d;
-            }
-        }
-        if (bestSN >= 0) return bestSN;                          // 1) 其余近战（保命）
-        // 2) 远程军队（投石车/方阵兵/近战已排除）
-        for (auto &e : info.enemy_armies) {
-            if (e.Blood <= 0) continue;
-            if (e.Sort == AT_STONE_THROWER) continue;
-            if (e.Sort == AT_HOPLITE) continue;
-            bool isMelee = !(e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
-                             e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER);
-            if (isMelee) continue;                               // 近战已在 1) 处理
-            double d = calDistance(dr, ur, e.DR, e.UR);
-            if (d > range) continue;
-            if (e.Blood > bestBlood || (e.Blood == bestBlood && d < bestDist)) {
-                bestBlood = e.Blood; bestSN = e.SN; bestDist = d;
-            }
-        }
-        if (bestSN >= 0) return bestSN;                          // 2) 远程
-        // 3) 投石车（虽远程输出强，但慢、不直接威胁祭司）
-        int bestCatSN = -1; int bestCatBlood = -1; double bestCatDist = 1e12;
-        for (auto &e : info.enemy_armies) {
-            if (e.Blood <= 0) continue;
-            if (e.Sort != AT_STONE_THROWER) continue;
-            double d = calDistance(dr, ur, e.DR, e.UR);
-            if (d > range) continue;
-            if (e.Blood > bestCatBlood || (e.Blood == bestCatBlood && d < bestCatDist)) {
-                bestCatBlood = e.Blood; bestCatSN = e.SN; bestCatDist = d;
-            }
-        }
-        if (bestCatSN >= 0) return bestCatSN;                     // 3) 投石车降为第四
+            return bSN;
+        };
+        int t;
+        if ((t = pickByBlood(0)) >= 0) return t;   // 0) 方阵兵最高优先
+        if ((t = pickByBlood(1)) >= 0) return t;   // 1) 其余近战（保命）
+        if ((t = pickByBlood(2)) >= 0) return t;   // 2) 远程军队
+        if ((t = pickByBlood(3)) >= 0) return t;   // 3) 投石车降为第四
         // 兜底：无敌方军队时，最近敌方村民（保留原行为）
         int bestVilSN = -1; double bestVilDist = 1e12;
         for (auto &e : info.enemy_farmers) {
@@ -819,10 +929,7 @@ void UsrAI::managePriest() {
             }
         };
         for (auto &e : info.enemy_armies) {
-            double r = (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
-                        e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
-                        e.Sort == AT_STONE_THROWER) ? 12.0 * BL : 2.5 * BL;
-            chkThreat(e.DR, e.UR, r);
+            chkThreat(e.DR, e.UR, enemyThreatRange(e.Sort));
         }
         for (auto &e : info.enemy_farmers) chkThreat(e.DR, e.UR, 1.0 * BL);
         for (auto &b : info.enemy_buildings)
@@ -866,9 +973,7 @@ void UsrAI::managePriest() {
         };
         for (auto &e : info.enemy_armies) {
             double d = calDistance(pDR, pUR, e.DR, e.UR);
-            double r = (e.Sort == AT_BOWMAN || e.Sort == AT_CHARIOT_ARCHER ||
-                        e.Sort == AT_COMPOSITE_BOWMAN || e.Sort == AT_SLINGER ||
-                        e.Sort == AT_STONE_THROWER) ? 12.0 * BL : 2.5 * BL;
+            double r = enemyThreatRange(e.Sort);
             if (d <= r + 4.0 * BL) pushThreat(e.DR, e.UR, r);   // 含提前量4格,进射程前就起步
         }
         for (auto &e : info.enemy_farmers) {
@@ -1134,66 +1239,28 @@ void UsrAI::managePriest() {
             for (auto &e : info.enemy_armies)
                 if (calDistance(pDR, pUR, e.DR, e.UR) < 4.0 * BL) { closeQuarters = true; break; }
             if (priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0 && pBR > 0.25 && !closeQuarters) {
-            int needAlly = -1; double worstRatio = 1.0; double bestAllyDist = 1e12;
-            double allyDR = 0, allyUR = 0;
-            for (auto &a : info.armies) {
-                if (a.SN == priestSN) continue;          // 铁律：绝不把自己当治疗目标
-                if (a.MaxBlood <= 0 || a.Blood <= 0) continue;
-                double r = (double)a.Blood / a.MaxBlood;
-                if (r >= 0.8) continue;                  // 只救明显受伤(<80%)友军(免为小伤跨图)
-                double d = calDistance(pDR, pUR, a.DR, a.UR);
-                if (d > 25.0 * BL) continue;             // 太远不追，防送命/离TC过远
-                if (r < worstRatio || (r == worstRatio && d < bestAllyDist)) {
-                    worstRatio = r; needAlly = a.SN; bestAllyDist = d; allyDR = a.DR; allyUR = a.UR;
-                }
-            }
-            if (needAlly >= 0) {
-                auto healLandOk = [&](double x, double y) -> bool {
-                    if (x < 0 || y < 0 || x > MAP_L * BL || y > MAP_U * BL) return false;
-                    for (auto &b : info.buildings)
-                        if (calDistance(x, y, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 2.5 * BL) return false;
-                    // ★ 2026-09-12 修"治疗 0 次"：原禁区 4.0 格 → 伤兵几乎总在敌人身边，
-                    //   任意落点都落在禁区里 → 治疗档 100% 被否掉（实测 4013 帧闸门全开却 0 次治疗）。
-                    //   2.0 格 = 仍在近战贴身(≈1格)之外，但允许祭司靠近交火线上的伤兵。
-                    for (auto &e : info.enemy_armies)
-                        if (calDistance(x, y, e.DR, e.UR) < 2.0 * BL) return false;
-                    for (auto &e : info.enemy_farmers)
-                        if (calDistance(x, y, e.DR, e.UR) < 2.0 * BL) return false;
-                    return true;
-                };
-                if (bestAllyDist <= 1.0 * BL) {
-                    HumanAction(priestSN, needAlly);
-                    priestMoveCooldown = 30;
-                    if (frame % 50 == 0)
-                        DebugText(QString("Priest HEAL(approach) SN=%1 ratio=%2 hp=%3")
-                                  .arg(needAlly).arg(worstRatio, 0, 'f', 2).arg(pBR, 0, 'f', 2));
-                    return;
-                }
-                double ux = (allyDR - pDR) / bestAllyDist;
-                double uy = (allyUR - pUR) / bestAllyDist;
-                const double OFF[5] = {0.0, 1.0, -1.0, 2.0, -2.0};
-                bool moved = false;
-                for (int o = 0; o < 5; ++o) {
-                    double cx = allyDR - ux * 0.6 * BL - uy * OFF[o] * BL;
-                    double cy = allyUR - uy * 0.6 * BL + ux * OFF[o] * BL;
-                    cx = max(0.0, min((double)MAP_L * BL, cx));
-                    cy = max(0.0, min((double)MAP_U * BL, cy));
-                    if (healLandOk(cx, cy)) {
-                        HumanMove(priestSN, cx, cy);
-                        moved = true;
-                        break;
+                double allyDR = 0, allyUR = 0, worstRatio = 1.0;
+                int needAlly = pickHealTarget(0.8, false, allyDR, allyUR, worstRatio);
+                if (needAlly >= 0) {
+                    double bestAllyDist = calDistance(pDR, pUR, allyDR, allyUR);
+                    if (bestAllyDist <= 1.0 * BL) {
+                        HumanAction(priestSN, needAlly);
+                        priestMoveCooldown = 30;
+                        if (frame % 50 == 0)
+                            DebugText(QString("Priest HEAL(approach) SN=%1 ratio=%2 hp=%3")
+                                      .arg(needAlly).arg(worstRatio, 0, 'f', 2).arg(pBR, 0, 'f', 2));
+                        return;
+                    }
+                    if (moveAdjacentToAlly(allyDR, allyUR, bestAllyDist, false)) {
+                        priestMoveCooldown = 30;
+                        if (frame % 50 == 0)
+                            DebugText(QString("Priest MOVE->HEAL SN=%1 ratio=%2 hp=%3 d=%4")
+                                      .arg(needAlly).arg(worstRatio, 0, 'f', 2).arg(pBR, 0, 'f', 2)
+                                      .arg(bestAllyDist / BL, 0, 'f', 1));
+                        return;
                     }
                 }
-                if (moved) {
-                    priestMoveCooldown = 30;
-                    if (frame % 50 == 0)
-                        DebugText(QString("Priest MOVE->HEAL SN=%1 ratio=%2 hp=%3 d=%4")
-                                  .arg(needAlly).arg(worstRatio, 0, 'f', 2).arg(pBR, 0, 'f', 2)
-                                  .arg(bestAllyDist / BL, 0, 'f', 1));
-                    return;
-                }
             }
-        }
     }   // ★ 闭合 cpp:818 新加的外层 `{`(closeQuarters 局部作用域)
         // 3) 撤退迟滞：上帧在逃且仍处近战贴身(<4 格)或箭塔近距(<14 格)→继续逃，不切回(消除往返走)
         //   【再修 2026-09-08】与 4) 同判据：原 `threatDist <= nearestThreatR + 2` 永远成立会卡死 mode=1
@@ -1271,82 +1338,14 @@ void UsrAI::managePriest() {
         //     不必等回到 IDLE(否则交火中永远卡在"走-逃"循环、治不到)。
         if ((priest->NowState == HUMAN_STATE_IDLE || priest->NowState == HUMAN_STATE_WALKING)
             && priestMoveCooldown <= 0) {
-            int bestAlly = -1; double worstRatio = 1.0; double bestAllyDist = 1e12;
-            double bestAllyDR = 0, bestAllyUR = 0;
-            for (auto &a : info.armies) {
-                if (a.SN == priestSN) continue;      // ★ 铁律：绝不把祭司自己当治疗目标(=自毁)
-                if (a.MaxBlood <= 0) continue;       // 防除零
-                if (a.Blood <= 0) continue;          // 已死亡/血量为0，不治疗
-                double r = (double)a.Blood / a.MaxBlood;
-                if (r >= 0.9) continue;              // 仅治疗明显受伤(血<90%)友军,免为小伤跨图奔波
-                // ★ 2026-09-11 修"反攻期祭司在家箭塔附近转圈不反攻"：反攻期只治重伤(<50%)前线单位，
-                //   不治轻伤后方单位(否则祭司回头追后方伤兵、滞留基地)
-                if (inCounter && r >= 0.5) continue;
-                double d = calDistance(pDR, pUR, a.DR, a.UR);
-                if (d > 25.0 * BL) continue;          // ★ 放宽到 25 格(原 18 太近,小伤兵被忽视)
-                if (r < worstRatio || (r == worstRatio && d < bestAllyDist))
-                    { worstRatio = r; bestAlly = a.SN; bestAllyDist = d; bestAllyDR = a.DR; bestAllyUR = a.UR; }
-            }
+            double bestAllyDR = 0, bestAllyUR = 0, worstRatio = 1.0;
+            int bestAlly = pickHealTarget(0.9, true, bestAllyDR, bestAllyUR, worstRatio);
             if (bestAlly >= 0) {
-                // 先确保祭司走到伤兵相邻格：相邻时直接下令治疗；
-                // 较远时用“允许靠近目标伤兵”的落点检查逐步走近，到达后引擎会自动/显式治疗。
-                auto healLandingOk = [&](double x, double y) -> bool {
-                    if (x < 0 || y < 0 || x > MAP_L * BL || y > MAP_U * BL) return false;
-                    for (auto &b : info.buildings)
-                        if (calDistance(x, y, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 2.5 * BL) return false;
-                    // ★ 治疗须贴近友军，故不再因"附近有其他友军/村民"拒掉落点——否则祭司被推到远处反复横跳、永远进不了治疗射程；
-                    //   只避让建筑(不能站进去)与敌军(避免送命)。
-                    // ★ 2026-09-12 修"治疗 0 次"：禁区由 4.0 格收到 2.0 格（同 healLandOk）。
-                    for (auto &e : info.enemy_armies)
-                        if (calDistance(x, y, e.DR, e.UR) < 2.0 * BL) return false;
-                    for (auto &e : info.enemy_farmers)
-                        if (calDistance(x, y, e.DR, e.UR) < 2.0 * BL) return false;
-                    return true;
-                };
+                double bestAllyDist = calDistance(pDR, pUR, bestAllyDR, bestAllyUR);
                 bool issued = false;
                 if (bestAllyDist > 1.0 * BL) {
                     // ★ 反攻期：不回头追后方轻伤单位——治疗移动令落空，本函数结束，推进交给 manageCounterAttack
-                    if (!inCounter) {
-                    // ★ 治疗射程极短(引擎 Core_List.cpp 仅校验 isAttackable 标志、无距离判定)，须贴到友军身边(≈0.6格)才发治疗指令；
-                    //   用小幅垂直偏移(0/±1/±2格)确保落点贴近友军，避免被推到远处反复横跳。
-                    double ux = (bestAllyDR - pDR) / bestAllyDist;
-                    double uy = (bestAllyUR - pUR) / bestAllyDist;
-                    const double OFF[5] = {0.0, 1.0, -1.0, 2.0, -2.0};
-                    for (int o = 0; o < 5; ++o) {
-                        double cx = bestAllyDR - ux * 0.6 * BL - uy * OFF[o] * BL;
-                        double cy = bestAllyUR - uy * 0.6 * BL + ux * OFF[o] * BL;
-                        cx = max(0.0, min((double)MAP_L * BL, cx));
-                        cy = max(0.0, min((double)MAP_U * BL, cy));
-                        if (healLandingOk(cx, cy)) {
-                            HumanMove(priestSN, cx, cy);
-                            issued = true;
-                            break;
-                        }
-                    }
-                    // ★ 2026-09-12 修"治疗 0 次"兜底：5 个小偏移全被否 → 不再放弃，改选
-                    //   "离最近敌人最远"的那个偏移强行贴近伤兵（此处已保证 pBR>0.25，非濒死）。
-                    if (!issued) {
-                        int bestO = 0; double bestClear = -1e18;
-                        for (int o = 0; o < 5; ++o) {
-                            double cx = bestAllyDR - ux * 0.6 * BL - uy * OFF[o] * BL;
-                            double cy = bestAllyUR - uy * 0.6 * BL + ux * OFF[o] * BL;
-                            cx = max(0.0, min((double)MAP_L * BL, cx));
-                            cy = max(0.0, min((double)MAP_U * BL, cy));
-                            double clear = 1e12;
-                            for (auto &e : info.enemy_armies)
-                                clear = std::min(clear, calDistance(cx, cy, e.DR, e.UR));
-                            for (auto &e : info.enemy_farmers)
-                                clear = std::min(clear, calDistance(cx, cy, e.DR, e.UR));
-                            if (clear > bestClear) { bestClear = clear; bestO = o; }
-                        }
-                        double cx = bestAllyDR - ux * 0.6 * BL - uy * OFF[bestO] * BL;
-                        double cy = bestAllyUR - uy * 0.6 * BL + ux * OFF[bestO] * BL;
-                        cx = max(0.0, min((double)MAP_L * BL, cx));
-                        cy = max(0.0, min((double)MAP_U * BL, cy));
-                        HumanMove(priestSN, cx, cy);
-                        issued = true;
-                    }
-                    }
+                    if (!inCounter) issued = moveAdjacentToAlly(bestAllyDR, bestAllyUR, bestAllyDist, true);
                 } else {
                     HumanAction(priestSN, bestAlly);
                     issued = true;
@@ -1587,13 +1586,11 @@ void UsrAI::manageBuildings() {
             continue;
         }
 
-        // ★ 2026-09-13 建造者硬超时（总钥匙）：从本次建造令下发起，超过 BUILDER_HARD_TIMEOUT(1800帧)
-        //   仍未完工、且本人当前也不在该地基上施工 → 判定该地基作废：拉黑 + 释放村民，
-        //   交由 manageBuildings 另择新址重建。
-        //   旧逻辑只在 IDLE 状态累计空闲(builderIdleFrame, 900帧)才超时；建造者若长期处于
-        //   WALKING（地基不可达 / 被单位挡死）或被中途改派去干别的，则永远不释放
-        //   ⇒ 建筑永久卡 0%、且 countBuildingsExisting 仍把它算作"已存在"、不会再发建造令
-        //   ⇒ 下游建筑被引擎前置链连锁卡死（靶场←兵营、农场←市场，见 Development.cpp:727/765）。
+        // ★ 建造者硬超时（总钥匙）：自本次建造令下发起超过 BUILDER_HARD_TIMEOUT(1800 帧) 仍未完工、
+        //   且地基上无人施工 → 判该地基作废：percent==0 拉黑另址重建 / percent>0 仅释放登记（交孤儿抢救
+        //   接手，不丢弃已投入进度）。
+        //   旧逻辑只在 IDLE 累计 900 帧才超时：建造者长期 WALKING(地基不可达/被挡死) 或被改派时会永不释放
+        //   ⇒ 建筑永久卡 0%，且 countBuildingsExisting 仍算它"已存在" ⇒ 下游被引擎前置链连锁卡死。
         {
             auto dsp = builderDispatchFrame.find(sn);
             bool workingNow = (myB && f->NowState == HUMAN_STATE_WORKING && f->WorkObjectSN == myB->SN);
@@ -1736,19 +1733,87 @@ void UsrAI::manageBuildings() {
     bool postW1 = (frame >= WAVE1_TIME && frame < WAVE2_TIME);
     bool postW2 = (frame >= WAVE2_TIME);
 
-    // ====== ★★★ 瞪羚群中心仓库：全建筑最高优先级（2026-09-12 用户需求）★★★ ======
-    //   需求原文：「在村民开始狩猎瞪羚前尽量先建仓库，仓库可以比其他建筑先建」。
-    //   ① 【先建】块放在 preW1 之前 ⇒ 抢在房屋/兵营/靶场/市场/农场【之前】消耗木材
-    //      （builtThisFrame 互斥锁 + 本块在最前 = 本帧只能先建仓库，其余建筑下一帧再说）；
-    //   ② 【先于打猎】闸门由旧的 `!huntingGroup.empty()`（=已经在打猎）改为
-    //      「TC 可猎范围内有瞪羚」⇒ 仓库在猎人出发前就落地，猎人不再空跑 TC↔猎场往返；
-    //   ③ 【选群范围收敛】群中心聚类只在【距 TC ≤ GAZELLE_HUNT_RANGE】的瞪羚里选，
-    //      与 manageHunting()/assignIdleFarmers()/tryAssignFood() 的猎人选取范围一致——
-    //      否则会把仓库建在"全图最密但村民根本不会去打"的假群里（旧版 bug）。
-    //   建的是 BUILDING_STOCK 而非谷仓：瞪羚产物 ProductSort=HUMAN_STOCKFOOD（Core.cpp:506），
-    //   只能交付给仓库（Building.cpp:549）。
-    //   ⚠ 即使 50 格内已有现成仓库，只要 MAX_STOCK 还有余地仍要在瞪羚中心补一座——
-    //     否则猎人要空跑 50 格回老仓库交肉。
+    // ====== ★ 2026-09-15 精简：建造块收口（铁律 21/26）======
+    //   同一建筑的"该不该建 / 建不建得起"判据此前在 preW1 / postW1 / postW2 三个分支里各写一遍
+    //   （房屋 4 处、谷仓 3 处、市场 3 处、靶场 3 处、兵营 3 处、箭塔 2 处、马厩 2 处、农场 2 处）——
+    //   任一改动漏改一处就会让"阶段之间的行为悄悄分叉"，且看代码的人无法确认哪一份才是真源。
+    //   此处收口为 9 个 lambda：判据与原块【逐字等价】，调用点保持原位置 + 原阶段守卫 ⇒ 行为不变。
+    //   ⚠ 条件求值顺序一律保持原样：短路顺序决定 countBuildingsExisting() 的被调用次数
+    //     （该函数带"90 帧防重窗口"副作用），重排即可能改行为。
+    //   ⚠ 各阶段条件确有差异（如 preW1 的兵营多一道 houseCount 闸、postW2 的市场要避让第二仓库），
+    //     差异一律做成显式参数，不做"想当然的合并"。
+    const bool popHeadroomLowNow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
+    const bool canAffordEconNow  = (info.Meat >= 80 && info.Wood >= 50);
+    auto tryBuildHouse = [&]() {
+        if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLowNow &&
+            info.Wood >= BUILD_HOUSE_WOOD)
+            builtThisFrame = tryBuild(BUILDING_HOME, 2);
+    };
+    // ★ requireNoMarket：preW1/rushMilitary 的谷仓块带 `市场==0` 前置（谷仓必须先于市场），
+    //   而 postW2 的谷仓块【没有】这个前置（此时市场早已判定过、只补谷仓）。
+    //   两者原先各写一遍，收口时必须用参数区分，否则 postW2 会被多加一道市场闸 →
+    //   "市场已建但谷仓缺失"时 postW2 永远补不出谷仓（食物链断裂）。
+    auto tryBuildGranary = [&](bool requireAfford, bool requireNoMarket) {
+        if (!builtThisFrame && (!requireAfford || canAffordEconNow) &&
+            (!requireNoMarket || countBuildingsExisting(BUILDING_MARKET) == 0) &&
+            countBuildingsExisting(BUILDING_GRANARY) == 0 &&
+            info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD)
+            builtThisFrame = tryBuild(BUILDING_GRANARY, 3);
+    };
+    auto tryBuildMarket = [&](const char *tag) {
+        if (!builtThisFrame &&
+            countBuildingsExisting(BUILDING_MARKET) == 0 &&
+            countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {
+            builtThisFrame = tryBuild(BUILDING_MARKET, 3);
+            if (builtThisFrame)
+                DebugText(QString("[MARKET f=%1] %2 wood=%3").arg(frame).arg(tag).arg((int)info.Wood));
+        }
+    };
+    auto tryBuildArmyCamp = [&](bool requireHouse) {
+        if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
+            (!requireHouse || houseCount >= 1) && info.Wood >= BUILD_ARMYCAMP_WOOD)
+            builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
+    };
+    auto tryBuildRange = [&](const char *tag) {
+        if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
+            countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
+            builtThisFrame = tryBuild(BUILDING_RANGE, 3);
+            if (builtThisFrame && tag)
+                DebugText(QString("[RANGE f=%1] %2 wood=%3").arg(frame).arg(tag).arg((int)info.Wood));
+        }
+    };
+    auto tryBuildTower = [&]() {
+        if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME && info.Stone >= 150) {
+            builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
+            if (builtThisFrame) towerCount++;
+        }
+    };
+    auto tryBuildStable = [&](bool requireToolAge, const char *tag) {
+        if (!builtThisFrame && countBuildingsExisting(BUILDING_STABLE) == 0 &&
+            (!requireToolAge || info.civilizationStage >= CIVILIZATION_TOOLAGE) &&
+            countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD && !DISABLE_STABLE_BUILD) {
+            builtThisFrame = tryBuild(BUILDING_STABLE, 3);
+            if (builtThisFrame)
+                DebugText(QString("[STABLE f=%1] %2 wood=%3").arg(frame).arg(tag).arg((int)info.Wood));
+        }
+    };
+    // 农场"木材需求额"：两处（postW1 / postW2）此前各算一遍同样的 6 行，口径必须同源。
+    auto farmWoodNeedNow = [&]() {
+        bool cbPending = (!compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
+        return FARM_WOOD_NEED(storageNearGazelleBuilt == 1) + (cbPending ? COMPOSITE_BOW_WOOD_RESERVE : 0);
+    };
+    auto farmerCountNow = [&]() {
+        int n = 0;
+        for (auto &f : info.farmers) if (f.FarmerSort == FARMERTYPE_FARMER) n++;
+        return n;
+    };
+
+    // ====== ★★★ 瞪羚群中心仓库：全建筑最高优先级（用户需求：村民打猎前先建仓库）★★★ ======
+    //   ① 块放在 preW1 之前 ⇒ 抢在房屋/兵营/靶场/市场/农场之前消耗木材（本帧只能先建仓库）；
+    //   ② 闸门用"TC 可猎范围内有瞪羚"而非"已经在打猎" ⇒ 仓库在猎人出发前落地，不再空跑往返；
+    //   ③ 聚类只在距 TC ≤ GAZELLE_HUNT_RANGE 的瞪羚里选（与猎人选取范围一致），
+    //      否则会建在"全图最密但村民根本不会去"的假群上（旧版 bug）。
+    //   建的是仓库 STOCK 而非谷仓：瞪羚肉 ProductSort=HUMAN_STOCKFOOD，只能交付仓库（Building.cpp:549）。
     if (!builtThisFrame && storageNearGazelleBuilt == 0 && frame < GAZELLE_STOCK_WINDOW_END &&
         houseCount >= GAZELLE_STOCK_MIN_HOUSES && info.Wood >= BUILD_STOCK_WOOD) {
         const double gBL = (double)BLOCKSIDELENGTH;
@@ -1804,21 +1869,24 @@ void UsrAI::manageBuildings() {
                 std::sort(clusters.begin(), clusters.end(),
                           [](const Cluster &a, const Cluster &b){ return a.cnt > b.cnt; });
 
+                // ★ 2026-09-15 收口：同一"本簇是否已被现成仓库覆盖"判据原先在本块内写了两遍
+                //   （建造循环 1 次 + allCovered 判定 1 次）——判据写两遍即等于只剩一遍生效。
+                auto clusterCovered = [&](double cdr, double cur) {
+                    for (auto &b : info.buildings)
+                        if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
+                            calDistance(cdr, cur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
+                                < GAZELLE_HUNT_RANGE * gBL)
+                            return true;
+                    return false;
+                };
                 int existingStocks = countBuildingsExisting(BUILDING_STOCK);
                 // 单帧内循环尝试建各未覆盖聚类（受 builtThisFrame / MAX_STOCK / 木 三重闸）
                 for (auto &cl : clusters) {
                     if (builtThisFrame) break;
                     if (info.Wood < BUILD_STOCK_WOOD) break;
                     if (existingStocks >= MAX_STOCK) break;
-                    // ★ 该聚类是否已被现成仓库（任何已有者均视为前置库存，含初始化遗留）
-                    bool covered = false;
-                    for (auto &b : info.buildings)
-                        if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
-                            calDistance(cl.dr, cl.ur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
-                                < GAZELLE_HUNT_RANGE * gBL) {
-                            covered = true; break;
-                        }
-                    if (covered) continue;   // 已覆盖则跳过本簇、继续下一簇（多重覆盖无意义）
+                    // 该聚类已被现成仓库覆盖（任何已有者均视为前置库存，含初始化遗留）→ 跳过本簇
+                    if (clusterCovered(cl.dr, cl.ur)) continue;
                     int tBlockDR = (int)(cl.dr / gBL) - 1;
                     int tBlockUR = (int)(cl.ur / gBL) - 1;
                     // 第 7 参 preferNearBuilder=true：优先派【离猎场最近】的空闲村民去建
@@ -1842,16 +1910,8 @@ void UsrAI::manageBuildings() {
                     storageNearGazelleBuilt = 1;
                 } else {
                     bool allCovered = true;
-                    for (auto &cl : clusters) {
-                        bool cov = false;
-                        for (auto &b : info.buildings)
-                            if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
-                                calDistance(cl.dr, cl.ur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
-                                    < GAZELLE_HUNT_RANGE * gBL) {
-                                cov = true; break;
-                            }
-                        if (!cov) { allCovered = false; break; }
-                    }
+                    for (auto &cl : clusters)
+                        if (!clusterCovered(cl.dr, cl.ur)) { allCovered = false; break; }
                     if (allCovered) storageNearGazelleBuilt = 1;
                 }
             }   // ★★★ 闭合 !gaz.empty()（2026-09-12 多聚类版）
@@ -1880,21 +1940,11 @@ void UsrAI::manageBuildings() {
     // ====== 第一波前：房屋→兵营（工具时代就能建），不建其他 ======
     if (preW1) {
         // 人口余量≤POP_HEADROOM_BUILD(=人口上限-2)时补房屋
-        bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
-        if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
-            info.Wood >= BUILD_HOUSE_WOOD) {
-            builtThisFrame = tryBuild(BUILDING_HOME, 2);
-        }
+        tryBuildHouse();
         // 有房屋后尽早造兵营（木材够就建，不等人满）
-        if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
-            houseCount >= 1 && info.Wood >= BUILD_ARMYCAMP_WOOD) {
-            builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
-        }
+        tryBuildArmyCamp(true);
         // ★ 兵营建好后立刻建靶场（工具时代即可，不等铜器）
-        if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
-            countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
-            builtThisFrame = tryBuild(BUILDING_RANGE, 3);
-        }
+        tryBuildRange(nullptr);
     }
 
     // ====== 第一波后~第二波前：铜器启动即优先军事（工具时代就能建兵营） ======
@@ -1906,100 +1956,35 @@ void UsrAI::manageBuildings() {
 
         if (rushMilitary) {
             // ★ 铜器后军事优先：兵营→靶场→阔剑科技，不建市场农场
-            if (!builtThisFrame && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
-                info.Wood >= BUILD_ARMYCAMP_WOOD) {
-                builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
-            }
-            if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
-                countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
-                builtThisFrame = tryBuild(BUILDING_RANGE, 3);
-            }
+            tryBuildArmyCamp(false);
+            tryBuildRange(nullptr);
             // 人口余量≤POP_HEADROOM_BUILD(=人口上限-2)时补房屋
-            bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
-            if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
-                info.Wood >= BUILD_HOUSE_WOOD) {
-                builtThisFrame = tryBuild(BUILDING_HOME, 2);
-            }
+            tryBuildHouse();
 
             // ★ 2026-09-13（根因 A）：rushMilitary 期间不再整块跳过"经济前置建筑"。
-            //   旧版 rushMilitary=true 时整个 else 分支被跳过 ⇒ 谷仓/市场在整个 postW1 窗口
-            //   零机会，只能等 postW2(9 分钟) 才补；而农场依赖市场(Development.cpp:765)、
-            //   市场依赖谷仓(:635) ⇒ 整条食物经济链被推迟到 9 分钟后才启动。
-            //   这里把「谷仓 → 市场」按最低优先级放行：排在兵营/靶场/房屋之后，
-            //   仅当本帧尚无建造令(builtThisFrame==false)且木材充足时触发，不抢军事资源。
-            //   同时去掉 `Meat >= 100` 前置（与 postW2 市场闸 1835 段口径对齐）——
-            //   铜器期肉常被优先喂军，100 肉门槛会让市场在肉低谷反复跳空。
-            bool canAffordEcon = (info.Meat >= 80 && info.Wood >= 50);
-            if (!builtThisFrame && canAffordEcon &&
-                countBuildingsExisting(BUILDING_MARKET) == 0 && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
-                info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
-                builtThisFrame = tryBuild(BUILDING_GRANARY, 3);
-            }
-            if (!builtThisFrame && canAffordEcon &&
-                countBuildingsExisting(BUILDING_MARKET) == 0 &&
-                countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {
-                builtThisFrame = tryBuild(BUILDING_MARKET, 3);
-                if (builtThisFrame)
-                    DebugText(QString("[MARKET f=%1] rushMilitary 期放行市场 wood=%2").arg(frame).arg((int)info.Wood));
-            }
+            //   旧版整个 else 分支被跳过 ⇒ 谷仓/市场在整个 postW1 窗口零机会，只能等 postW2(9 分钟)；
+            //   而农场依赖市场、市场依赖谷仓（Development.cpp:765 / :635）⇒ 整条食物经济链被推迟。
+            //   现按最低优先级放行「谷仓 → 市场」：排在兵营/靶场/房屋之后，本帧无建造令且资源够才触发。
+            tryBuildGranary(true, true);
+            if (!builtThisFrame && canAffordEconNow) tryBuildMarket("rushMilitary 期放行市场");
         } else {
             // ★ 铜器前/11分钟后/W2结束后：正常市场→农场
-            bool canAffordBuilding = (info.Meat >= 80 && info.Wood >= 50);
 
-            // ★ 检测基地附近浆果是否耗尽（耗尽则提前建市场+农场）
-            int nearBushFood = 0;
-            {
-                double bBL = (double)BLOCKSIDELENGTH;
-                auto bCenter = findBuilding(BUILDING_CENTER);
-                double btcDR = bCenter ? (bCenter->BlockDR + 1) * bBL : 0;
-                double btcUR = bCenter ? (bCenter->BlockUR + 1) * bBL : 0;
-                for (auto &r : info.resources)
-                    if (r.Type == RESOURCE_BUSH && r.Cnt > 0)
-                        if (calDistance(btcDR, btcUR, r.DR, r.UR) < 30 * bBL) nearBushFood += r.Cnt;
-            }
-
-            if (!builtThisFrame && canAffordBuilding &&
-                countBuildingsExisting(BUILDING_MARKET) == 0 && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
-                info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
-                builtThisFrame = tryBuild(BUILDING_GRANARY, 3);
-            }
-            if (!builtThisFrame && canAffordBuilding &&
-                countBuildingsExisting(BUILDING_MARKET) == 0 &&
-                countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {  // 造市场
-                // ★ 2026-09-13：去掉 `info.Meat >= 100` 前置（原为"已去掉所有限制条件"却仍留着肉闸）。
-                //   铜器期肉常被优先喂军，100 肉门槛会让市场在肉低谷反复跳空；postW2 市场闸(1835段)
-                //   本就没有肉闸，此处对齐，避免同一建筑两套门槛。
-                builtThisFrame = tryBuild(BUILDING_MARKET, 3);
-                if (builtThisFrame)
-                    DebugText(QString("[MARKET f=%1] postW1 经济期建市场 wood=%2").arg(frame).arg((int)info.Wood));
-            }
+            tryBuildGranary(true, true);
+            if (!builtThisFrame && canAffordEconNow) tryBuildMarket("postW1 经济期建市场");
 
             // ★ 箭塔优先于农场：石头够就造（数量上限 MAX_TOWERS）。
             //   反攻阶段(游戏时间≥14分钟=WAVE3_TIME)起不再新建箭塔——反攻应集中资源爆兵推进。
-            if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME &&
-                info.Stone >= 150) {
-                builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
-                if (builtThisFrame) towerCount++;
-            }
+            tryBuildTower();
 
             // ★ 靶场优先于农场：兵营已有、木材够就建（不等铜器）
-            if (!builtThisFrame && countBuildingsExisting(BUILDING_RANGE) == 0 &&
-                countBuildings(BUILDING_ARMYCAMP) >= 1 &&
-                info.Wood >= BUILD_RANGE_WOOD) {
-                builtThisFrame = tryBuild(BUILDING_RANGE, 3);
-            }
+            tryBuildRange(nullptr);
 
             // ★ 马厩（postW1 经济阶段即可建：兵营已有 + 木材≥150 就建；学院前置需马厩，故早于学院）
             //   2026-09-13 解封（DISABLE_STABLE_BUILD=false）：建马厩只作学院前置，骑兵仍不训练。
             //   ★ 时代闸（引擎 Development.cpp:696 buildCon 要求 CIVILIZATION_TOOLAGE）：缺此闸时
             //     时代未达 → 引擎拒绝建造、countBuildingsExisting 的 90 帧防重窗口一过就归零 → 无限重试扫格。
-            if (!builtThisFrame && countBuildingsExisting(BUILDING_STABLE) == 0 &&
-                info.civilizationStage >= CIVILIZATION_TOOLAGE &&
-                countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD && !DISABLE_STABLE_BUILD) {
-                builtThisFrame = tryBuild(BUILDING_STABLE, 3);
-                if (builtThisFrame)
-                    DebugText(QString("[STABLE f=%1] postW1 建马厩(学院前置) wood=%2").arg(frame).arg((int)info.Wood));
-            }
+            tryBuildStable(true, "postW1 建马厩(学院前置)");
 
             bool marketReady = (countBuildings(BUILDING_MARKET) >= 1);
 // ★ 农场：市场已建 + 木材/食物够才建。
@@ -2012,29 +1997,19 @@ void UsrAI::manageBuildings() {
         //   1547 段会算"30格内有库存→tryBuild 跳过" → storageNearGazelleBuilt 永远停在 0 → 农场闸永远卡死。
         //   ★ 2026-09-13 加闸（用户要求"木材加工科技解锁排在建农场之前"）：见 FARM_WAIT_WOOD_TECH_FRAME 注释。
         //   ★★ 2026-09-13 再加闸（用户要求"复合弓兵科技解锁太慢"）：见 COMPOSITE_BOW_WOOD_RESERVE 宏注释。
-        bool cbSkillPending = (!compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
-        int farmWoodNeed2 = FARM_WOOD_NEED(storageNearGazelleBuilt == 1)
-                          + (cbSkillPending ? COMPOSITE_BOW_WOOD_RESERVE : 0);
+        int farmWoodNeed2 = farmWoodNeedNow();
         if (!builtThisFrame && marketReady && storageNearGazelleBuilt == 1 &&
                 (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME) &&
                 (compositeBowResearched || compositeBowQueued || frame >= FARM_WAIT_CB_FRAME) &&
                 info.Wood >= farmWoodNeed2 && info.Meat >= 100) {
             int currentFarms = countFarmsForCap();
-                int farmerCount = 0;
-                for (auto &f : info.farmers)
-                    if (f.FarmerSort == FARMERTYPE_FARMER) farmerCount++;
-                int targetFarms = std::max(0, farmerCount - 2);
-                targetFarms = std::min(targetFarms, MAX_FARMS);
+                int targetFarms = std::min(std::max(0, farmerCountNow() - 2), MAX_FARMS);
                 if (currentFarms < targetFarms) {
                     builtThisFrame = tryBuild(BUILDING_FARM, 3);
                 }
             }
 
-            bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
-            if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
-                info.Wood >= BUILD_HOUSE_WOOD) {
-                builtThisFrame = tryBuild(BUILDING_HOME, 2);
-            }
+            tryBuildHouse();
         }
     }
 
@@ -2042,34 +2017,29 @@ void UsrAI::manageBuildings() {
     if (postW2) {
         // 房屋：人口余量≤POP_HEADROOM_BUILD(=人口上限-2)时优先补，不军事建筑木材预留挤掉，
         // 否则人口将满时村民/军队会卡住无法训练。
-        bool popHeadroomLow = (info.Human_MaxNum - humanPop <= POP_HEADROOM_BUILD);
-        if (!builtThisFrame && houseCount < MAX_HOUSES && !houseBuildingInProgress && popHeadroomLow &&
-            info.Wood >= BUILD_HOUSE_WOOD) {
-            builtThisFrame = tryBuild(BUILDING_HOME, 2);
-        }
+        tryBuildHouse();
 
-        // 谷仓
-        if (!builtThisFrame && countBuildingsExisting(BUILDING_GRANARY) == 0 &&
-            info.Wood >= BUILD_GRANARY_WOOD && !DISABLE_GRANARY_BUILD) {
-            builtThisFrame = tryBuild(BUILDING_GRANARY, 3);
-        }
+        // 谷仓（postW2：只判"还没有谷仓"，不受市场闸约束——市场闸只属于 preW1/rush 段）
+        tryBuildGranary(false, false);
 
-        // ★ 第二仓库的"是否需要建"预判定：市场闸前置，避免远距瞪羚存在时市场抢 builtThisFrame 而仓库被架空
-        //   （前置过严 → 每帧 tryBuild 失败 → 下一建筑接力 = 历史上"农场被饿死"同源问题）。
-        //   ⚠ 时机闸必须与下方实际建造块【同步】（同为 frame > WAVE2_TIME）：靶场也是 9 分钟起、木材门槛同为 150，
-        //     预判定早于建造块会变成"市场被挡、仓库也没建"的空转；晚于则靶场必然抢先落地。
-        //   needSecondStock = true 当：仓库数<MAX_STOCK 且 已过 WAVE2_TIME 且
-        //   远距瞪羚(距 TC>20 且 距所有现有 Stock>20)数量 >= MIN_GAZELLE_FOR_SECOND_STOCK。
-        //   ★ 无瞪羚闸门：① 远距瞪羚不足 MIN_GAZELLE_FOR_SECOND_STOCK 只 → 不建、也不让位；
-        //     ② gazelleAlive==0（一只存活瞪羚都没有）→ needSecondStock 恒 false，市场/靶场让位闸同步失效，
-        //        否则会被一个永远建不出来的仓库饿死。
-        //   ★ 木料闸门（2026-09-13 补）：本判据必须与下方【实际建造块】的木材前置同步
-        //     （建造块 gate = `info.Wood >= BUILD_STOCK_WOOD + 30`，见 1727 段）。
-        //     ⚠ 旧的致命不对称：needSecondStock 只看"该不该建"、不看"建不建得起"，
-        //       木材落在 [BUILD_STOCK_WOOD, BUILD_STOCK_WOOD+30) 区间时判定为"让位"、
-        //       而建造块却因木材不足整块跳过 ⇒ 市场被永久冻结、靶场冻结到 14 分钟。
-        //       同源原则早已在 gazelleDropoffReady()(5767 段) 落地（建不起就放行猎人），此处补齐。
-        //   性能：单帧扫完瞪羚即止（瞪羚≤30 / 仓库≤3 / 单帧成本 O(90)）。
+        // ★ 第二仓库「是否需要建」的预判定：市场/靶场按此让位，避免远距瞪羚存在时被它们抢走 builtThisFrame
+        //   （前置过严 → 每帧 tryBuild 失败 → 下一建筑接力 = 历史上"农场被饿死"的同源问题）。
+        //   ⚠ 时机闸(WAVE2_TIME)与木材闸(BUILD_STOCK_WOOD+30)必须与下方【实际建造块】同步：旧版只有
+        //     "该不该建"、没有"建不建得起"，木材卡在中间区间时市场会被永久冻结、靶场冻到 14 分钟。
+        //   ⚠ gazelleAlive==0 ⇒ 恒 false，让位闸同步失效，否则会被一个永远建不出来的仓库饿死。
+        // ★ 2026-09-15 收口："远距瞪羚"判据（距 TC > 20 格 且 距所有已建成仓库 > 20 格）原先在
+        //   【needSecondStock 预判定】与【实际建造第二仓库】两处各写一遍 —— 两处口径必须完全一致，
+        //   否则会出现"预判定说该建、建造块却不建"（或反之）的空转。
+        auto isFarGazelle = [&](const tagResource &r, double tcDRx, double tcURx, double blx) -> bool {
+            if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) return false;
+            if (calDistance(tcDRx, tcURx, r.DR, r.UR) < 20 * blx) return false;
+            for (auto &b : info.buildings)
+                if (b.Type == BUILDING_STOCK && b.Percent == 100) {
+                    double gDR = (b.BlockDR + 1) * blx, gUR = (b.BlockUR + 1) * blx;
+                    if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * blx) return false;
+                }
+            return true;
+        };
         int gazelleAlive = 0;
         for (auto &r : info.resources)
             if (r.Type == RESOURCE_GAZELLE && r.Cnt > 0) gazelleAlive++;
@@ -2084,22 +2054,9 @@ void UsrAI::manageBuildings() {
                 double tcDRp = (centerP->BlockDR + 1) * BLp;
                 double tcURp = (centerP->BlockUR + 1) * BLp;
                 for (auto &r : info.resources) {
-                    if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) continue;
-                    if (calDistance(tcDRp, tcURp, r.DR, r.UR) < 20 * BLp) continue;
-                    bool nearAnyStock = false;
-                    for (auto &b : info.buildings) {
-                        if (b.Type == BUILDING_STOCK && b.Percent == 100) {
-                            double gDR = (b.BlockDR + 1) * BLp;
-                            double gUR = (b.BlockUR + 1) * BLp;
-                            if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * BLp) {
-                                nearAnyStock = true; break;
-                            }
-                        }
-                    }
-                    if (!nearAnyStock) {
-                        farGazCnt++;
-                        if (farGazCnt >= MIN_GAZELLE_FOR_SECOND_STOCK) { needSecondStock = true; break; }
-                    }
+                    if (!isFarGazelle(r, tcDRp, tcURp, BLp)) continue;
+                    farGazCnt++;
+                    if (farGazCnt >= MIN_GAZELLE_FOR_SECOND_STOCK) { needSecondStock = true; break; }
                 }
             }
         }
@@ -2115,13 +2072,10 @@ void UsrAI::manageBuildings() {
                       .arg(countBuildingsExisting(BUILDING_GRANARY))
                       .arg(storageNearGazelleBuilt));
 
-        // ★ 第二仓库：为"距现有 Stock 均>20格的远距瞪羚群"建一座，仓库落在群中心。
-        //   ⚠ 三要素缺一不可（旧版缺陷导致贴 TC 多建 3 座）：① MAX_STOCK 闸；
-        //     ② 不能每帧 `if(!builtThisFrame) tryBuild(...)`（木材一回就再发令）；
-        //     ③ 必须传 prefX/prefY（走默认 findBuildSite 会落 TC 附近空地）。
-        //   ⚠ 时机闸须与 needSecondStock 预判定同步（同为 WAVE2_TIME），否则预判定为真时本块仍被时间闸挡住。
-        //   ★ 无瞪羚闸门：① gazelleAlive==0 整块跳过；② 远距瞪羚不足 MIN_GAZELLE_FOR_SECOND_STOCK 只
-        //     也跳过（不为 1 只离群瞪羚建 150 木仓库）。
+        // ★ 第二仓库：为"距现有 Stock 均 >20 格的远距瞪羚群"建一座，落在群中心。
+        //   ⚠ 三要素缺一不可（旧版缺陷导致贴 TC 多建 3 座）：① MAX_STOCK 闸；② 不能每帧重发令
+        //     （木材一回就再 tryBuild）；③ 必须传 prefX/prefY，否则 findBuildSite 会落回 TC 附近。
+        //   ⚠ 时机闸须与 needSecondStock 预判定同步（同为 WAVE2_TIME），否则预判定为真时本块仍被挡住。
         if (!builtThisFrame && gazelleAlive > 0 &&
             countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK &&
             frame > WAVE2_TIME && info.Wood >= BUILD_STOCK_WOOD + 30) {
@@ -2131,21 +2085,9 @@ void UsrAI::manageBuildings() {
             double tcUR = center ? (center->BlockUR + 1) * BL : 0;
             // 收集"距 TC>20 且 距所有现有 Stock>20"的瞪羚
             std::vector<std::pair<double,double>> farGaz;
-            for (auto &r : info.resources) {
-                if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) continue;
-                if (calDistance(tcDR, tcUR, r.DR, r.UR) < 20 * BL) continue;
-                bool farFromStock = true;
-                for (auto &b : info.buildings) {
-                    if (b.Type == BUILDING_STOCK && b.Percent == 100) {
-                        double gDR = (b.BlockDR + 1) * BL;
-                        double gUR = (b.BlockUR + 1) * BL;
-                        if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * BL) {
-                            farFromStock = false; break;
-                        }
-                    }
-                }
-                if (farFromStock) farGaz.emplace_back(r.DR, r.UR);
-            }
+            for (auto &r : info.resources)
+                if (isFarGazelle(r, tcDR, tcUR, BL))
+                    farGaz.emplace_back(r.DR, r.UR);
             // ★ 2026-09-07：数量闸——远距瞪羚不足 MIN_GAZELLE_FOR_SECOND_STOCK 只就不建
             if ((int)farGaz.size() >= MIN_GAZELLE_FOR_SECOND_STOCK) {
                 // ★ 复用 1597 段的"最密群 + 几何中心"算法：6 格邻域聚类，取最大群中心 = 仓库位置
@@ -2168,13 +2110,10 @@ void UsrAI::manageBuildings() {
             }
         }
 
-        // ★ 第二谷仓：为"TC 之外 ≥6 丛的远距浆果群"建一座，谷仓落在群中心（2026-09-07 用户需求）
-        //   浆果 resourceSort = HUMAN_GRANARYFOOD → 只往【谷仓】交（StaticRes.cpp:NUM_STATICRES_Bush /
-        //   Resource.cpp:get_ReturnBuildingType）。远距浆果群若没有就近谷仓，村民要抱着食物跑回 TC 附近，
-        //   往返 40+ 格几乎没产出；在群边建谷仓后往返压到 20 格内，等于白捡一片食物区。
-        //   前置：第一座谷仓已存在（先保证 TC 附近主食物区）+ 未达 MAX_GRANARY 上限 + 木材够 120。
-        //   !needSecondStock 让位：远距瞪羚仓库优先级更高（与市场 1660 段同源），避免抢走它的 builtThisFrame。
-        //   ⚠ 必须传 prefX/prefY（群中心块坐标），否则 tryBuild 会 fallback 到 findGranarySite 落回 TC 附近。
+        // ★ 第二谷仓：为"TC 之外 ≥6 丛的远距浆果群"建一座，落在群中心（用户需求 2026-09-07）。
+        //   浆果 resourceSort=HUMAN_GRANARYFOOD → 只往谷仓交；远距浆果群没有就近谷仓时村民往返 40+ 格几乎没产出。
+        //   前置：首座谷仓已在 + 未达 MAX_GRANARY + 木材够；!needSecondStock 让位（远距瞪羚仓库优先级更高）。
+        //   ⚠ 必须传群中心块坐标，否则 tryBuild 会 fallback 回 findGranarySite 落回 TC 附近。
         if (!builtThisFrame && !needSecondStock && !DISABLE_GRANARY_BUILD &&
             countBuildingsExisting(BUILDING_GRANARY) >= 1 &&
             countBuildingsExisting(BUILDING_GRANARY) < MAX_GRANARY &&
@@ -2188,45 +2127,24 @@ void UsrAI::manageBuildings() {
         }
 
         // 市场
-        //   ★ 2026-09-05 加前置 !needSecondStock：远距瞪羚存在 + 仓库未满时不让市场抢 builtThisFrame
-        //     （修"市场先于第二仓库落地"——同源问题：前置条件严苛→目标建筑被下游接力建出）
-        //   ★ 2026-09-13 改：由 `!needSecondStock`（无时间上界）→ `!(needSecondStock && frame < WAVE3_TIME)`。
-        //     原因：原写法在"远距瞪羚≥2 但仓库迟迟建不出（位置冲突）"时会把市场【无限期】冻在 0%，
-        //     而仓库的解禁条件（瞪羚死光 / 仓库数达 MAX_STOCK）可能整局都不成立。
-        //     现在与靶场(1811 段)口径完全对齐——让位只在 14 分钟反攻期前有效，进入反攻期市场优先级反超。
-        if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME) &&
-            countBuildingsExisting(BUILDING_MARKET) == 0 &&
-            countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {  // 造市场（已去掉11分钟时间限制）
-            builtThisFrame = tryBuild(BUILDING_MARKET, 3);
-            if (builtThisFrame) DebugText(QString("[MARKET f=%1] 下令建造市场 wood=%2").arg(frame).arg((int)info.Wood));
-        }
+        //   ★ 让位闸 !(needSecondStock && frame < WAVE3_TIME)：远距瞪羚存在 + 仓库未满时不许市场抢
+        //     builtThisFrame（修"市场先于第二仓库落地"）。⚠ 必须有时间上界：否则"远距瞪羚≥2 但仓库迟迟
+        //     建不出(位置冲突)"会把市场无限期冻住；现在与靶场口径完全对齐，14 分钟反攻期后市场优先级反超。
+        if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME)) tryBuildMarket("下令建造市场");
 
         // 兵营
-        if (!builtThisFrame && upgradeStarted && countBuildingsExisting(BUILDING_ARMYCAMP) == 0 &&
-            info.Wood >= BUILD_ARMYCAMP_WOOD) {
-            builtThisFrame = tryBuild(BUILDING_ARMYCAMP, 3);
-        }
+        if (!builtThisFrame && upgradeStarted) tryBuildArmyCamp(false);
 
         // 靶场（不限铜器，兵营已有即可建）
-        //   ★ 2026-09-07 加前置 !(needSecondStock && frame < WAVE3_TIME)：
-        //     与"市场让位第二仓库"(1627 段)同源——远距瞪羚存在 + 仓库未满时，靶场不许抢 builtThisFrame，
-        //     否则第二仓库被下游接力饿死、猎人继续空跑 20+ 格。
-        //     ★ 但只在 14 分钟(WAVE3_TIME)前让位：进入反攻期后靶场产能优先级反超经济，
-        //       也避免"仓库位置不可建 → 靶场被永久阻塞"的死锁。
-        if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME) &&
-            countBuildingsExisting(BUILDING_RANGE) == 0 &&
-            countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_RANGE_WOOD) {
-            builtThisFrame = tryBuild(BUILDING_RANGE, 3);
-            if (builtThisFrame) DebugText(QString("[RANGE f=%1] 下令建造首座靶场 wood=%2").arg(frame).arg((int)info.Wood));
-        }
+        //   ★ 让位闸同市场：远距瞪羚存在 + 仓库未满时不许抢 builtThisFrame（否则第二仓库被下游接力饿死）；
+        //     但只在 14 分钟(WAVE3_TIME)前让位——反攻期靶场产能优先，
+        //     也避免"仓库位置不可建 → 靶场被永久阻塞"的死锁。
+        if (!builtThisFrame && !(needSecondStock && frame < WAVE3_TIME))
+            tryBuildRange("下令建造首座靶场");
 
         // 箭塔：石头够就造（已解除 铜器/箭塔科技/兵营/靶场 前置；数量上限 MAX_TOWERS 保留）。
         //   反攻阶段(≥14分钟=WAVE3_TIME)起不再新建——资源转向爆兵反攻。
-        if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME &&
-            info.Stone >= 150) {
-            builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
-            if (builtThisFrame) towerCount++;
-        }
+        tryBuildTower();
 
         // ★ 反攻多线产弓：游戏时间≥14分钟(=WAVE3_TIME)起增建靶场(最多 MAX_RANGES 座)，
         //   形成并行产线，弓兵产量随靶场数线性提升。木材留 80 余量避免饿死房屋/马厩。
@@ -2237,28 +2155,14 @@ void UsrAI::manageBuildings() {
         }
 
         // ★ 马厩（postW2 反攻准备）：兵营已有 + 木材≥150 就建（同 postW1 段，已恢复建造，供学院前置）
-        if (!builtThisFrame && countBuildingsExisting(BUILDING_STABLE) == 0 &&
-            countBuildings(BUILDING_ARMYCAMP) >= 1 && info.Wood >= BUILD_STABLE_WOOD && !DISABLE_STABLE_BUILD) {
-            builtThisFrame = tryBuild(BUILDING_STABLE, 3);
-            if (builtThisFrame)
-                DebugText(QString("[STABLE f=%1] postW2 建马厩(学院前置) wood=%2").arg(frame).arg((int)info.Wood));
-        }
+        tryBuildStable(false, "postW2 建马厩(学院前置)");
 
-        // ★ 学院：后期/反攻核心近战兵种(方阵兵=强力近战)。铜器后、兵营已建、且**马厩已建**(前置)才建，
-        //   与靶场并列；建好后训练块检测学院存在即自动产方阵兵，配合"爆近战"反攻。
-        //   ★ 2026-09-13 用户要求"解锁学院 + 后期建造方阵兵"：
-        //     ① DISABLE_COLLAGE_BUILD 已解封(false)；
-        //     ② 建造时机由 `state >= COUNTERATTACK` 放宽为【后期即可】：state>=DEFENSE_WAVE3
-        //        或 frame>=WAVE3_TIME(14min)。旧闸要求先进入反攻态，而反攻态门槛是全军≥12人
-        //        (COUNTER_ATTACK_MIN_ARMY)，前期军队长期不足 → 学院迟迟建不出 → 方阵兵产线整条空转
-        //        （这正是"方阵兵在后期完全没出现"的主因之一）。
-        //     ③ 引擎侧确认（Development.cpp:803-811）：学院 BRONZEAGE + 180木、前置马厩；
-        //        产方阵兵 BRONZEAGE + 60食+40金，无额外科技依赖 ⇒ 建成即可投产。
-        //   ★★ 2026-09-13 实测补闸（必须）：引擎 buildCon 要求 CIVILIZATION_BRONZEAGE，
-        //     缺 postBronze 闸时若铜器未升完，引擎拒绝建造而 countBuildingsExisting 的 90 帧防重窗口
-        //     一过就归零 → AI 沿坐标轴逐格扫描重试（o3_r180 实证：22581~45002 帧连发 235 次，
-        //     坐标 (71,11)→(71,12)→…→(73,11)），每次吞掉 builtThisFrame → 饿死 postW2 后续建造
-        //     （该局农场只有 3 座）。加时代闸后时代未达即完全跳过。
+        // ★ 学院：后期/反攻核心近战兵种(方阵兵)。铜器后 + 兵营已建 + 【马厩已建】(前置) + 时代闸。
+        //   ⚠ 时代闸必须留：引擎 buildCon 要求 BRONZEAGE，缺闸时引擎拒绝建造、而 countBuildingsExisting
+        //     的 90 帧防重窗口一过就归零 ⇒ AI 沿坐标轴逐格扫描重试（o3_r180 实证连发 235 次），
+        //     每次吞掉 builtThisFrame → 饿死 postW2 后续建造（该局农场只有 3 座）。
+        //   ⚠ 建造时机已放宽为"后期即可"（state>=DEFENSE_WAVE3 或 frame>=WAVE3_TIME）：反攻态门槛是
+        //     全军≥12 人，前期长期不足会让整条方阵兵产线空转，这正是"后期没有方阵兵"的主因之一。
         if (!builtThisFrame && countBuildingsExisting(BUILDING_COLLAGE) == 0 && !DISABLE_COLLAGE_BUILD &&
             postBronze &&
             (state >= DEFENSE_WAVE3 || frame >= WAVE3_TIME) &&
@@ -2285,9 +2189,7 @@ void UsrAI::manageBuildings() {
         bool farmWoodTechOk = (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME);
         bool farmBowWoodOk = (compositeBowResearched || compositeBowQueued ||
                               frame >= FARM_WAIT_CB_FRAME);
-        bool cbSkillPending2 = (!compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
-        int farmWoodNeed = FARM_WOOD_NEED(storageNearGazelleBuilt == 1)
-                         + (cbSkillPending2 ? COMPOSITE_BOW_WOOD_RESERVE : 0);
+        int farmWoodNeed = farmWoodNeedNow();
         if (!builtThisFrame && storageNearGazelleBuilt == 1 && farmWoodTechOk && farmBowWoodOk) {
             int currentFarms = countFarmsForCap();
             if (currentFarms < farmTarget &&
@@ -2764,24 +2666,49 @@ void UsrAI::assignIdleSimple() {
     int woodWorkers = 0;
     int stoneWorkers = 0;   // ★ 采石工计数
     int foodWorkers  = 0;   // ★ 食物工计数（浆果/瞪羚/大象/农场）
+    // ★★★ 2026-09-17 修「采金人数偏少」：本计数块【每个村民只数一次】★★★
+    //   ⚠⚠ 这正是 MEMORY 里已记过的陷阱：「`ResourceSort` = 人物【手持】资源种类；
+    //      `WorkObjectSN` = 【工作目标】，二者语义不同、绝不可相加/互换（曾虚高 50%）」。
+    //   旧写法是两条**并列 if**：
+    //        if (f.ResourceSort == HUMAN_GOLD) goldWorkers++;      // ← 一句
+    //        if (f.WorkObjectSN > 0) { ...金矿... goldWorkers++; } // ← 又一句（同一人！）
+    //   一个正在采金的村民【同时】满足两条 ⇒ 被数两次；
+    //   若粮仓里还存着黄金（ResourceSort 仍为 GOLD），往返途中也再数一次。
+    //   ⇒ goldWorkers 虚高 ⇒ 派工判据 `goldWorkers < goldTarget` 提前满足 ⇒ 不再派人。
+    //   ⇒ 同理 foodWorkers 虚高 ⇒ `goldTarget = foodWorkers*3/5` 也被抬高，两个错误叠加。
+    //   实测佐证：金工达成率仅 50.7%（与"虚高约 2 倍"量级吻合）；
+    //             th6 单局 ECO 金工峰值 19，而全剧派过金的村民总共才 20 人。
+    //   修法：改为 else if 链 + 用 workObject 局部映射表把"目标→资源类型"算一次，
+    //         优先级 = 工作目标 > 手持资源（有明确工作目标时以目标为准，没有目标才看手持）。
     for (auto &f : info.farmers) {
         if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-        if (f.ResourceSort == HUMAN_GOLD) goldWorkers++;
-        if (f.ResourceSort == HUMAN_WOOD) woodWorkers++;
-        if (f.ResourceSort == HUMAN_STONE) stoneWorkers++;
-        if (f.ResourceSort == HUMAN_GRANARYFOOD || f.ResourceSort == HUMAN_STOCKFOOD) foodWorkers++;
+        // ① 先判定【工作目标】属于哪类资源（唯一权威来源）
+        int kind = 0;   // 0=未知 1=金 2=木 3=石 4=食
         if (f.WorkObjectSN > 0) {
             for (auto &r : info.resources)
                 if (r.SN == f.WorkObjectSN) {
-                    if (r.Type == RESOURCE_GOLD) goldWorkers++;
-                    else if (r.Type == RESOURCE_TREE) woodWorkers++;
-                    else if (r.Type == RESOURCE_STONE) stoneWorkers++;
-                    else if (r.Type == RESOURCE_BUSH || r.Type == RESOURCE_GAZELLE || r.Type == RESOURCE_ELEPHANT) foodWorkers++;
+                    if (r.Type == RESOURCE_GOLD) kind = 1;
+                    else if (r.Type == RESOURCE_TREE) kind = 2;
+                    else if (r.Type == RESOURCE_STONE) kind = 3;
+                    else if (r.Type == RESOURCE_BUSH || r.Type == RESOURCE_GAZELLE || r.Type == RESOURCE_ELEPHANT) kind = 4;
                     break;
                 }
-            for (auto &b : info.buildings)
-                if (b.SN == f.WorkObjectSN && b.Type == BUILDING_FARM) { foodWorkers++; break; }
+            if (kind == 0)
+                for (auto &b : info.buildings)
+                    if (b.SN == f.WorkObjectSN && b.Type == BUILDING_FARM) { kind = 4; break; }
         }
+        // ② 没有工作目标时才退化为看【手持资源种类】
+        if (kind == 0) {
+            if (f.ResourceSort == HUMAN_GOLD) kind = 1;
+            else if (f.ResourceSort == HUMAN_WOOD) kind = 2;
+            else if (f.ResourceSort == HUMAN_STONE) kind = 3;
+            else if (f.ResourceSort == HUMAN_GRANARYFOOD || f.ResourceSort == HUMAN_STOCKFOOD) kind = 4;
+        }
+        // ③ 每个村民至多贡献 1
+        if (kind == 1) goldWorkers++;
+        else if (kind == 2) woodWorkers++;
+        else if (kind == 3) stoneWorkers++;
+        else if (kind == 4) foodWorkers++;
     }
 
     // ★ 资源停采门禁（2026-09-01）：存量达上限即停止派/补采该资源，人力转向其他资源
@@ -2800,9 +2727,19 @@ void UsrAI::assignIdleSimple() {
     // ★ 黄金过剩判定（后期实测"黄金堆到 700+、木头食物都不够"）：
     //   ⚠ 不得给反攻期加豁免：反攻期食物才是造兵瓶颈（复合弓40食/方阵60食，食物需求≈黄金2倍），
     //   豁免会让金工无上限开采 → 食物跟不上 → 兵造不出 → 黄金只进不出。
-    //   复核需求：一场反攻(20复合弓+10方阵)黄金 ≈ 800，GOLD_CAP_STOP=400 储备 + MIN_GOLD_WORKERS 持续产出够用。
+    //   复核需求：一场反攻(20复合弓+10方阵)黄金 ≈ 800，GOLD_CAP_STOP=1000 储备 + MIN_GOLD_WORKERS 持续产出够用。
     //   命中→goldTarget 压到 MIN_GOLD_WORKERS，人力转去木头+食物。判定两种过剩：
-    //                ②相对过剩：黄金/食物 超出 5:3 目标配比的 1.25 倍（+50 基数避免早期食物为0误判）。
+    //                ②相对过剩：黄金/食物 超出 食物:黄金=5:3 目标配比的 1.25 倍（+50 基数避免早期食物为0误判）。
+    //                  ⚠ 2026-09-18 方案A 曾把配比抬到 5:4（本阈值随之由 (食物+50)*0.75 升到 *1.00），
+    //                    但实测命中率 2.7%→2.6% 几乎无变化、金工零增长 ⇒ 已回滚，见 FOOD_GOLD_DEN 处记录。
+    //   ⛔【2026-09-18 已撤销的尝试，勿重犯】曾给相对分支加"食物≥200"前置（GOLD_RICH_FOOD_FLOOR），
+    //     以为"食物低谷时判黄金过剩"是误判。**实测证伪**：
+    //       gy版3（不加守卫）G=6.2人(30%) 达标85% 负局4/12
+    //       gz版4（加守卫）  G=5.8人(28%) 达标82% 负局7/12
+    //     加守卫后**每一项都更差**。原因：goldRich 的语义本就是"黄金相对食物过多 ⇒ 把金工调去食物"，
+    //     而"食物低谷"恰恰是它**应该**触发的场景（那时确实该优先保食物）——
+    //     全库 61/61 命中都在食物<200，不是"误判率 100%"，而是"它本来就是为这个场景设计的"。
+    //     ⇒ 我把「设计语义」误读成「判据缺陷」，属于铁律 38 的反面案例：**回代只看了"命中在哪"，没看"命中是否合理"**。
     const bool goldRich =
         (info.Gold >= GOLD_CAP_STOP) ||
         ((double)info.Gold > (double)(info.Meat + 50) * (double)FOOD_GOLD_DEN
@@ -2815,7 +2752,11 @@ void UsrAI::assignIdleSimple() {
     //   ★ 2026-09-03 修正：铜器升级要 800 食物，铜器前停采阈值必须 >800，
     //     否则食物到 500 就停采+撤食物工，永远攒不到 800 → 升级拖到 20 分钟。铜器前 850、铜器后 500。
     const bool foodStop = (info.Meat >= (postBronze ? FOOD_CAP_STOP : FOOD_CAP_STOP_PREBRONZE));
-    // ★ 黄金目标人数：与食物工数按 5:3 配比（复合弓兵40食+20金 / 方阵兵60食+40金 → 100:60=5:3）。
+    // ★ 黄金目标人数：与食物工数按 5:3 配比（复合弓40食+20金 / 方阵60食+40金 ⇒ 100:60）。
+    //   ⚠⚠ 2026-09-18 实测结论：本目标在【中期基本不参与决策】——
+    //     中期(14~22分)空闲村民均值仅 0.03 人（Idle=0 占 98.0%），且无任何工种过剩
+    //     ⇒ 把它抬高 33%（5:3→5:4）后金工人数仍为 6.4、**零变化**，只多出 +26% 的重复金矿令
+    //     ⇒ 方案A 已回滚。要真正加人必须另建"显式转岗"机制，见 FOOD_GOLD_DEN 处记录。
     //   黄金过剩时压到保底人数，把人力让给食物与木头。★
     int goldTarget = (!postBronze) ? 0
         : goldRich ? MIN_GOLD_WORKERS
@@ -3071,6 +3012,16 @@ void UsrAI::assignIdleSimple() {
     // 木头≥400 / 石头≥120 / 黄金过剩 时，已派工人应停采，人力转去"当前最缺的资源"。
     // 转移优先级：缺木(<120)时直接去伐木，否则先食物，食物接不住再伐木（不再转黄金，黄金正是过剩方）。
     // 节流：每 10 帧最多撤 1 人（防震荡）；伐木保留 WOOD_KEEP_MIN 人保底，采石全撤，采金保留 MIN_GOLD_WORKERS。
+    // ★★★ 2026-09-17 修「采金人数偏少」：撤销 "woodOverTarget" 入口闸 ★★★
+    //   ⚠⚠ 血泪：第一版曾把内层条件 `woodWorkers > woodTarget` 并进本入口闸，
+    //     结果【伐木令暴涨 7 倍（树令 1055→7248→7862）、金工达成率反降 5.6~16pt】。
+    //   回代根因（铁律 38：先回代再谈机制）：
+    //     woodWorkers 是【当前帧还在伐木的人数】，撤人时 `woodWorkers--` 只在本帧生效；
+    //     被撤的村民当帧变 WALKING，下一帧主循环见他"空闲"又派回伐木（woodWorkers++）
+    //     ⇒ `woodWorkers > woodTarget` 每 10 帧重新为真 ⇒ 回撤块每轮都撤 1 人、随即被补回
+    //     ⇒ 同一村民反复改派（实测 gx2：24 人发出 1735 条树令，重复率 72.3x，基线仅 2.24x）。
+    //   ⇒ **"用当期计数判超编"在本架构下是正反馈，不成立**（计数滞后于人员调度）。
+    //   故入口闸恢复原状；"伐木滞留区"改由【派工端限流】处理（见主循环 woodTarget 处）。
     if ((woodStop || stoneStop || goldRich || foodStop) && frame % 10 == 0) {
         const bool woodHungry = (info.Wood < WOOD_LOW_LINE);
         for (auto &f : info.farmers) {
@@ -3095,37 +3046,86 @@ void UsrAI::assignIdleSimple() {
                     if (b.SN == f.WorkObjectSN && b.Type == BUILDING_FARM) { isFood = true; break; }
             }
             // 统一转派：缺木→伐木；否则食物优先，食物接不住再伐木（绝不再送回黄金）
-            auto reassignToDeficit = [&](tagFarmer &w)->bool {
+            // ★★★ 2026-09-17 修「采金人数偏少」：本 lambda 必须【同步维护计数】★★★
+            //   ⚠⚠ 这是本轮踩到的真坑（第一版实跑把伐木令抬高了 587%、金工反而少 4 成）：
+            //     旧 lambda 只做 `HumanAction(...)`，**从不修正 goldWorkers/woodWorkers/foodWorkers**。
+            //     而调用方（回撤块）判据里用到的正是这些计数：
+            //       `woodOverTarget = (woodWorkers > woodTarget)`
+            //     ⇒ 把人从伐木撤走后 woodWorkers 不下降 ⇒ 闸【恒真】⇒ 回撤块每 10 帧都进来
+            //     ⇒ 每 10 帧白撤 1 人（撤走的人被下面分支又派回树/食物，原地打转）
+            //     ⇒ 伐木令雪崩 1055 → 7248 条，金工达成率 50.7% → 45.1%（改坏了）。
+            //   铁律 26 的推广：**判据与被判据的对象必须由同一份状态维护**。
+            //   调用方传入 `fromKind`（该村民撤走前属于哪类）以便 `--` 对应计数：
+            //     0=未知(不动账) 1=金 2=木 3=石 4=食
+            auto reassignToDeficit = [&](tagFarmer &w, int fromKind)->bool {
+                // 辅助：成功转岗后同步扣减原岗计数、增加新岗计数
+                auto commit = [&](int toKind) {
+                    if (fromKind == 1) goldWorkers--;
+                    else if (fromKind == 2) woodWorkers--;
+                    else if (fromKind == 3) stoneWorkers--;
+                    else if (fromKind == 4) foodWorkers--;
+                    if (toKind == 1) goldWorkers++;
+                    else if (toKind == 2) woodWorkers++;
+                    else if (toKind == 3) stoneWorkers++;
+                    else if (toKind == 4) foodWorkers++;
+                };
+                // ★ 黄金缺口优先（放在最前）：本 lambda 的调用场景是"该资源已过剩、要把人挪去缺口"，
+                //   而 goldTarget 由 foodWorkers 推算 ⇒ 若先补食物，会让食物工更多、goldTarget 更高、
+                //   黄金缺口更大，形成正反馈。故黄金缺口必须最先判定。
+                //   ⚠ 本项是"挪岗"的必要出路：若连它都不成立，说明黄金也满了，再谈食物/伐木。
+                if (goldWorkers < goldTarget) {
+                    auto g = findNearestResource(RESOURCE_GOLD, w.DR, w.UR);
+                    if (g) { HumanAction(w.SN, g->SN); commit(1); return true; }
+                }
                 if (woodHungry) {
                     auto t = findBestWoodTree(w.DR, w.UR);
-                    if (t) { HumanAction(w.SN, t->SN); villLastTreeSN[w.SN] = t->SN; return true; }
+                    if (t) { HumanAction(w.SN, t->SN); villLastTreeSN[w.SN] = t->SN; commit(2); return true; }
                 }
-                if (tryAssignFood(&w)) return true;
+                if (tryAssignFood(&w)) { commit(4); return true; }
                 if (!woodStop) {                          // ★ 木头达标时不把人塞回树（避免无意义重派刷屏）
                     auto t2 = findBestWoodTree(w.DR, w.UR);
-                    if (t2) { HumanAction(w.SN, t2->SN); villLastTreeSN[w.SN] = t2->SN; return true; }
+                    if (t2) { HumanAction(w.SN, t2->SN); villLastTreeSN[w.SN] = t2->SN; commit(2); return true; }
                 }
                 return false;
             };
+
             bool reassigned = false;
             if (foodStop && isFood) {
                 // ★ 食物过剩：食物工直接转伐木（木头偏少时补木；木头满则转黄金，黄金也满才罢休）
+                // ★★★ 2026-09-17：本条【独立分支】同样必须维护计数 ★★★
+                //   旧写法只发 HumanAction 不动账 ⇒ foodWorkers 不减 ⇒ foodStop 判据里的
+                //   `goldTarget = foodWorkers*3/5` 被永久抬高 ⇒ 黄金目标虚高却没人去采
+                //   （实测食物工 7~10 人而食物存量只剩 10 的极端样本）。
+                //   铁律 26/37 的同一形态：**凡是"把人挪岗"的地方都要动账，一处不动就留下永久偏差**。
                 auto t = findBestWoodTree(f.DR, f.UR);
                 if (t && !woodStop) {
-                    HumanAction(f.SN, t->SN); villLastTreeSN[f.SN] = t->SN; reassigned = true;
+                    HumanAction(f.SN, t->SN); villLastTreeSN[f.SN] = t->SN;
+                    foodWorkers--; woodWorkers++;           // ★ 动账
+                    reassigned = true;
                 } else {
                     auto g = findNearestResource(RESOURCE_GOLD, f.DR, f.UR);
-                    if (g && postBronze && !goldRich) { HumanAction(f.SN, g->SN); reassigned = true; }
+                    if (g && postBronze && !goldRich) {
+                        HumanAction(f.SN, g->SN);
+                        foodWorkers--; goldWorkers++;       // ★ 动账
+                        reassigned = true;
+                    }
                 }
             } else if (stoneStop && isStone) {
                 // 石头达标：采石工全撤
-                reassigned = reassignToDeficit(f);
+                reassigned = reassignToDeficit(f, 3);
             } else if (goldRich && isGold && goldWorkers > MIN_GOLD_WORKERS) {
                 // 黄金过剩：采金工撤到只剩保底人数
-                reassigned = reassignToDeficit(f);
+                reassigned = reassignToDeficit(f, 1);
             } else if (woodStop && isWood && woodWorkers > WOOD_KEEP_MIN) {
-                // 木头达标：伐木工保留 WOOD_KEEP_MIN 人，其余撤
-                reassigned = reassignToDeficit(f);
+                // ★★★ 2026-09-17 撤销 "woodWorkers > woodTarget" 条件 ★★★
+                //   原写法（第一版）：`(woodStop || woodWorkers > woodTarget) && isWood && ...`
+                //   实测把伐木令抬高 7 倍、金工达成率反降 ⇒ 撤销，恢复只由 woodStop 触发。
+                //   "木头 100~220 滞留区"改由【派工端】解决：
+                //     主循环里 `if (!woodStop && woodWorkers < woodTarget)` 已限制"不超目标就加人、
+                //     超目标自然不加"；真正的滞留是"已有 8 人而目标回落到 4 时不减"，
+                //     这需要**一次性降到目标**而非"每 10 帧撤 1 人"（后者会与主循环补人形成回路）。
+                //   ⚠ 教训：**"超标"用"每帧撤一点"的方式修正，只要存在"补人"的反向路径，就必然震荡**。
+                reassigned = reassignToDeficit(f, 2);
             }
             if (reassigned) break;  // 每 10 帧最多撤 1 人，防震荡
         }
@@ -3758,9 +3758,9 @@ void UsrAI::manageMilitary() {
         bool trained = false;
 
         // ============================================================
-        // ★ 前期棍棒兵过渡：放在训练链【最前面】——4~15 分钟空窗期这是唯一自产兵力途径
-        //   （复合弓被 COMPOSITE_BOW_MIN_FRAME 停产，工具时代填线/优先级2.5 又被 DISABLE_CLUBMAN_TRAIN 关掉）。
-        //   ★ 只统计【存活】棍棒兵 → 战损自动补造，不会因一次团灭永久断兵。
+        // ★ 前期棍棒兵过渡：放在训练链最前——4~15 分钟空窗期这是唯一自产兵力途径
+        //   （复合弓被 COMPOSITE_BOW_MIN_FRAME 停产、工具时代填线被 DISABLE_CLUBMAN_TRAIN 关掉）。
+        //   只统计【存活】棍棒兵 → 战损自动补造，不会因一次团灭永久断兵。
         // ============================================================
         if (ENABLE_EARLY_CLUBMAN && !trained &&
             frame >= EARLY_CLUBMAN_START_FRAME && frame < COMPOSITE_BOW_MIN_FRAME) {
@@ -3780,9 +3780,8 @@ void UsrAI::manageMilitary() {
         if (!postBronze) {
             int toolArmy = 0;
             for (auto &a : info.armies) if (a.Sort != AT_PRIEST) toolArmy++;
-            // 工具时代练兵上限：W1 前 2 个(不拖慢 800 食物升铜器)；W1 开始后提到 6 个——
-            // 铜器未升完前本块是唯一产出(廉价填线块 postBronze 才生效)，W2 前只有 2 个棍棒兵曾致祭司被杀。
-            // W1→W2 约 8500 帧，足够把守军补到 6 个护祭司；升铜器后由优先级2.5 廉价填线接管(不封顶)。
+            // 工具时代练兵上限：W1 前 2 个(不拖慢 800 食物升铜器)，W1 开始后提到 6 个——
+            //   铜器未升完前本块是唯一产出(廉价填线块 postBronze 才生效)，W1→W2 约 8500 帧够补到 6 个护祭司。
             // ★ 2026-09-03 用户要求"不训棍棒兵"：DISABLE_CLUBMAN_TRAIN 关掉本块，改由箭塔防守。
             const int TOOL_AGE_ARMY_TARGET = (frame >= WAVE1_TIME) ? 6 : 2;
             if (!DISABLE_CLUBMAN_TRAIN && toolArmy < TOOL_AGE_ARMY_TARGET &&
@@ -3801,15 +3800,14 @@ void UsrAI::manageMilitary() {
             bool counterAtk = (state >= COUNTERATTACK);
 
             // ==================================================================
-            // ★★ 反攻期专用编制：只产 复合弓兵(主) + 方阵兵(副) ★★
-            //   必须走独立分支：优先级3"爆近战"不检查 trained，反攻期照样产棍棒/骑兵；
-            //   优先级4 骑兵吃掉 80 黄金 = 4 个复合弓的黄金 → 黄金长期 <20 → 复合弓判据失败 → 退化成停产。
+            // ★★ 反攻期专用编制：只产 复合弓兵(主) + 方阵兵(副)，必须走独立分支 ★★
+            //   优先级3"爆近战"不检查 trained 会照样产棍棒/骑兵；优先级4 骑兵吃掉 80 黄金
+            //   = 4 个复合弓的黄金 → 黄金长期 <20 → 复合弓判据失败 → 退化成停产。
             // ==================================================================
             if (counterAtk) {
                 // ① 复合弓兵（主 DPS）：遍历所有空闲靶场并行产，产量随靶场数(MAX_RANGES)线性提升。
-                //    ★ 复合弓兵真实扣费（Development.cpp:744-745，引擎已修正）：食物 + **黄金**(20)，不扣石头。
-                //    ★ 黄金不足时**不退化产普通弓**：把黄金攒给复合弓兵，否则又被便宜兵吃掉永远造不出。
-                //      仅当复合弓科技没研究出来(compositeBowResearched=false)才用普通弓兜底，避免靶场空转。
+                //   真实扣费 = 食物 + 黄金(20)，不扣石头(Development.cpp:744-745，引擎已修正)。
+                //   黄金不足不退化产普通弓（把黄金攒给复合弓）；仅当科技未研究出才用普通弓兜底，避免靶场空转。
                 for (auto &b : info.buildings) {
                     if (b.Type != BUILDING_RANGE || b.Project != ACT_NULL) continue;
                     // ★ 15 分钟前完全停产（2026-09-06 用户要求）：见 COMPOSITE_BOW_MIN_FRAME
@@ -3828,12 +3826,9 @@ void UsrAI::manageMilitary() {
                 }
 
                 // ② 方阵兵（副，肉盾挡刀）：双保险保证"复合弓兵为主"——
-                //    a) 黄金预留：付完方阵后，黄金仍须够**所有空闲靶场各产一个复合弓**
-                //       （方阵 40 金 vs 复合弓 20 金，从根上保证复合弓的黄金不被方阵抢走；
-                //        空闲靶场为 0(全在造兵)时按 1 座计，保证任何时刻都留得住 1 个复合弓的黄金）。
-                //    b) ★ 数量比例闸：现役方阵数 < HOPLITE_RATIO_NUM/DEN × 复合弓数 + HOPLITE_RATIO_FLOOR。
-                //       ★ 2026-09-13 由硬编码 (comp+4)/2（1:2）放宽为 3:4 温和档（见常量区注释），
-                //         comp≤2 时结果与旧版一致 —— 开局零弓兵也先出 2 个方阵顶前排，不断肉盾。
+                //   a) 黄金预留：付完方阵后仍须够【所有空闲靶场各产一个复合弓】(方阵40金 vs 复合弓20金)；
+                //   b) 比例闸：现役方阵 < HOPLITE_RATIO_NUM/DEN × 复合弓数 + HOPLITE_RATIO_FLOOR
+                //      （2026-09-13 由 1:2 放宽为 3:4；comp≤2 时与旧版一致，零弓兵也先出 2 个顶前排）。
                 int idleRanges = 0;
                 for (auto &b : info.buildings)
                     if (b.Type == BUILDING_RANGE && b.Project == ACT_NULL) idleRanges++;
@@ -3875,15 +3870,9 @@ void UsrAI::manageMilitary() {
                               .arg((int)info.Gold).arg((int)compositeBowResearched));
                 }
             } else {
-            // ==================== 非反攻期：沿用原优先级链（但骑兵受 DISABLE_CAVALRY_TRAIN 门禁）====================
-            // 后期/反攻：主要训练弓箭手（复合弓兵优先，未研究时先出普通弓箭手）
-            //   ★ 遍历所有空闲靶场并行产弓——弓兵产量随靶场数(MAX_RANGES)线性提升，
-            //     实现"反攻阶段多训练弓箭兵"。靶场全忙时 trained 仍 false，下方转产其他兵种不浪费产能。
-            // ★ 复合弓兵训练的真实扣费（Development.cpp:744-745，引擎已修正）：
-            //     conditionDevelop(BRONZEAGE, RANGE, TIME, 0, ..._FOOD, 0, ..._GOLD)
-            //   第6参 need_Stone=0，第7参 need_Gold=BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD(20)
-            //   → 引擎实际扣「食物 + 黄金」，不再扣石头。判据改用 info.Gold。
-            //   黄金充足→产复合弓兵；黄金不足则落到下面的普通弓箭手兜底（纯木+食）。
+            // ============ 非反攻期：沿用原优先级链（骑兵受 DISABLE_CAVALRY_TRAIN 门禁）============
+            // 遍历所有空闲靶场并行产弓（复合弓优先；未研究出/黄金不足时普通弓兜底），靶场全忙时
+            //   trained 仍 false → 下方转产其他兵种不浪费产能。真实扣费 = 食物 + 黄金(20)，不扣石头。
             // ★ 15 分钟前完全停产（2026-09-06 用户要求）：见 COMPOSITE_BOW_MIN_FRAME
             if (lateGame && !trained && frame >= COMPOSITE_BOW_MIN_FRAME) {
                 for (auto &b : info.buildings) {
@@ -3942,14 +3931,9 @@ void UsrAI::manageMilitary() {
             }
 
             // 优先级2.8：★ 2026-09-13 新增「后期方阵兵产线」（用户要求"在后期建造方阵兵"）
-            //   ★ 为何与优先级3 分开：优先级3 的进入门槛是"食物溢出 MELEE_OVERFLOW_FOOD=150"，
-            //     而方阵兵本身只需 60 食 —— 没有理由等到食物溢出才敢产，肉盾应当提前积攒。
-            //     独立块把门槛降到 Meat >= HOPLITE_FOOD+60(=120)，让【14 分钟后】(lateGame) 即投产。
-            //   ★ 沿用反攻期同款双保险（保证"复合弓为主、方阵为辅"，不抢复合弓资源）：
-            //     a) 黄金预留：付完方阵后，黄金仍须够【所有空闲靶场各产一个复合弓】(方阵40金 vs 复合弓20金)；
-            //     b) 数量比例闸：现役方阵 < HOPLITE_RATIO_NUM/DEN × 复合弓数 + HOPLITE_RATIO_FLOOR，
-            //        ★ 2026-09-13 由 1:2 放宽为 3:4（见常量区），开局零弓兵时同样先出 2 个方阵顶前排。
-            //   ★ 与优先级1(复合弓) 并行：不同建筑(靶场/学院)各产各的，共用"逐栋下发"风格不检查 trained。
+            //   与优先级3 分开的理由：优先级3 门槛是"食物溢出 MELEE_OVERFLOW_FOOD=150"，而方阵兵只需
+            //   60 食 —— 没有理由等溢出才产。本块门槛降到 Meat >= HOPLITE_FOOD+60(=120)，14 分钟后即投产。
+            //   沿用反攻期同款双保险（黄金预留 + HOPLITE_RATIO_NUM/DEN 比例闸），与优先级1 并行各产各的。
             if (lateGame) {
                 int idleRanges2 = 0;
                 for (auto &b : info.buildings)
@@ -3975,11 +3959,9 @@ void UsrAI::manageMilitary() {
             }
 
             // 优先级3：后期/反攻「爆近战」——食物溢出时主攻近战兵，与弓兵混编反攻。
-            //   ★ 不依赖全局 trained 闸门(否则单次只能产1弓、近战被饿死)：改为按"建筑空闲"逐栋下发，
-            //     与弓兵并行产出；每下发一次置 trained=true 触发 trainCooldown，避免同帧对同建筑重复下令。
-            //   - 兵营→棍棒兵(50食物,纯近战填线,无石头/黄金依赖,溢出首选)
-            //   - 马厩→骑兵(70食物+80黄金;受 DISABLE_CAVALRY_TRAIN 门禁，当前不训练)
-            //   ★ 2026-09-13：学院→方阵兵 已上移为独立块"优先级2.8"（门槛更低、更早投产），此处不再重复下发。
+            //   不依赖全局 trained 闸门(否则单次只能产 1 弓、近战被饿死)：按"建筑空闲"逐栋下发，与弓兵并行。
+            //   兵营→棍棒兵(50食物填线)；马厩→骑兵(受 DISABLE_CAVALRY_TRAIN 门禁)。
+            //   ★ 2026-09-13：学院→方阵兵 已上移为优先级2.8，此处不再重复下发。
             if (lateGame && info.Meat >= MELEE_OVERFLOW_FOOD) {
                 // 兵营→棍棒兵：★ 2026-09-03 用户要求"不训棍棒兵"，DISABLE_CLUBMAN_TRAIN 关掉，
                 //   近战肉盾由优先级2.8 的学院方阵兵承担。
@@ -4031,10 +4013,9 @@ void UsrAI::manageMilitary() {
     }
 
     // ====== B. 箭塔防御：所有波次手动指挥箭塔攻击进入射程的敌人 ======
-    //   ★ 引擎箭塔攻击必须用 HumanAction(箭塔SN, 目标SN)，不能用 BuildingAction——
-    //     BuildingAction 第二参语义是"动作编号(action)"，不是目标 SN，传敌 SN 会被当 action 编号处理，箭塔不攻击。
-    //   ★ 箭塔的 tagBuilding.Project 被引擎改写为"当前攻击目标 SN"(Core.cpp:582 getObjectSN)，
-    //     空闲=-1、攻击中=目标SN，故判断"已在攻击"要用 Project != -1（不是 ACT_NULL=0）。
+    //   ★ 引擎箭塔攻击必须用 HumanAction(箭塔SN, 目标SN)，不能用 BuildingAction——后者第二参是
+    //     "动作编号"而非目标 SN。★ 箭塔的 tagBuilding.Project 被引擎改写为"当前攻击目标 SN"
+    //     (Core.cpp:582 getObjectSN)：空闲=-1、攻击中=目标SN，故"已在攻击"判据是 Project != -1。
     if (isWarTime) {
         for (auto &tower : info.buildings) {
             if (tower.Type != BUILDING_ARROWTOWER || tower.Percent < 100) continue;
@@ -4066,17 +4047,65 @@ void UsrAI::manageMilitary() {
         centerUR = (center->BlockUR + 1) * BL;
     }
 
-    auto enemyNearTC = [&](int enemySN) -> bool {
-        if (!center) return false;
+    // ★ 2026-09-15 删死代码（铁律 27）：原 enemyNearTC lambda 只被紧随其后的 `(void)enemyNearTC;`
+    //   显式引用，无任何实际调用点（护驾早已取消"敌须在 TC 25 格内"门槛），保留只会误导后续维护。
+    // ★ 2026-09-15 去重（铁律 21/26）：以下三组在 D-1 / D0 内原本各写一遍。
+    //   ①「有无敌人以祭司为目标」= 敌 WorkObjectSN == priestSN（D-1 扫一遍；D0 更每兵各扫一遍队列）
+    int priestAttackerSN = -1;
+    if (priestAlive)
         for (auto &e : info.enemy_armies)
-            if (e.SN == enemySN)
-                return calDistance(centerDR, centerUR, e.DR, e.UR) <= 25 * BL;
-        for (auto &e : info.enemy_farmers)
-            if (e.SN == enemySN)
-                return calDistance(centerDR, centerUR, e.DR, e.UR) <= 25 * BL;
-        return false;
+            if (e.WorkObjectSN == priestSN) { priestAttackerSN = e.SN; break; }
+    //   ② 护驾取敌 = "优先非投石车（留给祭司感化），没有再退化为任意敌(含投石车)"（紧急/预警两档各一遍）
+    auto nearestGuardTarget = [&](double r) -> int {
+        int t = findNearestEnemyNoStone(priestDR, priestUR, r);
+        return (t >= 0) ? t : findNearestEnemySN(priestDR, priestUR, r);
     };
-    (void)enemyNearTC;   // 保留备用：护驾已取消"敌须在TC 25格内"门槛，显式引用以抑制未使用警告
+    //   ③ 回基地外围待命螺旋（W2/W3 前出拦截搜不到敌、W1/非战时就近搜敌搜不到敌，各一遍）
+    //      落点 = 半径 8/11/14 格 × 8 角 = 24 档，全在 TC 建筑之外 → 杜绝"走进 TC 导致不可达失败"；
+    //      8 帧内没挪窝(>1 格)就换下一档，24 档全失败则放弃移动、就地待命（防无限刷屏）。
+    //   ★ 2026-09-17 两处修正（用户：「避免刷屏」+「停驻集结时不要站在同一点」）：
+    //     ① 落点按 SN 散开（角度+半径双微扰）—— 原同档位多单位落点逐位相同 ⇒ 挤作一团卡位；
+    //     ② 跨帧去重（同一落点 60 帧内不重发）—— 原无节流，行军途中每帧一条，单局 577~1349 条。
+    auto holdNearBase = [&](tagArmy &a) {
+        double distTC = calDistance(a.DR, a.UR, centerDR, centerUR);
+        if (distTC <= 16 * BL) { armyReturnTry[a.SN] = 0; return; }   // 已在外围待命区，清卡死计数
+        if (armyReturnTry[a.SN] >= 24) return;                        // 24 档全失败 → 就地待命
+        int atry = armyReturnTry[a.SN];
+        int aang = atry % 8;
+        int arad = atry / 8; if (arad > 2) arad = 2;
+        const int ARADII[3] = {8, 11, 14};
+        // ★ 2026-09-17 SN 散开：原落点只由 armyReturnTry 决定 ⇒ 同档位的多个单位落点【逐位相同】
+        //   （实测多个复合弓兵挤在同一点互相卡位）。角度加 (SN%11)*0.055 rad、半径加 (SN%5)*0.4 格。
+        double ara = (double)aang * 3.141592653589793 / 4.0 + (double)(a.SN % 11) * 0.055;
+        double aR = (ARADII[arad] + (double)(a.SN % 5) * 0.4) * BL;
+        double atx = centerDR + std::cos(ara) * aR;
+        double aty = centerUR + std::sin(ara) * aR;
+        atx = max(0.0, min((double)MAP_L * BL, atx));
+        aty = max(0.0, min((double)MAP_U * BL, aty));
+        // ★ 2026-09-17 跨帧去重（用户：「避免刷屏」）：原实现无任何节流 ⇒ 单位向落点行军期间
+        //   （WALKING，不满足下方 8 帧卡死检测的 IDLE 条件 ⇒ try 不增 ⇒ 落点不变）每帧重发同一条
+        //   HumanMove，实测单局 577~1349 条重复日志。同一落点 60 帧(≈2.4s)内不重发；
+        //   保留兜底重发是防"引擎丢弃一次性指令 ⇒ 单位永久静止"。换档致落点变化时立即发。
+        const int HOLD_RESEND_FRAMES = 60;
+        const bool holdSameGoal = armyHoldGoalDR.count(a.SN) &&
+            calDistance(armyHoldGoalDR[a.SN], armyHoldGoalUR[a.SN], atx, aty) < 0.5 * BL;
+        const bool holdResendOk = !armyHoldCmdFrame.count(a.SN) ||
+            (frame - armyHoldCmdFrame[a.SN] >= HOLD_RESEND_FRAMES);
+        if (!holdSameGoal || holdResendOk) {
+            HumanMove(a.SN, atx, aty);
+            armyHoldCmdFrame[a.SN] = frame;
+            armyHoldGoalDR[a.SN] = atx; armyHoldGoalUR[a.SN] = aty;
+        }
+        // 卡死检测：不可达/被堵时快速换档（8帧，避免同一不可达点失败刷屏）
+        //   ⚠ 基准在【每次调用】刷新（含本帧未发令时）：否则停发期间基准陈旧，"8 帧内位移<1格"
+        //     会拿旧坐标比对 ⇒ 误判/漏判卡死（去重只拦 HumanMove，不得改变本判据语义）。
+        if (armyIssueFrame.count(a.SN) && a.NowState == HUMAN_STATE_IDLE &&
+            frame - armyIssueFrame[a.SN] > 8 &&
+            calDistance(a.DR, a.UR, armyIssueDR[a.SN], armyIssueUR[a.SN]) < 1.0 * BL) {
+            armyReturnTry[a.SN]++;
+        }
+        armyIssueDR[a.SN] = a.DR; armyIssueUR[a.SN] = a.UR; armyIssueFrame[a.SN] = frame;
+    };
 
     // ====== D. 空闲士兵分配攻击指令 ======
     int maxAttackCmds = isWarTime ? 8 : 4;
@@ -4109,16 +4138,9 @@ void UsrAI::manageMilitary() {
     if (priestAlive) {
         // ★★ 最高优先级：有敌人正以祭司为目标(WorkObjectSN==priestSN) → 立刻全军扑上拉仇恨。
         //    无视 8/15 距离门槛(远程敌可站 12 格外射祭司)、打断一切战斗、不计召回距离(生死攸关)。
-        int attackingPriestSN = -1;
-        for (auto &e : info.enemy_armies) {
-            if (e.WorkObjectSN == priestSN) { attackingPriestSN = e.SN; break; }
-        }
-
-        // 优先非投石车目标；没有再退化为任意敌(含投石车)
-        int urgentSN = findNearestEnemyNoStone(priestDR, priestUR, PRIEST_GUARD_URGENT * BL);
-        if (urgentSN < 0) urgentSN = findNearestEnemySN(priestDR, priestUR, PRIEST_GUARD_URGENT * BL);
-        int alertSN  = findNearestEnemyNoStone(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
-        if (alertSN < 0) alertSN = findNearestEnemySN(priestDR, priestUR, PRIEST_GUARD_ALERT * BL);
+        const int attackingPriestSN = priestAttackerSN;   // 已在上方统一扫描（D0 亦复用）
+        int urgentSN = nearestGuardTarget(PRIEST_GUARD_URGENT * BL);
+        int alertSN  = nearestGuardTarget(PRIEST_GUARD_ALERT * BL);
 
         int guardSN = (attackingPriestSN >= 0) ? attackingPriestSN
                     : ((urgentSN >= 0) ? urgentSN : alertSN);
@@ -4150,10 +4172,9 @@ void UsrAI::manageMilitary() {
     if (priestAlive && center) {
         for (auto &a : info.armies) {
             if (a.Sort == AT_PRIEST) continue;
-            // ★ 投石车非反攻期不参战（2026-09-06 用户要求「投石车改为只在反攻阶段攻击敌人」）。
-            //   反攻期由 manageCounterAttack 的投石车独立 standoff 分支(~3975)负责；非反攻期本块的
-            //   自卫 / W2+前出拦截 / 就近搜敌全部跳过——投石车 SPEED 1.63 极慢且脆弱，派出去等于送掉。
-            //   ⚠ 例外：D-1 祭司护驾仍对投石车生效（祭司死=立刻失败，保命高于一切）。
+            // ★ 投石车非反攻期不参战（2026-09-06 用户要求"只在反攻阶段攻击敌人"）：反攻期由
+            //   manageCounterAttack 的 standoff 分支负责；非反攻期自卫/前出拦截/就近搜敌全跳过
+            //   （SPEED 1.63 极慢且脆弱，派出去等于送掉）。⚠ D-1 祭司护驾仍对它生效（保命高于一切）。
             if (a.Sort == AT_STONE_THROWER) continue;
             if (attackCmds >= maxAttackCmds) break;
             if (lionHunterSN.count(a.SN)) continue;   // ★ 正在猎狮，别把指令覆盖掉
@@ -4165,10 +4186,7 @@ void UsrAI::manageMilitary() {
 
             // ★ 优先级1（护驾）：正在攻击祭司的敌人 → 全军扑上去
             //   （★取消原 enemyNearTC "敌须在TC 25格内"门槛：祭司在哪就保到哪，保命高于守家）
-            int attackingPriest = -1;
-            for (auto &e : info.enemy_armies) {
-                if (e.WorkObjectSN == priestSN) { attackingPriest = e.SN; break; }
-            }
+            const int attackingPriest = priestAttackerSN;   // 已在上方统一扫描
             if (attackingPriest >= 0) {
                 if (a.WorkObjectSN != attackingPriest) {   // 已在打它→不重发，防打断输出
                     HumanAction(a.SN, attackingPriest);
@@ -4214,32 +4232,7 @@ void UsrAI::manageMilitary() {
                     attackCmds++;
                     continue;
                 }
-                // 没找到敌人→回基地外围待命（距TC 16格内为外围待命区，不再缩进TC中心→避免不可达失败刷屏）
-                double distTC = calDistance(a.DR, a.UR, centerDR, centerUR);
-                if (distTC <= 16 * BL) {
-                    armyReturnTry[a.SN] = 0;  // 已在外围待命区，清卡死计数
-                } else if (armyReturnTry[a.SN] < 24) {
-                    // 螺旋前往可达外围点（半径8/11/14格，全在TC建筑外→杜绝进入TC导致不可达失败）
-                    int atry = armyReturnTry[a.SN];
-                    int aang = atry % 8;
-                    int arad = atry / 8; if (arad > 2) arad = 2;
-                    const int ARADII[3] = {8, 11, 14};
-                    double ara = (double)aang * 3.141592653589793 / 4.0;
-                    double aR = ARADII[arad] * BL;
-                    double atx = centerDR + std::cos(ara) * aR;
-                    double aty = centerUR + std::sin(ara) * aR;
-                    atx = max(0.0, min((double)MAP_L * BL, atx));
-                    aty = max(0.0, min((double)MAP_U * BL, aty));
-                    HumanMove(a.SN, atx, aty);
-                    // 卡死检测：不可达/被堵时快速换档（8帧，避免同一不可达点失败刷屏）
-                    if (armyIssueFrame.count(a.SN) && a.NowState == HUMAN_STATE_IDLE &&
-                        frame - armyIssueFrame[a.SN] > 8 &&
-                        calDistance(a.DR, a.UR, armyIssueDR[a.SN], armyIssueUR[a.SN]) < 1.0 * BL) {
-                        armyReturnTry[a.SN]++;
-                    }
-                    armyIssueDR[a.SN] = a.DR; armyIssueUR[a.SN] = a.UR; armyIssueFrame[a.SN] = frame;
-                }
-                // atry>=24：全部档失败→放弃移动，就地待命（防无限刷屏）
+                holdNearBase(a);
                 attackCmds++;
                 continue;
             }
@@ -4256,31 +4249,7 @@ void UsrAI::manageMilitary() {
                 if (nearbyEnemy >= 0) {
                     HumanAction(a.SN, nearbyEnemy);
                 } else {
-                    double distToTC = calDistance(a.DR, a.UR, centerDR, centerUR);
-                    if (distToTC <= 16 * BL) {
-                        armyReturnTry[a.SN] = 0;  // 已在外围待命区，清卡死计数
-                    } else if (armyReturnTry[a.SN] < 24) {
-                        // 回基地外围待命：螺旋前往可达外围点（半径8/11/14格，全在TC建筑外→避免不可达失败）
-                        int atry = armyReturnTry[a.SN];
-                        int aang = atry % 8;
-                        int arad = atry / 8; if (arad > 2) arad = 2;
-                        const int ARADII[3] = {8, 11, 14};
-                        double ara = (double)aang * 3.141592653589793 / 4.0;
-                        double aR = ARADII[arad] * BL;
-                        double atx = centerDR + std::cos(ara) * aR;
-                        double aty = centerUR + std::sin(ara) * aR;
-                        atx = max(0.0, min((double)MAP_L * BL, atx));
-                        aty = max(0.0, min((double)MAP_U * BL, aty));
-                        HumanMove(a.SN, atx, aty);
-                        // 卡死检测：不可达/被堵时快速换档（8帧，避免同一不可达点失败刷屏）
-                        if (armyIssueFrame.count(a.SN) && a.NowState == HUMAN_STATE_IDLE &&
-                            frame - armyIssueFrame[a.SN] > 8 &&
-                            calDistance(a.DR, a.UR, armyIssueDR[a.SN], armyIssueUR[a.SN]) < 1.0 * BL) {
-                            armyReturnTry[a.SN]++;
-                        }
-                        armyIssueDR[a.SN] = a.DR; armyIssueUR[a.SN] = a.UR; armyIssueFrame[a.SN] = frame;
-                    }
-                    // atry>=24：放弃移动，就地待命（防无限刷屏）
+                    holdNearBase(a);
                 }
             }
             attackCmds++;
@@ -4417,13 +4386,9 @@ void UsrAI::manageFirstWaveDefense() {
 void UsrAI::manageCounterAttack() {
     double BL = (double)BLOCKSIDELENGTH;
 
-    // 可走判定：非海(OCEAN)且不在树林/石矿/金矿内。
-    // ★ 2026-09-08 简化（7e 更新说明第4条）：引擎 HumanMove 现可穿越未探索区(自动寻路)，
-    //   故 MAPPATTERN_UNKNOWN 不再是障碍、不再拒绝——只有坐标本身不可达(海/林/矿)才卡住。
-    // 关键：树林/石矿/金矿在引擎里都是放在 GRASS 格上的独立资源对象，地图格类型仍是 GRASS，
-    //   故"已探索"≠"可走"——不额外排除这些资源，落点选到其格上→引擎无法寻路、单位卡死。
-    // 预建逐格 forestGrid：树节点±2格、矿节点±1格记为障碍(只建一次，O(1)查询)。
-    // (若后续能拿到全局 Map*，可改用 TreeBlock[bx][by] 做更精确的逐格判断；此处用资源节点近似。)
+    // 可走判定 = 非海(OCEAN) 且不在树林/石矿/金矿内。
+    // ★ 2026-09-08（7e 第4条）：HumanMove 现可穿越未探索区 ⇒ UNKNOWN 不再拒；只有坐标本身不可达才卡住。
+    //   林/矿在引擎里是放在 GRASS 格上的资源对象 ⇒ "已探索"≠"可走"。预建 forestGrid(树±2格/矿±1格) O(1) 查。
     std::vector<std::vector<char>> forestGrid(MAP_L, std::vector<char>(MAP_U, 0));
     for (auto &r : info.resources) {
         if (r.Cnt <= 0) continue;
@@ -4473,6 +4438,20 @@ void UsrAI::manageCounterAttack() {
         }
     };
 
+    // ★ 2026-09-15 去重（铁律 21/26）：按 SN 在【敌军队→敌农民→敌建筑】中定位坐标。
+    //   原代码在 3 处（拉扯粘滞目标 / 投石车粘滞目标 / 投石车威胁点）各抄一份同样的三层循环，语义完全一致。
+    //   命中敌军队时顺带回填 isMelee（供拉扯对近战敌更早撤）；三类都没有则返回 false。
+    //   ⚠ SN 全图唯一 ⇒ 多查一类（建筑）不会改变任何原有分支的结果。
+    auto lookupEnemySN = [&](int sn, double &x, double &y, bool *pMelee = nullptr) -> bool {
+        for (auto &e : info.enemy_armies)
+            if (e.SN == sn) { x = e.DR; y = e.UR; if (pMelee) *pMelee = isMeleeSort(e.Sort); return true; }
+        for (auto &e : info.enemy_farmers)
+            if (e.SN == sn) { x = e.DR; y = e.UR; return true; }
+        for (auto &b : info.enemy_buildings)
+            if (b.SN == sn) { x = (b.BlockDR + 1.0) * BL; y = (b.BlockUR + 1.0) * BL; return true; }
+        return false;
+    };
+
     // ====== 1. 侦察阶段：寻找敌方武器厂 ======
     if (enemySiegeSN == -1) {
         auto siege = findEnemyBuilding(BUILDING_SIEGE);
@@ -4508,12 +4487,9 @@ void UsrAI::manageCounterAttack() {
             return;
         }
         // ★★★ 2026-09-14 不再因"失去视野"重置 enemySiegeSN ★★★
-        //   旧代码此处 `enemySiegeSN = -1;` —— 而 findEnemyBuilding 只遍历 info.enemy_buildings，
-        //   受 Core.cpp:622【explored||visible】约束 ⇒「发现一次 → 军队推进/视野丢失 → !siege →
-        //   重置 SN → 需再次可见才能重新发现」循环 ⇒ 祭司拿不到稳定目标 ⇒ 感化恒不触发。
-        //   修：失去视野 ≠ 武器厂不存在。方位由 rallyDR/rallyUR 持久记忆(4538-4539，从不被重置)，
-        //       保持 enemySiegeSN 供下游用记忆坐标推进；若它真被拆毁，保持 SN 只会让祭司继续
-        //       奔向该方位（无害，且胜利条件本就需要它存在）。
+        //   旧代码此处 `enemySiegeSN = -1;` —— findEnemyBuilding 只遍历 info.enemy_buildings，受
+        //   Core.cpp:622【explored||visible】约束 ⇒ "发现→丢失视野→重置→需再次可见"循环 ⇒ 祭司目标不稳定。
+        //   修：失去视野 ≠ 武器厂不存在。方位由 rallyDR/rallyUR 持久记忆，保持 SN 供下游用记忆坐标推进。
     }
     // ★ 探到过敌方基地：一旦 info.enemy_buildings 出现过敌方建筑，记录其方位并【持久化】——
     //   即便之后暂时失去视野/该建筑消失，也记得大致方位，反攻时直接奔袭基地而非盲走对角角落。
@@ -4541,15 +4517,10 @@ void UsrAI::manageCounterAttack() {
         auto center = findBuilding(BUILDING_CENTER);
         double tcDR = center ? (center->BlockDR + 1) * BL : MAP_L * BL * 0.5;
         double tcUR = center ? (center->BlockUR + 1) * BL : MAP_U * BL * 0.5;
-        // ★ 取 TC 的【真正对角角落】：必须【逐轴独立取反】，不能用一个"坐标和"去二选一。
-        //   ✗ 旧逻辑：tcDR+tcUR < (MAP_L+MAP_U)*0.5*BL ? (MAP_L,MAP_U) : (0,0)
-        //     → 永远只在主对角线两端 (0,0)↔(L,U) 之间二选一，【永远到不了另两个角 (L,0)/(0,U)】。
-        //     → 后果：TC 位于反对角线上(左下/右上)时，目标被定成【相邻角】而非对角，
-        //       正是"不会走到对角线、而是走到相邻角落"的根因。
-        //       例(方形图) TC 在左下(0,U)：旧目标=左上(0,0)，同属左边界→【相邻角】；真正对角应是右上(L,0)。
-        //   ✓ 逐轴取反后四种情况全对：左上→右下、右上→左下、左下→右上、右下→左上。
-        //   CORNER_INSET：精确角落点 (MAP_L*BL, MAP_U*BL) 落到 bx=MAP_L → 越界 → isPassableAt 恒 false，
-        //     单位永远走不到该点(只能在其外侧反复缩短/偏转)。故内缩 3 格，保证目标点界内且可达。
+        // ★ 取 TC 的【真正对角角落】：必须【逐轴独立取反】，不能用一个"坐标和"去二选一 ——
+        //   旧逻辑只在主对角线两端 (0,0)↔(L,U) 之间二选一，TC 在反对角线上时目标会落成【相邻角】
+        //   （"不会走到对角线、而是走到相邻角落"的根因）；逐轴取反后四种情况全对。
+        //   CORNER_INSET=3：精确角落 (MAP_L*BL, MAP_U*BL) 的 bx=MAP_L → 越界 → isPassableAt 恒 false。
         const int CORNER_INSET = 3;
         targetDR = (tcDR < MAP_L * BL * 0.5) ? (MAP_L - CORNER_INSET) * BL : CORNER_INSET * BL;
         targetUR = (tcUR < MAP_U * BL * 0.5) ? (MAP_U - CORNER_INSET) * BL : CORNER_INSET * BL;
@@ -4614,14 +4585,12 @@ void UsrAI::manageCounterAttack() {
     double rallyCtrUR = rallyTC ? (rallyTC->BlockUR + 1) * BL : MAP_U * BL * 0.5;
     tagArmy* priest = nullptr;
 
-    // 统一推进出口：直达敌方基地附近的目标点，交给引擎 7e 全图寻路（可穿越未探索区）。
-    //   ★ 2026-09-15 用户要求「反攻时探路不用步进或绕路，直接以敌方基地附近为目标点，实现尽量最简」：
-    //     已删除 marchWaypoint 扇形脱困 / nextVisibleStep 小步 / axisAlignedTry 轴向绕行 / findDetourWaypoint BFS 绕路。
-    //     唯一保留的退路 = 卡死时朝集结 TC 内缩 stuckTry 格重发（退一步重新寻路，非步进/绕路）。
-    //   canReissue（30 帧节流）必须保留：每帧重发同一目标会刷新 marchCmdFrame ⇒ stuckTry 永不涨 ⇒ 卡死打转。
-    //   ⚠ marchGoal* = 本轮【实际下发点】（可能含退让）。卡死判据必须以它为参照：若仍以 targetDR/UR 为参照，
-    //     单位朝"退让点"走会使"到原目标距离"变大 ⇒ 被误判为仍在卡死 ⇒ 每 90 帧再退一档 ⇒ 一路退回 TC。
-    //     （实测：以原目标为参照时 8 局里 6 局跑满 45000 帧无结局、全军窝在基地，见 sba*.ait。）
+    // 统一推进出口：直达敌方基地附近目标点，交给引擎 7e 全图寻路（可穿越未探索区）。
+    //   ★ 2026-09-15 用户要求「不用步进或绕路」：已删 marchWaypoint/nextVisibleStep/axisAlignedTry/
+    //     findDetourWaypoint。唯一退路 = 卡死时朝集结 TC 内缩 stuckTry 格重发。
+    //   canReissue(30帧节流)必须保留：每帧重发会刷新 marchCmdFrame ⇒ stuckTry 永不涨 ⇒ 卡死打转。
+    //   ⚠ marchGoal* = 本轮【实际下发点】：卡死判据必须以它为参照，否则退让会被误判为"更卡死"一路退回 TC
+    //     （实测以原目标为参照时 8 局里 6 局跑满 45000 帧无结局）。
     static std::map<int, double> marchGoalDR, marchGoalUR;
     auto issueMarch = [&](double fx, double fy, int sn, int sort, int stuckTry, bool canReissue) {
         (void)sort;
@@ -4643,16 +4612,70 @@ void UsrAI::manageCounterAttack() {
         marchCmdFrame[sn] = frame;
     };
 
+    // ★ 2026-09-15 去重（铁律 21/26）：单位无「敌方兵」可打时的统一出口 = 最近敌塔 → 最近敌建筑 → 推进。
+    //   原远程分支与近战分支各自抄了一份完全相同的 25 行（连 ARMY_IGNORE_SIEGE_WORKSHOP 分支都一样）。
+    //   who 仅用于 [TOWER-TGT] 日志标签（"复合弓兵/远程" / "近战"），不改任何决策。
+    //   ★ 语义保持原样：打塔后不再推进；打建筑时若"已在打它"则退回推进；否则推进兜底。
+    auto attackBuildingOrMarch = [&](tagArmy &a, const char *who, int stuckTry, bool canReissue) {
+        // ★ 2026-09-16 用户纠正「复合弓兵要攻击箭塔、直接打不拉扯」：
+        //   仅放行 AT_COMPOSITE_BOWMAN(射程7<塔8)直接选塔站桩打（见 canHitTower 判定）；其余射程<塔的远程兵
+        //   (战车弓7/弓兵5/投石兵slinger4) 仍 canHitTower=false，保持不打塔（避免冲进塔射程白挨打）。
+        //   选塔即 return 站桩、不进下方推进段 ⇒ 不拉扯。近战不做此判据，投石车射程 10 > 8 照旧压制箭塔。
+        const double selfR = rangedMaxRange(a.Sort);
+        // ★ 2026-09-16 用户纠正「复合弓兵要攻击箭塔、直接打不拉扯」：
+        //   仅放行 AT_COMPOSITE_BOWMAN(射程7<塔8)直接选塔站桩打；其余射程<塔的远程兵(战车弓7/弓兵5/投石兵slinger4)
+        //   仍 canHitTower=false（保持不打塔，避免冲进塔射程白挨打）。选塔即 return 站桩、不进推进段 ⇒ 不拉扯。
+        const bool canHitTower = !isRanged(a.Sort) || a.Sort == AT_COMPOSITE_BOWMAN || selfR >= ARROWTOWER_RANGE * BL;
+        // 第二档"打最近任意建筑"里也要把箭塔摘掉，否则绕一圈又落回同一座塔（SN 全图唯一）。
+        auto isTowerSN = [&](int sn) -> bool {
+            for (auto &b : info.enemy_buildings)
+                if (b.SN == sn) return b.Type == BUILDING_ARROWTOWER;
+            return false;
+        };
+        int towerSN = findNearestEnemyTower(a.DR, a.UR, TOWER_TARGET_RANGE * BL);
+        if (towerSN >= 0 && canHitTower) {
+            if (a.WorkObjectSN != towerSN) {
+                HumanAction(a.SN, towerSN);
+                DebugText(QString("[TOWER-TGT f=%1] %2 SN=%3 攻击最近敌塔 %4 (R<=%5格)")
+                          .arg(frame).arg(who).arg(a.SN).arg(towerSN).arg(TOWER_TARGET_RANGE));
+            }
+            return;
+        }
+        // 够不着塔 ⇒ 本帧放弃打塔（不 return，落下方的"非塔建筑 / 推进"）。
+        //   日志按【塔 SN 变化】去重：同一兵对同一座塔只记一条，不会刷屏（铁律 34：关键决策点必须可观测）。
+        if (towerSN >= 0) {
+            if (!towerSkipSN.count(a.SN) || towerSkipSN[a.SN] != towerSN) {
+                towerSkipSN[a.SN] = towerSN;
+                DebugText(QString("[TOWER-SKIP f=%1] %2 SN=%3 射程%4<塔%5 → 不打塔 SN=%6 (改打非塔建筑/推进)")
+                          .arg(frame).arg(who).arg(a.SN).arg(selfR / BL, 0, 'f', 1)
+                          .arg(ARROWTOWER_RANGE, 0, 'f', 1).arg(towerSN));
+            }
+        }
+        if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
+            // 军队不打武器厂（留给祭司感化）：ARMY_IGNORE_SIEGE_WORKSHOP 时跳过最近的武器厂。
+            int ebSN;
+            if (ARMY_IGNORE_SIEGE_WORKSHOP) {
+                int nb = findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+                ebSN = (nb >= 0 && siege != nullptr && nb == siege->SN) ? -1 : nb;
+            } else {
+                ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
+            }
+            // ★ 够不着塔的兵种：最近建筑若是箭塔则同样跳过（否则又是一次白挨打）→ 落到推进。
+            if (ebSN >= 0 && a.WorkObjectSN != ebSN && (canHitTower || !isTowerSN(ebSN))) {
+                HumanAction(a.SN, ebSN); return;   // 有(非塔)建筑可打→拆
+            }
+        }
+        issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);   // 无建筑/已在打→继续推进
+    };
+
     for (int pass = 0; pass < 2 && marchCmds < 8; ++pass) {
         for (auto &a : info.armies) {
             if (a.Sort == AT_PRIEST) { priest = &a; continue; }
             if (lionHunterSN.count(a.SN)) continue;   // ★ 正在猎狮，别把推进指令盖掉
 
             // ★ 卡死检测（独立表 marchIssue*/marchMoveFrame，绝不复用 armyIssue*）。
-            //   判据＝"有没有朝推进目标靠近"(marchIssueDist)，【不是】绝对位移：原地抖动 A→B→A 每步位移
-            //   都 >0.5BL，会持续刷新计时 → 永不判卡死 → 反复 HumanMove 同一坐标（用户实测日志正是此现象）。
-            //   ⚠ 旧逻辑 `NowState != IDLE → continue` 有致命漏洞：领到走不到的航点会一直停在 WALKING，
-            //   永不变回 IDLE → 再也收不到新指令 → 永久卡死。故必须"长时间无推进即强制重下令脱困"。
+            //   判据 = "有没有朝推进目标靠近"(marchIssueDist)，【不是】绝对位移——原地抖动 A→B→A 每步都 >0.5BL。
+            //   ⚠ 旧 `NowState != IDLE → continue` 有致命漏洞：领到走不到的航点会永久停在 WALKING → 卡死。
             const double gDR = marchGoalDR.count(a.SN) ? marchGoalDR[a.SN] : targetDR;
             const double gUR = marchGoalUR.count(a.SN) ? marchGoalUR[a.SN] : targetUR;
             const double curDistToTgt = calDistance(a.DR, a.UR, gDR, gUR);   // ★ 参照 = 本轮实际下发点
@@ -4677,10 +4700,9 @@ void UsrAI::manageCounterAttack() {
             int stuckTry = marchStuckTry[a.SN];
 
             // ===== ★ 高机动单位"先锋探路"（独立于集结/接战，最优先调度） =====
-            //   不造侦察骑兵，改派感化的战车弓兵/骑兵探路；投石车 SPEED 极慢，不参与（会把攻城火力锁死在 TC）。
-            //   ★ 7e 起引擎 HumanMove 可穿越未探索区全图寻路，旧的"4格小步贴已探索边界"机制已删除：
-            //     stuckTry==0 → 直奔目标(对角角落猜测)，探到 enemy_buildings 即点亮 enemyBaseScouted → directMarch；
-            //     stuckTry >0 → 目标/路径不可达(海/林/矿/拥挤)：朝集结 TC 内缩 stuckTry 格重发，逐步退回去重新找路。
+            //   不造侦察骑兵，改派感化的战车弓兵/骑兵；投石车 SPEED 极慢不参与（会把攻城火力锁死在 TC）。
+            //   ★ 7e 起 HumanMove 可全图寻路，旧"4格小步贴已探索边界"已删：stuckTry==0 → 直奔目标，
+            //     探到 enemy_buildings 即点亮 enemyBaseScouted → directMarch；stuckTry>0 → 朝集结 TC 内缩重发。
             if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) &&
                 !enemyBaseScouted && enemySiegeSN == -1) {
                 issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);   // 先锋直插敌方基地方位
@@ -4688,40 +4710,27 @@ void UsrAI::manageCounterAttack() {
                 continue;
             }
 
-            // ===== ★ 远程兵"打-拉"双状态机相位优先段(2026-09-08 重写) =====
-            //   必须在 continue 闸(NowState != IDLE → continue)【之前】,否则弓兵开火后变成 ATTACKING
-            //   → 永远被 continue 跳过 → 相位机 60 帧触发不了,RETREAT 永不切。
-            //   旧版 cpp:3952 贴脸紧急后撤段也是相类似的"高优先级优先"机制,这里合并到相位机。
-            //   状态机:
-            //     • SHOOT(=0)   → 在射程内攻击,持续 30 帧(≈1.2 秒@25fps)【主动】切 RETREAT ("打一下就走"——2026-09-08 用户最新指示)
-            //     • RETREAT(=1) → 沿"远离敌"方向撤到敌距≥R+1.5 ("敌出射程外再射") 切回 SHOOT
-            //     • 任意相位 dK≤0.5R(贴脸/紧急)→ 无条件切 RETREAT 作【终止触发】
+            // ===== ★ 远程兵"打-拉"双状态机相位优先段 =====
+            //   必须在 continue 闸(NowState != IDLE → continue)【之前】，否则弓兵开火后变 ATTACKING → 被跳过。
+            //     • SHOOT(=0)   → 射程内攻击，持续 30 帧(≈1.2 秒@25fps)【主动】切 RETREAT（"打一下就走"）
+            //     • RETREAT(=1) → 沿"远离敌"方向撤到敌距 ≥ R+1.5 切回 SHOOT
+            //     • 任意相位 dK ≤ 0.5R(贴脸/紧急) → 无条件切 RETREAT 作【终止触发】
             if (isRanged(a.Sort) && a.Sort != AT_STONE_THROWER) {
                 const double R = rangedMaxRange(a.Sort);
                 const double BREATH = 1.5 * BL;             // "敌出射程外"额外缓冲
-                // ★【修 2026-09-08 时间换算】AoE3 7e 引擎是 25 fps(1500 帧/分钟),60 帧=2.4 秒;
-                //   30 帧=1.2 秒。原注释误写"60 帧=4秒"会导致后续想"每秒/每 4 秒一拉"的调参师算错。
-                //   工程铁律：frame→秒一律 ÷25。
+                // ★ AoE3 7e = 25 fps(1500 帧/分钟)：60 帧 = 2.4 秒、30 帧 = 1.2 秒。工程铁律：frame→秒 一律 ÷25。
                 const int SHOOT_FRAMES = 30;               // SHOOT 相位持续 ≈1.2 秒@25fps（用户需求"打一下就走"——打一发就走，不多停留）
                 const int PHASE_COOLDOWN = 20;             // 相位内不重发指令 ≈0.8 秒（让一撤走完）
-                // ★【2026-09-08 用户最新】"回撤时间调长 / 攻击目标间隔扩大"→ RETREAT 阶段持续 ≥ 2.4 秒兜底
-                //   （vs 原 SHOOT_FRAMES=30 帧 1.2 秒更激进——弓兵过度频繁切换，撤不到位)
+                // ★ 用户需求"回撤时间调长/攻击间隔扩大"：RETREAT 兜底 60 帧(2.4 秒) > SHOOT 的 1.2 秒。
                 const int RETREAT_FRAMES = 60;             // RETREAT 相位兜底切回 SHOOT 时长 ≈2.4 秒@25fps（撤得更远更久）
                 int phase = kitingPhase.count(a.SN) ? kitingPhase[a.SN] : 0;
-                // ============ ★★★【修 2026-09-13 · 拉扯从未生效的第一性根因】★★★ ============
-                //   2026-09-08 那次"修复"是错的：`phaseFrame 默认即 frame` 只保证"本帧不取到 -999999",
-                //   但【从未把进入帧写回 map】→ 下一帧 count 仍为 0 → 又取 frame → **phaseAged 恒等于 0**。
-                //   后果：三个"依赖 phaseAged"的相位转移全部恒不成立 ——
-                //     • 4733 敌近提前撤(需 phaseAged>=6)  ✗
-                //     • 4742 SHOOT 满 30 帧切 RETREAT(需 phaseAged>=30)  ✗ ← 【主症状】
-                //     • 4753 RETREAT 兜底 60 帧(需 phaseAged>=60)  ✗
-                //   于是弓兵一旦进入射程就【永远停在 SHOOT 站桩输出、一次 HumanMove 都不发】,
-                //   只有当敌人贴到 0.5R(=3.5 格)时,由 4725 那条【无 phaseAged 条件】的终止触发
-                //   强制写一次 map,phaseAged 才"复活",撤退才开始 —— 这正是用户观察到的
-                //   「反攻时从没见复合弓成功拉扯过」。实测铁证(AIText.log)：
-                //     复合弓 91658 在 f=37051~37521 连续 470 帧内 0 次 HumanMove、全程开火;
-                //     同场 91654/91674 的 HumanMove 落点每 30 帧单调变化(=真的在走) —— 差别只在
-                //     它们曾跌到 0.5R 以内被强制"点火"过。
+                // ★★★【2026-09-13 · 拉扯从未生效的第一性根因】★★★
+                //   2026-09-08 那次"修复"是错的：`phaseFrame 默认即 frame` 只保证本帧不取到 -999999，
+                //   但【从未把进入帧写回 map】⇒ 下一帧 count 仍为 0 ⇒ 又取 frame ⇒ **phaseAged 恒为 0**。
+                //   后果：三个依赖 phaseAged 的相位转移全部恒不成立（敌近提前撤 / SHOOT 满 30 帧切 RETREAT
+                //   ← 主症状 / RETREAT 兜底 60 帧）⇒ 弓兵进射程后永远站桩输出、一次 HumanMove 都不发，
+                //   只有敌人贴到 0.5R 时由"无 phaseAged 条件"的终止触发写一次 map，撤退才开始。
+                //   ✅ 正解：首次进入即把进入帧写回 map（见下方 `if (!kitingPhaseFrame.count(a.SN)) ...`）。
                 //   ✅ 正解:首次进入即把进入帧写回 map,此后 phaseAged 正常累加,
                 //     "射 30 帧 → 撤 60 帧 → 再射"的 kiting 循环才真正启动。
                 if (!kitingPhase.count(a.SN)) kitingPhase[a.SN] = 0;
@@ -4730,39 +4739,25 @@ void UsrAI::manageCounterAttack() {
                 int phaseFrame = kitingPhaseFrame[a.SN];
                 int phaseAged = frame - phaseFrame;
                 // ★★★★★ 2026-09-14「反攻时拉扯必须成功」第 1 步：目标粘滞 ★★★★★
-                //   旧实现每帧都调 findNearestEnemyNoStone 重选"最近敌"⇒ 敌我都在动 ⇒
-                //   目标 SN 每帧跳变（实测 ln1：复合弓 6827 条攻击令落在 22 个目标上）
-                //   ⇒ HumanAction(X,目标) 每帧被重设 ⇒ 引擎瞄准/出手进度永远归零 ⇒ 只走不打。
+                //   旧实现每帧重选"最近敌"⇒ 目标 SN 每帧跳变（实测 ln1：6827 条攻击令落在 22 个目标上）
+                //   ⇒ HumanAction 每帧重设 ⇒ 引擎瞄准进度永远归零 ⇒ 只走不打。
                 //   新实现：先沿用粘滞目标（仍存活且距 ≤20 格），只有它消失/跑远才重选。
                 int kEnemy = -1;
                 double kEX = 0, kEY = 0; bool kGot = false;
                 bool kMelee = false;
                 if (kitingTargetSN.count(a.SN)) {
                     int cur = kitingTargetSN[a.SN];
-                    for (auto &e : info.enemy_armies) if (e.SN == cur) {
-                        kEX = e.DR; kEY = e.UR; kMelee = isMeleeSort(e.Sort); kGot = true; break;
-                    }
-                    if (!kGot)
-                        for (auto &e : info.enemy_farmers) if (e.SN == cur) { kEX = e.DR; kEY = e.UR; kGot = true; break; }
+                    kGot = lookupEnemySN(cur, kEX, kEY, &kMelee);          // 粘滞目标仍存活?
                     if (kGot && calDistance(a.DR, a.UR, kEX, kEY) > 20 * BL) kGot = false;  // 目标跑远→放手
                     if (kGot) kEnemy = cur;
                 }
                 if (!kGot) {
                     kEnemy = findNearestEnemyNoStone(a.DR, a.UR, 20 * BL);
-                    if (kEnemy >= 0) {
-                        for (auto &e : info.enemy_armies) if (e.SN == kEnemy) {
-                            kEX = e.DR; kEY = e.UR; kMelee = isMeleeSort(e.Sort); kGot = true; break;
-                        }
-                        if (!kGot)
-                            for (auto &e : info.enemy_farmers) if (e.SN == kEnemy) { kEX = e.DR; kEY = e.UR; kGot = true; break; }
-                    }
+                    if (kEnemy >= 0) kGot = lookupEnemySN(kEnemy, kEX, kEY, &kMelee);
                 }
-                // ★【修 2026-09-08】投石车兜底：findNearestEnemyNoStone 写死了 continue 投石车,
-                //   当射程内"只有投石车"时 kGot=false → dK=1e12 → 全部相位转移不触发 → 走 issueMarch
-                //   推进而不是攻击。改为：noStone 找不到时,在 R+1.5 格内找最近的投石车补位攻击,
-                //   （投石车射程 10, 复合弓 7 → 我方能在 0.85R 边到 7 格内安全打到,但会被反击）。
-                //   ⚠ 祭司不在场时复合弓打投石车是合理的——有祭司则祭司优先感化（这里不影响,
-                //     投石车的 HumanAction 优先级与 managePriest 解耦,只要发动就生效）。
+                // ★ 投石车兜底：findNearestEnemyNoStone 写死 continue 投石车 ⇒ 射程内"只有投石车"时
+                //   kGot=false → dK=1e12 → 全部相位转移不触发 → 走 issueMarch 推进而非攻击。
+                //   改：noStone 找不到时，在 R+1.5 格内找最近的投石车补位（投石车射程 10、复合弓 7）。
                 if (!kGot) {
                     double bestSD = 1e12; int bestSSN = -1; double bestSEx = 0, bestSEy = 0;
                     for (auto &e : info.enemy_armies) {
@@ -4781,20 +4776,17 @@ void UsrAI::manageCounterAttack() {
                 if (kEnemy >= 0 && kGot) kitingTargetSN[a.SN] = kEnemy;   // ★ 记录/刷新粘滞目标
                 double dK = kGot ? calDistance(a.DR, a.UR, kEX, kEY) : 1e12;
 
-                // —— 终止触发(无条件、无节流):从 SHOOT 贴身<0.5R 立即切 RETREAT ——
-                // ★【修 2026-09-13】加 `phase != 1` 守卫。原实现每帧都执行 => kitingPhaseFrame 被
-                //   反复重置为当前帧 => 贴身对峙期间 phaseAged 恒 0 => 4753 的 RETREAT 60 帧兜底
-                //   永不触发 => 相位被永久钉死在 1(弓兵一直撤、不再输出)。只在"从 0 切 1"时重置一次。
+                // —— 终止触发（无条件、无节流）：从 SHOOT 贴身 <0.5R 立即切 RETREAT ——
+                // ★ 加 `phase != 1` 守卫：原实现每帧都重置 kitingPhaseFrame ⇒ phaseAged 恒 0 ⇒ RETREAT
+                //   60 帧兜底永不触发 ⇒ 相位被永久钉死在 1（弓兵一直撤、不再输出）。只在"从 0 切 1"时重置。
                 if (kGot && dK <= 0.5 * R && phase != 1) {
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
                     kitingRetStuck[a.SN] = 0;   // ★ 2026-09-14：每开一个新撤退窗口都重试"远离目标"档
                                                 //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
-                // ★【2026-09-12 新增：敌近提前撤】SHOOT 相位内若敌已逼近到 0.9R(=复合弓 6.3 格)内,
-                //   不必等满 30 帧——远程敌可能 0.5 秒就贴到 5 格,30 帧够吃两箭。立即切 RETREAT。
-                //   这是用户最新确认方案：「打满 30 帧 OR 敌近立即撤」双触发。
-                //   ⚠ 只在 phase=0(SHOOT)内触发,RETREAT 段本身不会重复触发此分支(已切出去)。
+                // ★ 敌近提前撤：SHOOT 内敌逼近到 0.9R(复合弓 6.3 格)就不必等满 30 帧（远程敌 0.5 秒可贴到 5 格）。
+                //   与"打满 30 帧"构成双触发。⚠ 只在 phase=0(SHOOT)内触发。
                 if (phase == 0 && kGot && dK > 0.5 * R && dK <= 0.9 * R && phaseAged >= 6) {
                     // phaseAged>=6 帧≈0.24 秒最小驻留,避免刚切进 SHOOT 立刻因敌近距离又撤回去,
                     // 造成"反复横跳"震荡(每帧切相位,实际伤害 0)。
@@ -4812,17 +4804,15 @@ void UsrAI::manageCounterAttack() {
                     kitingRetStuck[a.SN] = 0;   // ★ 2026-09-14：每开一个新撤退窗口都重试"远离目标"档
                                                 //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
-                //   RETREAT 阶段退出条件【双路径】(命中用户原话"直到敌出射程外再攻击"):
-                //     ① 优选:敌距 ≥ R+BREATH(=1.5 格,即"敌出射程外")——正常情况
-                //     ② 兜底:RETREAT 持续 ≥ 60 帧(≈2.4 秒,RETREAT_FRAMES)也强制切回——敌追着我(撤也撤不到 d≥R+BREATH)时不至于永远 RETREAT
-                //   没敌/在 RETREAT 阶段:走下方推进 (issueMarch)
+                //   RETREAT 退出条件【双路径】（用户原话"直到敌出射程外再攻击"）：
+                //     ① 优选：敌距 ≥ R+BREATH(1.5 格)  ② 兜底：RETREAT 持续 ≥ 60 帧(2.4 秒)强制切回
+                //   没敌/在 RETREAT 阶段：走下方推进 (issueMarch)
                 if (phase == 1 && kGot && dK >= R + BREATH) {
                     phase = 0; kitingPhase[a.SN] = 0; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
                 } else if (phase == 1 && phaseAged >= RETREAT_FRAMES) {
-                    // ⚠ RETREAT 兜底:用"相位节流"的上限做兜底,避免敌追近时永远 RETREAT 触发不到 dK 检查。
-                    //   RETREAT_FRAMES=60 帧(≈2.4 秒)挡一手——撤令已发,2.4 秒后再允许切回去给"再射"机会。
-                    //   即使落入此分支:本帧也只切相位,真正撤/射判断在下一相位段(节流让一射走完)。
+                    // ⚠ 用"相位节流"上限做兜底：敌追着我时撤不到 dK≥R+BREATH，2.4 秒后再给"再射"机会。
+                    //   本帧只切相位，真正撤/射在下一相位段（节流让一射走完）。
                     if (coolPhase) {
                         phase = 0; kitingPhase[a.SN] = 0; kitingPhaseFrame[a.SN] = frame;
                         phaseFrame = frame; phaseAged = 0;
@@ -4830,18 +4820,11 @@ void UsrAI::manageCounterAttack() {
                 }
 
                 if (phase == 1 && kGot && canReissue) {
-                    // —— RETREAT 阶段:沿"远离敌"方向撤,落点 = 敌 + KITING_RETREAT_MULT*R × unitVector ——
-                    // ★【修 2026-09-11】原 0.85(远程敌)/1.1(近战敌) < 1 → 撤退落点落在【自身射程 R 之内】,
-                    //   且当单位在射程边缘(dK≈R)开火时,撤到 0.85R 反而【更靠近】敌人;落点 < R+BREATH(复合弓=8.5格)
-                    //   → 退出条件 dK>=R+BREATH 永远无法满足 → 单位退不出 RETREAT、永远在射程内被贴脸打,
-                    //   观感"拉扯不成功/不往后走"。改为 >1:落点 = 1.4R(远程敌)/1.5R(近战敌) 均 > R+BREATH,
-                    //   单位真正向后拉开到【射程外】,触发退出条件→回 SHOOT→重新接敌 = 标准 kiting。
-                    //   节流改用 canReissue(30帧march)而非 coolPhase(phase内20帧):撤退【当帧即发令】,拉扯更跟手。
-                    // ★【2026-09-12 新增 fallback 链】旧版 5 个角度都不可走就 kitMoved=0 退出 → 实测 b_r90 KIT-R 8 次全 0:
-                    //   复合弓被压在地图边角/林缘时,"远离敌"方向可能撞海/林,整段 RETREAT 落空 → 单位永远站桩被打。
-                    //   新增二级 fallback:朝己方 TC 方向撤(更安全的方向,TC 永远在已探索且空旷)。
-                    //   三级 fallback:朝己方祭司方向撤(若祭司在场,与大军同向)。
-                    //   终极兜底:全失败则本帧不下令(下一帧再试),不让单位往海里走。
+                    // —— RETREAT 阶段：沿"远离敌"方向撤，落点 = 敌 + KITING_RETREAT_MULT*R × unitVector ——
+                    // ★ 2026-09-11：旧 0.85(远程敌)/1.1(近战敌) < 1 ⇒ 撤退落点落在自身射程 R 之内、比原地更近敌
+                    //   ⇒ 退出条件 dK≥R+BREATH 永不满足 ⇒ 永远在射程内被贴脸打。改为 1.4R/1.5R（> R+BREATH）。
+                    // ★ 2026-09-12 fallback 链：第1档"远离敌"可能撞海/林（整段 RETREAT 落空）⇒ 二级朝己方 TC 撤、
+                    //   三级朝祭司撤；全失败则本帧不下令（下一帧再试），绝不让单位往海里走。
                     const double KITING_RETREAT_MULT = kMelee ? 1.5 : 1.4;
                     double ux = (a.DR - kEX) / (dK + 1e-6), uy = (a.UR - kEY) / (dK + 1e-6);
                     const double angs[5] = {0.0, 0.6, -0.6, 1.2, -1.2};
@@ -4849,14 +4832,11 @@ void UsrAI::manageCounterAttack() {
                     bool kitMoved = false;
                     double kitX = 0, kitY = 0;
                     int kitStage = 0;  // 1=远离敌 2=朝TC 3=朝祭司 0=失败
-                    // ★【修 2026-09-13】撤退有效性校验（"点可走 ≠ 路径可达"）：
-                    //   isPassableAt 只判【落点所在格】(非海/非林)，不判【单位→落点的路径】。
-                    //   反攻期弓兵多在敌方基地附近，落点本身可走却常被海/林/建筑隔断 →
-                    //   HumanMove 被引擎静默丢弃 → 弓兵原地站桩挨打。
-                    //   度量用"与最近敌的距离 dK"：本窗口若未比上一窗口拉开 ≥0.3 格，判该方向撤不动。
-                    //   ⚠ 不用"单位是否有位移"：引擎的攻击令同样驱动位移，会把"撤不动"误判成"在撤"
-                    //     （实测 run1：20 次撤退令全被引擎丢弃 MM_move=0、dK 4.6→0.7，位移判据却始终清零）。
-                    //   连续撤不动 → 累计 stuck → 下一轮跳过第 1 档，直接朝己方 TC 撤（路径必然可达）。
+                    // ★ 2026-09-13 撤退有效性校验（"点可走 ≠ 路径可达"）：isPassableAt 只判落点所在格，
+                    //   不判路径；反攻期弓兵常在敌基地附近，落点可走却被海/林/建筑隔断 ⇒ 引擎静默丢弃。
+                    //   度量用 dK（与最近敌距离）：本窗口未比上窗口拉开 ≥0.3 格即判该方向撤不动 ⇒ stuck++。
+                    //   ⚠ 不用"单位是否有位移"：攻击令同样驱动位移，会把"撤不动"误判成"在撤"
+                    //     （实测 run1：20 次撤退令全被丢弃 MM_move=0、dK 4.6→0.7，位移判据却始终清零）。
                     if (kitingRetPrevDK.count(a.SN)) {
                         if (dK < kitingRetPrevDK[a.SN] + 0.3 * BL)
                             kitingRetStuck[a.SN] = (kitingRetStuck.count(a.SN) ? kitingRetStuck[a.SN] : 0) + 1;
@@ -4917,11 +4897,9 @@ void UsrAI::manageCounterAttack() {
                             }
                         }
                     }
-                    // —— 终极兜底:三档全失败 → 本帧不下令,让相位机下一帧再试,不让单位往海里走 ——
-                    // ★【2026-09-13 观测增强】原 `frame % 50 == 0` 采样率仅 1/50，反攻期常整段漏掉
-                    //   RETREAT 窗口 → 无法判断"拉扯到底有没有拉开距离"。改为每次进入撤退窗口必打；
-                    //   该块已被 canReissue(30 帧节流)限制，每弓兵每 30 帧最多一条，不会刷屏。
-                    //   字段含 aged(相位已持续帧数)/stuck/self/tgt，可直接验证 phaseAged 是否恢复累加。
+                    // —— 终极兜底：三档全失败 → 本帧不下令，相位机下一帧再试 ——
+                    // ★ 观测增强：原 `frame % 50` 采样率仅 1/50，反攻期常整段漏掉 RETREAT 窗口。改为每次进入
+                    //   撤退窗口必打；本块已被 canReissue(30 帧) 限制，每弓兵每 30 帧最多一条，不会刷屏。
                     DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 stuck=%6 aged=%7 self=(%8,%9) tgt=(%10,%11)")
                               .arg(frame).arg(a.SN).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1)
                               .arg(kitStage).arg(kitingRetStuck.count(a.SN) ? kitingRetStuck[a.SN] : 0)
@@ -4933,13 +4911,9 @@ void UsrAI::manageCounterAttack() {
                 }
 
                 // ★★★★★ 2026-09-14「反攻时拉扯必须成功」第 2 步：接敌带站桩射 ★★★★★
-                //   旧实现只在 dK ≤ R 时才"站桩射"，dK ∈(R, R+2] 这段却被下面的 issueMarch 接管——
-                //   而 issueMarch 的目标是 targetDR/UR(敌基地)，方向朝前 ⇒ 弓兵被一路推过目标贴脸，
-                //   RETREAT 令与推进令互相拉扯 = 净位移≈0（实测 ln7 SN=91382 全程 882 条撤退令、
-                //   只有 27 条 SHOOT 采样、dK 一路 7.9→1.8 被贴脸）。
-                //   新实现：dK ≤ R+2 格即视为"接敌带"⇒ 只发攻击令（引擎自己会走到射程内开火），
-                //   再也不发移动令。配合目标粘滞，才形成「走到射程 → 开火 → 撤 → 再走回 → 开火」的真拉扯。
-                //   ⚠ 攻击令节流 20 帧 + 目标粘滞：同一目标不重发（铁律 14：重发=引擎重置瞄准进度）。
+                //   旧实现只 dK ≤ R 才站桩射，dK∈(R, R+2] 被 issueMarch 接管（目标=敌基地，方向朝前）⇒ 弓兵被
+                //   一路推过目标贴脸，RETREAT 与推进互相拉扯=净位移≈0（实测 ln7 SN=91382 全程 882 条撤退令、
+                //   仅 27 条 SHOOT 采样、dK 一路 7.9→1.8 被贴脸）。新：dK ≤ R+2 即视为接敌带，只发攻击令不发移动令。
                 if (phase == 0 && kGot && dK <= R + 2.0 * BL) {
                     // —— SHOOT 阶段射程内攻击(撤完保护期 60 帧内不重发,符合用户"攻击目标间隔扩大"指示) ——
                     const int RETREAT_PROTECT_FRAMES = 60;   // ★ 60 帧 ≈2.4 秒(原 30 帧=1.2 秒)——撤完等久一点再开火
@@ -4964,11 +4938,9 @@ void UsrAI::manageCounterAttack() {
                 // 射程外 / 无敌 / SHOOT 但脱战:落入下方常规推进段
             }
 
-            // ★ 2026-09-14：投石车豁免此闸。原实现下投石车一旦开火就进 ATTACKING(≠IDLE)，
-            //   整段 standoff/后撤逻辑被 `continue` 跳过 ⇒ 只会站桩挨打、永不拉扯
-            //   （弓兵相位机在闸之前，所以弓兵有拉扯、投石车没有）。豁免后由下方投石车块
-            //   按"射程带 ≤10.5 格站桩 / 贴身 ≤7 格后撤"自行节奏，且全程受 20~30 帧节流保护，
-            //   不会每帧换目标或每帧改方向。
+            // ★ 2026-09-14：投石车豁免此闸。原实现下投石车开火即进 ATTACKING(≠IDLE)，整段 standoff/后撤
+            //   被 continue 跳过 ⇒ 只会站桩挨打、永不拉扯（弓兵相位机在闸之前才有拉扯）。豁免后由下方投石车块
+            //   按"≤10.5 格站桩 / ≤7 格后撤"自行节奏，且全程受节流保护，不会每帧换目标或改方向。
             if (a.NowState != HUMAN_STATE_IDLE && a.Sort != AT_STONE_THROWER) {
                 if (!stuckNow || !canReissue) continue;   // 正常行进中不打断；卡死且到窗口才重下令
             } else if (stuckNow && !canReissue) {
@@ -4980,24 +4952,24 @@ void UsrAI::manageCounterAttack() {
             if (pass == 1 && ranged) continue;    // 第二遍：近战殿后/补位
             if (marchCmds >= 8) break;
 
-            // ★ 全体反攻门槛未达：全军回 TC 附近集结待命，不推进、不接战（含远程/投石车，
-            //   避免单个士兵零散冲出被敌方集火；等 armyCount≥20 或到 24 分钟再统一反攻）。
-            //   ★ 2026-09-07 修：原实现让【所有】单位 HumanMove 到同一个 rallyCtr(TC 中心) 点——
-            //     实测日志铁证：复合弓 91456/91457/91458、方阵兵 91052、投石车 91077
-            //     **全部** HumanMove 至同一坐标 (751.319,2754.84)。多单位抢同一点会互相挤占、
-            //     引擎寻路反复失败 → 原地抖动/绕圈 → 观感"在 TC 附近来回走"。
-            //   新实现：每个单位的目标点 = TC 中心 + 朝【该单位自己】方向外推 12 格，
-            //     并按 SN 再做 ±0.36rad 扇形散开 ⇒ 目标点互不相同，到位即停（距离不再 >12 格）。
+            // ★ 未达全体反攻门槛：全军回 TC 附近集结待命，不推进不接战（含远程/投石车，避免零散冲出被集火）。
+            //   ★ 2026-09-07 修：原实现让【所有】单位 HumanMove 到同一个 rallyCtr(TC 中心)点——实测复合弓
+            //     91456/91457/91458、方阵兵 91052、投石车 91077 全部到同一坐标 (751.319,2754.84)，互相挤占、
+            //     寻路反复失败 ⇒ 原地抖动。新：目标点 = TC 中心 + 朝该单位自己方向外推 12 格 + SN 扇形散开。
             if (!readyToAttack) {
                 if (calDistance(a.DR, a.UR, rallyCtrDR, rallyCtrUR) > 12 * BL && canReissue) {
                     double ux = a.DR - rallyCtrDR, uy = a.UR - rallyCtrUR;
                     double baseAng = (std::sqrt(ux*ux + uy*uy) > 1e-6) ? std::atan2(uy, ux) : 0.0;
                     bool moved = false;
                     double angTries[3] = {0.0, 0.25, -0.25};          // 主方向 + 两侧微调，防落点被占
+                    // ★ 2026-09-17（用户：「停驻集结时不要站在同一点」）：原 SN 散开只有 7 类
+                    //   ((SN%7)-3)*0.12 ⇒ 同方向出发的单位大量撞同一点。改为 13 类角度 + 5 类半径
+                    //   向内错位（半径 9.6~12 格，不越过下方 `>12格` 的集结到位判据 ⇒ 到达即停止重发）。
                     for (int ti = 0; ti < 3 && !moved; ++ti) {
-                        double ang = baseAng + ((a.SN % 7) - 3) * 0.12 + angTries[ti];  // SN 散开 + 微调
-                        double gx = rallyCtrDR + std::cos(ang) * 12 * BL;
-                        double gy = rallyCtrUR + std::sin(ang) * 12 * BL;
+                        double ang = baseAng + ((a.SN % 13) - 6) * 0.09 + angTries[ti];
+                        double holdR = (12.0 - (double)(a.SN % 5) * 0.6) * BL;
+                        double gx = rallyCtrDR + std::cos(ang) * holdR;
+                        double gy = rallyCtrUR + std::sin(ang) * holdR;
                         gx = max(0.0, min((double)MAP_L * BL, gx));
                         gy = max(0.0, min((double)MAP_U * BL, gy));
                         if (isPassableAt(gx, gy)) {
@@ -5012,20 +4984,13 @@ void UsrAI::manageCounterAttack() {
             }
 
             // ================================================================================
-            // ★★★★★ 2026-09-14 投石车 standoff / 拉扯（用户需求：「反攻时投石车一定要能成功拉扯」）★★★★★
-            //   实测铁证（ln1 反攻窗口 f≥33000）：我方投石车 91129 发出 586 条攻击令、落在 13 个目标上，
-            //   引擎日志每 1~3 帧一条「投石车(编号:91129)开始向X攻击」⇒ 瞄准进度每帧被重设、累计零命中；
-            //   同时段撤退令 0 条 ⇒ 既打不中也不后撤。
-            //   三条根因：
-            //     ① 目标每帧重选（findCatapultTarget 取"最近敌"，敌我在动 ⇒ 目标 SN 每帧跳变）——铁律 14；
-            //     ② 撤退触发线 11 格 < 目标选取范围 15 格、又 > 射程 10 格 ⇒ 10~15 格区间"够不到(射程 10)
-            //        也没危险(不撤)" ⇒ 空转；再叠加"≤11 格就撤走"⇒ 永远进不到 10 格射程内，一炮打不出；
-            //     ③ 本块位于 `NowState != IDLE → continue` 闸之后 ⇒ 开火中(ATTACKING)整段被跳过，
-            //        永远不会后撤（弓兵相位机在闸之前才有拉扯，投石车没有）⇒ 站桩挨打。
-            //   修法：①目标粘滞(每 30 帧评估一次，且新目标需近 ≥2 格才换) ②攻击令 20 帧节流
-            //        ③IDLE 闸对投石车豁免(见上方 5099 处) ④射程带 ≤10.5 格站桩输出；
-            //        真被贴身(≤7 格)才后撤、退到 14 格才停(迟滞) = 「打-撤-再打」闭环。
-            // ================================================================================
+            // ★★★★★ 2026-09-14 投石车 standoff/拉扯（用户需求：「反攻时投石车一定要能成功拉扯」）★★★★★
+            //   铁证(ln1 f≥33000)：投石车 91129 发 586 条攻击令落在 13 个目标上，引擎每 1~3 帧一条"开始向X攻击"
+            //   ⇒ 瞄准进度每帧重设、零命中；同时段撤退令 0 条 ⇒ 既打不中也不后撤。三条根因：
+            //     ① 目标每帧重选（铁律 14）；② 撤退线 11 格 < 选取范围 15 格且 > 射程 10 格 ⇒ 10~15 格区间空转；
+            //     ③ 本块在 `NowState != IDLE → continue` 闸之后 ⇒ 开火中整段被跳过，永不后撤。
+            //   修：①目标粘滞(30 帧评估、新目标需近 ≥2 格) ②攻击令 20 帧节流 ③IDLE 闸对投石车豁免
+            //       ④射程带 ≤10.5 格站桩、真贴身 ≤7 格才撤、退到 14 格才停（迟滞）=「打-撤-再打」闭环。
             if (a.Sort == AT_STONE_THROWER) {
                 const double CAT_RANGE     = 10.0 * BL;              // 投石车最大射程(DIS_STONE_THROWER=10格)
                 const double CAT_FIRE_BAND = CAT_RANGE + 0.5 * BL;   // ≤10.5 格：可站桩输出
@@ -5035,13 +5000,8 @@ void UsrAI::manageCounterAttack() {
                 int atkSN = -1; double atkD = 1e12;
                 if (catTargetSN.count(a.SN)) {
                     int cur = catTargetSN[a.SN];
-                    double cx = 0, cy = 0; bool alive = false;
-                    for (auto &e : info.enemy_armies) if (e.SN == cur) { cx = e.DR; cy = e.UR; alive = true; break; }
-                    if (!alive) for (auto &e : info.enemy_farmers) if (e.SN == cur) { cx = e.DR; cy = e.UR; alive = true; break; }
-                    if (!alive) for (auto &b : info.enemy_buildings) if (b.SN == cur) {
-                        cx = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
-                        cy = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH; alive = true; break;
-                    }
+                    double cx = 0, cy = 0;
+                    bool alive = lookupEnemySN(cur, cx, cy);
                     if (alive) {
                         atkD = calDistance(a.DR, a.UR, cx, cy);
                         if (atkD > 15 * BL) alive = false;      // 目标跑出选取范围→放手
@@ -5052,13 +5012,8 @@ void UsrAI::manageCounterAttack() {
                 if (catReEval) {
                     int cand = findCatapultTarget(a.DR, a.UR, 15 * BL);
                     if (cand >= 0 && cand != atkSN) {
-                        double cx = 0, cy = 0; bool found = false;
-                        for (auto &e : info.enemy_armies) if (e.SN == cand) { cx = e.DR; cy = e.UR; found = true; break; }
-                        if (!found) for (auto &e : info.enemy_farmers) if (e.SN == cand) { cx = e.DR; cy = e.UR; found = true; break; }
-                        if (!found) for (auto &b : info.enemy_buildings) if (b.SN == cand) {
-                            cx = (b.BlockDR + 1.0) * (double)BLOCKSIDELENGTH;
-                            cy = (b.BlockUR + 1.0) * (double)BLOCKSIDELENGTH; found = true; break;
-                        }
+                        double cx = 0, cy = 0;
+                        bool found = lookupEnemySN(cand, cx, cy);
                         double cd = found ? calDistance(a.DR, a.UR, cx, cy) : 1e12;
                         if (atkSN < 0 || cd + 2.0 * BL < atkD) { atkSN = cand; atkD = cd; }  // 只有明显更近才换目标
                     }
@@ -5067,11 +5022,8 @@ void UsrAI::manageCounterAttack() {
                 if (atkSN >= 0) catTargetSN[a.SN] = atkSN;
                 // —— ② 威胁判定 + 后撤（迟滞：进入线 7 格 / 退出线 14 格）——
                 int threatSN = findNearestEnemySN(a.DR, a.UR, CAT_RANGE * 1.6);
-                double ex = 0, ey = 0; bool gotThreat = false;
-                if (threatSN >= 0) {
-                    for (auto &e : info.enemy_armies) if (e.SN == threatSN) { ex = e.DR; ey = e.UR; gotThreat = true; break; }
-                    if (!gotThreat) for (auto &e : info.enemy_farmers) if (e.SN == threatSN) { ex = e.DR; ey = e.UR; gotThreat = true; break; }
-                }
+                double ex = 0, ey = 0;
+                bool gotThreat = (threatSN >= 0) && lookupEnemySN(threatSN, ex, ey);
                 bool catRetreating = (catRetreat.count(a.SN) && catRetreat[a.SN]);
                 if (gotThreat) {
                     double d = calDistance(a.DR, a.UR, ex, ey);
@@ -5124,12 +5076,10 @@ void UsrAI::manageCounterAttack() {
                     continue;
                 }
                 // —— ⑤ 无敌可打：推进 ——
-                //   ⚠【2026-09-14 修】整段必须包在 canReissue 里！旧写法是
-                //     `if (stuckTry<=0 && canReissue) {...} else { marchWaypoint→HumanMove }`，
-                //     那个 else 恰好是"已被节流(canReissue=false)"时进入 ⇒ **每帧都发一条移动令**。
-                //     旧版本块在 IDLE 闸之后，只有 IDLE 时才跑到，问题被掩盖；本轮投石车豁免 IDLE 闸后
-                //     立刻暴露：实测 kt4 投石车 91129 在 f=33003~45000 每帧一条 HumanMove（9555 条刷屏、
-                //     全部指向同一个点）⇒ 又会把 standoff/后撤令顶掉 = 拉扯再次失败。
+                //   ⚠【2026-09-14 修】整段必须包在 canReissue 里！旧写法 `if (stuckTry<=0 && canReissue){...}
+                //     else { HumanMove }` 的 else 恰是"已被节流"时进入 ⇒ **每帧都发一条移动令**。旧版块在
+                //     IDLE 闸之后被掩盖；本轮豁免 IDLE 闸后立刻暴露：实测 kt4 投石车 91129 在 f=33003~45000
+                //     每帧一条 HumanMove（9555 条刷屏）⇒ 把 standoff/后撤令顶掉 = 拉扯再次失败。
                 if (canReissue) {
                     HumanMove(a.SN, targetDR, targetUR);   // 投石车：直达敌方基地附近目标点
                     marchCmdFrame[a.SN] = frame;
@@ -5144,33 +5094,10 @@ void UsrAI::manageCounterAttack() {
             //   ★ 拆建筑攻击令去重(2026-09-06)：已在打这建筑就别重发,否则每帧 HumanAction 打断上方的拉扯 HumanMove,
             //     远程兵永远走不到该到位的站位。
             if (ranged) {
-                // ★ 2026-09-13「士兵攻击箭塔 → 选距离自己最近的箭塔」：
-                //   先查【最近敌方箭塔】(TOWER_TARGET_RANGE 格内)。命中则打塔，且【优先于武器厂/任意敌建筑】——
-                //   旧逻辑里武器厂(siege)必然覆盖一切，更近的房屋/农场也会顶掉箭塔 ⇒ 挨塔射不还手。
-                //   仍保留去重：已在打这座塔就不重发，避免每帧 HumanAction 打断上方拉扯 HumanMove。
-                int towerSN = findNearestEnemyTower(a.DR, a.UR, TOWER_TARGET_RANGE * BL);
-                if (towerSN >= 0) {
-                    if (a.WorkObjectSN != towerSN) {
-                        HumanAction(a.SN, towerSN);
-                        DebugText(QString("[TOWER-TGT f=%1] 复合弓兵/远程 SN=%2 攻击最近敌塔 %3 (R<=%4格)")
-                                  .arg(frame).arg(a.SN).arg(towerSN).arg(TOWER_TARGET_RANGE));
-                    }
-                } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
-                    // ★ 2026-09-13 用户要求「军队不要攻击敌方武器厂」：不再优先选武器厂(ARMY_IGNORE_SIEGE_WORKSHOP)，
-                    //   改打【最近任意敌建筑】（箭塔已在上面 towerSN 分支优先命中）。
-                    int ebSN;
-                    if (ARMY_IGNORE_SIEGE_WORKSHOP) {
-                        int nb = findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
-                        // ★ 武器厂专留给祭司感化——军队即使最近建筑是武器厂也跳过它(不打武器厂)
-                        ebSN = (nb >= 0 && siege != nullptr && nb == siege->SN) ? -1 : nb;
-                    } else {
-                        ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
-                    }
-                    if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);
-                    else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);
-                } else {
-                    issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);
-                }
+                // ★ 2026-09-13「士兵攻击箭塔 → 选距离自己最近的箭塔」+「军队不要攻击敌方武器厂」：
+                //   打最近敌塔(TOWER_TARGET_RANGE 格内) → 打最近任意敌建筑(12 格内，武器厂跳过留给祭司) → 推进。
+                //   与近战分支共用同一实现（原两处各抄一份 25 行，铁律 21/26）。
+                attackBuildingOrMarch(a, "复合弓兵/远程", stuckTry, canReissue);
                 marchCmds++;
                 continue;
             }
@@ -5186,53 +5113,22 @@ void UsrAI::manageCounterAttack() {
                 // 有敌【单位】可打 → 单位永远优先于建筑（保持原语义，含去重）
                 if (a.WorkObjectSN != enemySN) HumanAction(a.SN, enemySN);
             } else {
-                // ★ 2026-09-13「士兵攻击箭塔 → 选距离自己最近的箭塔」：
-                //   15 格内无敌方单位时，先查【最近敌方箭塔】(TOWER_TARGET_RANGE 格内)并打它，
-                //   优先于武器厂(siege)与任意其它敌建筑。近战打塔需要走过去，故给 12 格窗口。
-                int towerSN = findNearestEnemyTower(a.DR, a.UR, TOWER_TARGET_RANGE * BL);
-                if (towerSN >= 0) {
-                    if (a.WorkObjectSN != towerSN) {
-                        HumanAction(a.SN, towerSN);
-                        DebugText(QString("[TOWER-TGT f=%1] 近战 SN=%2 攻击最近敌塔 %3 (R<=%4格)")
-                                  .arg(frame).arg(a.SN).arg(towerSN).arg(TOWER_TARGET_RANGE));
-                    }
-                } else if (directMarch && calDistance(a.DR, a.UR, targetDR, targetUR) <= 12 * BL) {
-                    // ★ 2026-09-13 用户要求「军队不要攻击敌方武器厂」：不再优先选武器厂(ARMY_IGNORE_SIEGE_WORKSHOP)，
-                    //   改拆【最近任意敌建筑】（箭塔已在上方 towerSN 分支优先命中）。武器厂留给祭司感化。
-                    int ebSN;
-                    if (ARMY_IGNORE_SIEGE_WORKSHOP) {
-                        int nb = findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
-                        // ★ 武器厂专留给祭司感化——军队即使最近建筑是武器厂也跳过它(不打武器厂)
-                        ebSN = (nb >= 0 && siege != nullptr && nb == siege->SN) ? -1 : nb;
-                    } else {
-                        ebSN = siege ? siege->SN : findNearestEnemyBuilding(a.DR, a.UR, 12 * BL);
-                    }
-                    // ★ 拆建筑攻击令去重（同 4117）
-                    if (ebSN >= 0 && a.WorkObjectSN != ebSN) HumanAction(a.SN, ebSN);   // 有建筑可打→拆基地
-                    else issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);  // 无建筑→继续推进
-                } else {
-                    // 向目标推进：已知敌基地→引擎全图寻路直奔；未知→逐格摸索已探索区
-                    issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);
-                }
+                // 15 格内无敌方单位：打最近敌塔 → 最近敌建筑 → 推进（与远程分支共用实现）。
+                attackBuildingOrMarch(a, "近战", stuckTry, canReissue);
             }
             marchCmds++;
         }
     }
 
     // ====== 3. 祭司推进/转化武器厂 ======
-    // managePriest 已在 processData 中先处理祭司的保命/治疗/感化；
-    // 这里只在祭司真正空闲或行走时接管推进/感化武器厂，避免覆盖 ATTACKING/CONVERTING 等
-    // 引擎托管动作。【修 2026-09-08】原 `if (NowState != IDLE) return;` 写得太严格——祭司跟军
-    //   时 NowState=WALKING,几乎每帧都触发 return → 整段祭司推进/感化武器厂 100% 走不到 →
-    //   祭司长期滞留后方,感化武器厂永不触发。改为：WALKING 也允许本段进入（攻击令不会打断
-    //   行走中的单位,只会覆盖目标,managePriest 对 WALKING 单位的治疗/感化也照常生效）。
+    // managePriest 已先处理祭司保命/治疗/感化；这里只在祭司 IDLE/WALKING 时接管推进/感化武器厂。
+    // 【修 2026-09-08】原 `if (NowState != IDLE) return;` 太严——祭司跟军时 WALKING 每帧触发 return
+    //   ⇒ 整段 100% 走不到 ⇒ 祭司长期滞留后方、感化武器厂永不触发。改为 WALKING 也允许进入。
     if (priest) {
         if (priestCounterCooldown > 0) priestCounterCooldown--;   // ★ 反攻推进专用节流（与 priestMoveCooldown 解耦）
 
         // ★★★ 2026-09-15 敌塔态势扫描（起手判据 + 诊断 + 前出日志共用同一份，避免同语义写三遍）★★★
-        //   nearD = 最近敌箭塔到祭司的距离(像素)，cnt = 整个 info.enemy_buildings 里的敌箭塔数。
-        //   ⚠ 只统计【已探明】的敌建筑（Core.cpp:622 受 explored||visible 约束）——
-        //     未侦察到的塔对 AI "不存在"，这是本图共性，不是本函数缺陷。
+        //   ⚠ 只统计【已探明】的敌建筑（Core.cpp:622 受 explored||visible 约束）——未侦察到的塔对 AI "不存在"。
         auto scanTowerThreat = [&](double &nearD, int &cnt) {
             nearD = 1e9; cnt = 0;
             for (auto &b : info.enemy_buildings)
@@ -5244,38 +5140,79 @@ void UsrAI::manageCounterAttack() {
         };
 
         // ★★★ 2026-09-15 态势采样【提到早路径之前】★★★
-        //   原位置在早路径 `return` 之后 ⇒ 只要祭司进了 12 格射程就被 return 掉，采样永远打不到，
-        //   造成"起手过程不可观测"（本批 32 局里 path=early/front 的 DebugText 命中 0~2 次，
-        //   而 HumanAction 实际发令 10 次 —— 全是采样偏差，不是没触发）。
-        //   新增 towers=(全局敌箭塔数) nearT=(最近敌塔到祭司的格数, -1=视野内无敌塔)。
+        //   原位置在早路径 return 之后 ⇒ 祭司一进 12 格射程就被 return，采样永远打不到（"起手过程不可观测"）。
+        // ★ 2026-09-16 修正：本行 towers= 原先打印的是 scanTowerThreat（【祭司周边】塔数），与"塔全拆"这个
+        //   【全局】判据不是同一个量 ⇒ 极易误读（历史教训：`[LC-DBG] towers=0` @f=33300 被判成"塔已全拆"，
+        //   实为未探明伪影，塔是 0→1→2 逐个被探明的）。现改为同时打印两个口径：
+        //   gT=全局已探明敌箭塔数（判据真源）／seen=已探明敌建筑总数（保险项）／nearT+loc=祭司周边。
         if (frame % 300 == 0) {
             double nearTowerD = 1e9; int towerCnt = 0;
-            scanTowerThreat(nearTowerD, towerCnt);
-            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 towers=%10 nearT=%11")
+            scanTowerThreat(nearTowerD, towerCnt);   // 祭司周边的塔（态势用，非判据）
+            int gT = 0, seen = 0;
+            for (auto &b : info.enemy_buildings) {
+                seen++;
+                if (b.Type == BUILDING_ARROWTOWER) gT++;
+            }
+            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 gT=%10 seen=%11 nearT=%12 loc=%13")
                       .arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
                       .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
                       .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
                       .arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown)
-                      .arg(towerCnt).arg((nearTowerD > 1e8) ? -1.0 : nearTowerD / BL, 0, 'f', 1));
+                      .arg(gT).arg(seen)
+                      .arg((nearTowerD > 1e8) ? -1.0 : nearTowerD / BL, 0, 'f', 1).arg(towerCnt));
         }
 
+        // ★★★ 2026-09-16 用户需求：祭司感化武器厂的【唯一】限制 = 敌方全部箭塔拆完 ★★★
+        //   判据块【必须在 early 路径之前】——early 是实际主力下发点（实测 6/6 起手走它）且原本无任何敌情判据；
+        //   闸放在它后面 = 形同虚设（铁律 11：闸的位置决定功能是否活着）。
+        //   early / front / legacy 三处下发点共用同一个 clearOk（铁律 21/26：同一语义只写一遍）。
+        int enemyTowerN = 0;          // 已探明敌箭塔数（未探明不计入，见下方保险）
+        int enemyBldSeenN = 0;        // 已探明敌建筑总数（保险用）
+        for (auto &b : info.enemy_buildings) {
+            enemyBldSeenN++;
+            if (b.Type == BUILDING_ARROWTOWER) enemyTowerN++;
+        }
+        // 局部清场（旧判据，保留作回退与迟滞锁用）
+        bool localClear = true;
+        for (auto &e : info.enemy_armies)
+            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_CLEAR_ARMY_R * BL) { localClear = false; break; }
+        if (localClear)
+            for (auto &b : info.enemy_buildings)
+                if (b.Type == BUILDING_ARROWTOWER &&
+                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_CLEAR_TOWER_R * BL) { localClear = false; break; }
+        // 全局闸：敌箭塔数 == 0，且已探明保险通过（确实探过敌基地，而非"什么都没看见"）。
+        //   ⚠ 保险条件用 enemySiegeSN != -1（武器厂坐标已持久记忆）+ 已探明敌建筑数达标：
+        //     否则视野丢失的瞬间 enemy_buildings 会变空 ⇒ 误判"塔全拆" ⇒ 祭司孤身送死。
+        const bool towersAllDown = (enemyTowerN == 0)
+                                && (enemySiegeSN != -1)
+                                && (enemyBldSeenN >= PRIEST_TOWERS_CLEAR_MIN_SEEN);
+        const bool clearOk = PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR ? towersAllDown : localClear;
+
         // ★★★ 2026-09-14 关键修复：武器厂感化【提前到状态/移动闸之前】★★★
-        //   诊断铁证：[LC-DBG] 8 局仅命中 1 次 ⇒ 下方整段实际执行率 <1%（被下面两道闸挡住：
-        //     ① NowState 非 IDLE/WALKING 即 return ② priestMoveCooldown>0 即 return）。
-        //   而【感化是 HumanAction(转换动作)，与 priestMoveCooldown(移动节流) 无关】——
-        //   引擎侧转换冷却由 priest->ConvertCooldown 独立管理。
-        //   旧结构把感化判断放在移动闸之后 ⇒ 祭司只要在跟军(WALKING)+冷却中就永远错过感化窗口
-        //   ⇒ 这才是历次"发现了武器厂却感化不了"的【最终根因】（ce/lc/lj 批次通病）。
-        //   修：感化检查提到最前，仅受 ①武器厂已发现(enemySiegeSN) ②引擎转换冷却 ③已在射程内 约束；
-        //       本路径【不发移动令】（前出仍走下方原逻辑），故不增加祭司暴露风险，只增加"够得着就用"的命中率。
+        //   铁证：[LC-DBG] 8 局仅命中 1 次 ⇒ 下方整段执行率 <1%（被 NowState 闸 + priestMoveCooldown 闸挡住）。
+        //   而【感化是 HumanAction，与 priestMoveCooldown(移动节流) 无关】——引擎侧转换冷却由 ConvertCooldown 管。
+        //   旧结构把感化放在移动闸之后 ⇒ 祭司只要跟军(WALKING)+冷却中就永远错过感化窗口 ⇒ 这才是历次
+        //   "发现了武器厂却感化不了"的【最终根因】。修：感化检查提到最前，仅受 ①已发现 ②转换冷却 ③射程内 约束。
         if (enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
             double sD0 = calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL);
             if (sD0 <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
+                // ★★ 2026-09-16 唯一闸：敌塔未全拆 ⇒ 本帧不起手（不发令 ⇒ 不进入施法 ⇒ 不会被打断重置）
+                if (PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR && !clearOk) {
+                    if (frame % 100 == 0) {
+                        // ★ 2026-09-17：补 alive=（敌活兵数）——用户的场景是"敌军全灭【且】箭塔全拆"，
+                        //   两个条件必须能在日志里分别核对（原格式只有 towers/seen，无法验证"全灭"）。
+                        int aliveE0 = 0;
+                        for (auto &e : info.enemy_armies) if (e.Blood > 0) aliveE0++;
+                        DebugText(QString("[SIEGE-WAIT f=%1] hp=%2 towers=%3 seen=%4 alive=%5 dS=%6")
+                                  .arg(frame).arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
+                                  .arg(enemyTowerN).arg(enemyBldSeenN).arg(aliveE0).arg(sD0 / BL, 0, 'f', 1));
+                    }
+                    return;
+                }
                 // ★★ 2026-09-14 二次修（lk6 铁证）：感化令【绝不能每帧重发】★★
-                //   引擎语义：`HumanAction(祭司, 建筑)` = 设置转换目标，重发会重置施法进度。
-                //   对比：成功 lc3 只发 1 次 → 340 帧后收编；失败 lk6 发 2155 次 → 2150 帧未收编。
-                //   修：仅当 ①引擎当前目标非该武器厂(`WorkObjectSN`) ②不在施法静默窗口 才发令；
-                //       发令后进入 PRIEST_SIEGE_CONVERT_LOCKOUT(400 帧) 静默期，让引擎完成施法。
+                //   引擎语义：HumanAction(祭司, 建筑) = 设置转换目标，重发会重置施法进度。对比：成功 lc3 只发
+                //   1 次 → 340 帧后收编；失败 lk6 发 2155 次 → 2150 帧未收编。修：仅当 ①引擎当前目标非该武器厂
+                //   ②不在施法静默窗口 才发令；发令后进入 PRIEST_SIEGE_CONVERT_LOCKOUT(400 帧) 静默期。
                 if (priest->WorkObjectSN != enemySiegeSN && priestCounterCooldown <= 0) {
                     // 现场量（起手判据与日志共用同一份，避免"同语义写两遍"）
                     double pHp0 = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
@@ -5311,12 +5248,9 @@ void UsrAI::manageCounterAttack() {
         }
 
         // ★★ 2026-09-13 保祭司 · 跨块互斥闸 ★★
-        //   managePriest(379) 与 manageCounterAttack(410) 在同一主循环里先后调用，旧代码两者用
-        //   【两套独立冷却】(priestMoveCooldown / priestCounterCooldown) ⇒ 同一帧可给祭司下发两个
-        //   相反的移动令（本段前出武器厂 vs managePriest 后撤）⇒ 祭司原地抖动、净位移 0。
-        //   实测 sg2 f=42668~42868：落点在固定武器厂点 (2156.85,2055.22) 与平滑后撤点之间每 10 帧
-        //   翻转一次，f=43165 祭司被 Prof.Lu 击杀。
-        //   修：统一到同一闸 —— managePriest 本帧已给祭司发过令，本段整体跳过。
+        //   managePriest 与本函数同在主循环里先后调用，旧代码用【两套独立冷却】⇒ 同一帧可给祭司下发两个
+        //   相反的移动令（前出武器厂 vs 后撤）⇒ 原地抖动、净位移 0（实测 sg2 f=42668~42868 每 10 帧翻转）。
+        //   修：统一到同一闸 —— managePriest 本帧已发过令，本段整体跳过。
         if (priestMoveCooldown > 0) return;
 
         // 有伤兵时把祭司留给 managePriest 治疗，推进下帧再继续
@@ -5326,12 +5260,9 @@ void UsrAI::manageCounterAttack() {
             if (a.Blood > 0 && a.Blood < a.MaxBlood) { anyInjuredAlly = true; break; }
         }
         // ★ 2026-09-07 修（反攻期"复合弓兵在家里乱走"根因链起点）：
-        //   原逻辑【只要队伍里有一个兵掉血就 return】——反攻期掉血是常态 ⇒ 祭司几乎每帧都停，
-        //   永远跟不上大部队 ⇒ 祭司长期滞留后方 ⇒ 敌人摸到祭司 15 格 → priestThreatened 恒真
-        //   ⇒ 护驾令把全军拉回（死锁，见 D0 优先级2 的 30 格闸修复）。
-        //   改为：反攻期只有【重伤(血量<50%)】才停下来治疗，轻度掉血继续跟随大部队推进。
-        //   ⚠ 非反攻期行为完全不变（仍是"有伤就治"）；治疗本身仍由 managePriest 全程负责，
-        //     这里只是决定"祭司要不要继续朝目标移动"。
+        //   原逻辑【只要有一个兵掉血就 return】——反攻期掉血是常态 ⇒ 祭司几乎每帧都停、永远跟不上大部队
+        //   ⇒ 敌人摸到祭司 15 格 → priestThreatened 恒真 → 护驾令把全军拉回（死锁）。
+        //   改为：反攻期只有【重伤(<50%)】才停下治疗；非反攻期行为不变。治疗本身仍由 managePriest 负责。
         if (anyInjuredAlly) {
             bool criticalInjured = false;
             for (auto &a : info.armies) {
@@ -5344,58 +5275,38 @@ void UsrAI::manageCounterAttack() {
 
         double pDist = calDistance(priest->DR, priest->UR, targetDR, targetUR);
         // ★★★ 2026-09-13 用户需求：「敌方军队全灭且箭塔全拆后，祭司应去感化敌方武器厂」★★★
-        //   根因：本段原有两个互斥条件 ——
-        //     ① `siege && pDist < 12*BL` 才能感化武器厂（引擎感化射程 DIS_PRIEST=12）；
-        //     ② 下方 else 分支强制祭司"距反攻目标 ≥ PRIEST_MIN_DIST_TARGET(18) 格"。
-        //   12 < 18 ⇒ 二者**永远不可能同时成立**！实测 k8/cb8 的 [PRST-REAR] dTgt 恒在 22.6~36.4 格，
-        //   祭司被安全距离钉死在后方 ⇒ 感化武器厂 0 次（全部 9 局 352 条转换令**无一条是建筑**）。
-        //   修复：当祭司【自身周边无军事威胁】时，解除 18 格安全距离约束，允许祭司主动前出感化武器厂。
-        //   ★ 判据用【祭司周边 20 格内无敌方军队 + 无敌方箭塔】（局部清场），而非"全局敌全灭"——
-        //     实测 8 局里"全局敌全灭"从未出现的概率极高（7/8 局敌军队一直存在），
-        //     而用户描述的场景本质是"祭司身边已经安全了，就该去干活"。
-        //     ⇒ 局部清场判据既覆盖用户场景，又不会让祭司在有兵有塔时莽撞前出。
-        int enemyMil = 0;
-        for (auto &e : info.enemy_armies) if (e.Blood > 0) enemyMil++;
-        int enemyTowers = 0;
-        for (auto &b : info.enemy_buildings) if (b.Type == BUILDING_ARROWTOWER) enemyTowers++;
-        // 局部清场：祭司周边无敌【活敌军队】、无【箭塔】
+        //   根因：`siege && pDist < 12*BL`(感化条件) 与下方 else 的 `距目标 ≥ PRIEST_MIN_DIST_TARGET(18)`
+        //   互斥——12 < 18 ⇒ 二者**永远不可能同时成立**！实测 k8/cb8 的 [PRST-REAR] dTgt 恒在 22.6~36.4 格，
+        //   祭司被安全距离钉死在后方 ⇒ 感化武器厂 0 次（9 局 352 条转换令无一条是建筑）。
+        //   修：祭司周边无军事威胁时解除 18 格约束。
         // ★ 2026-09-14 半径 20→8/14：旧 20 格 > 感化射程 12 格 ⇒ 结构死锁（祭司永远够不到）。
-        bool localClear = true;
-        for (auto &e : info.enemy_armies)
-            if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_CLEAR_ARMY_R * BL) { localClear = false; break; }
-        if (localClear)
-            for (auto &b : info.enemy_buildings)
-                if (b.Type == BUILDING_ARROWTOWER &&
-                    calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_CLEAR_TOWER_R * BL) { localClear = false; break; }
+        // ★★ 2026-09-16：localClear / clearOk 已在【上方 early 路径之前】统一算好（三处下发点共用一份，
+        //   铁律 21/26：同一语义只写一遍）。此处不再重复计算，直接复用 clearOk。
         // ★★ 2026-09-14 前出感化【迟滞锁】：防 localClear 在半径边界处逐帧翻转 ★★
         //   进入：清场成立 + 武器厂已发现；退出：敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP)。
-        if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR && localClear && enemySiegeSN != -1) {
+        if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR && clearOk && enemySiegeSN != -1) {
             priestSiegeApproach = 1;
         } else if (priestSiegeApproach == 1) {
             bool hardAbort = false;
             for (auto &e : info.enemy_armies)
                 if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_ABORT_R * BL) { hardAbort = true; break; }
             double pBRap = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
-            if (hardAbort || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1) priestSiegeApproach = 0;
+            // ★ 2026-09-16：全局塔闸模式下，迟滞锁退出必须叠加 !clearOk——否则首次满足后永久放行，闸失效。
+            if (hardAbort || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1
+                || (PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR && !clearOk)) priestSiegeApproach = 0;
         }
-        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (localClear || priestSiegeApproach == 1);
-        // ★【2026-09-08 二次修】原"扩到 28 格后 priestEnemy>=0 return"——WRONG-LAYER return 又踩坑:
-        //   反攻期祭司前出后 28 格内**恒有敌** → return 几乎每帧触发 → 祭司段永远跑不到 → 停在 TC 不动。
-        //   改为：只查询,不 return——managePriest 仍独立按"投石车→近战→远程→村民"优先级感化
-        //   (原 12~28 格盲区已扩到 28 格),本段继续走感化武器厂 / HumanMove 推进(与 managePriest 并行)。
-        int priestEnemy = findNearestEnemySN(priest->DR, priest->UR, PRIEST_CONVERT_RANGE * BL);
-        // 注: priestEnemy 暂不直接使用——managePriest 已独立感化,本段只关心武器厂 + 推进
+        bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (clearOk || priestSiegeApproach == 1);
+        // ★ 2026-09-15 清理：原"扩到 28 格后 priestEnemy>=0 return"是 WRONG-LAYER return——反攻期祭司前出后
+        //   28 格内**恒有敌** ⇒ 几乎每帧触发 ⇒ 祭司段永远跑不到 ⇒ 停在 TC 不动。该查询已彻底删除。
+        //   managePriest 仍独立按"投石车→近战→远程→村民"感化；本段只负责感化武器厂 + HumanMove 推进。
 
-        // ★ 2026-09-12 安全距离优先（用户需求"祭司反攻不要太靠前，尽量在安全距离"）：
-        //   旧版把祭司推到 target-5格，且"感化武器厂"(pDist<12)会把祭司长期钉在武器厂旁=太靠前。
-        //   新方案：祭司冲到反攻目标 PRIEST_MIN_DIST_TARGET 格内(太靠前)→本帧强制后撤到【大队后方安全距离】，
-        //   不感化武器厂(避免被钉在前线送命)；只有已在安全范围才允许【被动】感化武器厂(不主动前出)。
+        // ★ 2026-09-12（用户需求"祭司反攻不要太靠前，尽量在安全距离"）：旧版把祭司推到 target-5格，且感化
+        //   武器厂(pDist<12)会把它长期钉在武器厂旁 = 太靠前。新：冲进 PRIEST_MIN_DIST_TARGET 格内即本帧
+        //   强制后撤到大队后方安全距离；只有已在安全范围才允许【被动】感化（不主动前出）。
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
-        // ★ 2026-09-13：敌方已清场(enemyMil==0 && enemyTowers==0)时，安全距离约束失效 ——
-        //   否则 18 格安全 > 12 格感化射程，祭司永远够不到武器厂（这就是"不感化"的根因）。
-        // ★ 2026-09-14 副作用修复：只有【确实存在武器厂目标】才解除后撤距离约束。
-        //   旧写法 `if (allowConvertSiege)` 在未发现武器厂时也会解除 ⇒ 祭司不进后撤分支、
-        //   停在原地挨打（lc8 f=36980 死 / lc4 f=36100 死，两局移动目标长时间恒定=停住不撤）。
+        // ★ 2026-09-13：局部清场成立时安全距离约束失效（否则 18 格安全 > 12 格感化射程 ⇒ 永远够不到）。
+        // ★ 2026-09-14 副作用修复：只有【确实存在武器厂目标】才解除。旧写法 `if (allowConvertSiege)` 在未发现
+        //   武器厂时也会解除 ⇒ 祭司不进后撤分支、停在原地挨打（lc8 f=36980 死 / lc4 f=36100 死）。
         if (allowConvertSiege && enemySiegeSN != -1) priestTooClose = false;
 
         // ★★★ 2026-09-13 用户需求：敌方军队全灭 + 箭塔全拆 → 祭司主动前出感化武器厂 ★★★
@@ -5440,19 +5351,17 @@ void UsrAI::manageCounterAttack() {
             return;   // 清场期：本帧祭司任务就是感化武器厂，不走下方后撤逻辑
         }
 
-        if (siege && pDist < 12 * BL && priest->ConvertCooldown <= 0) {
+        // ★ 2026-09-16：legacy 路径同样受唯一闸约束（三处下发点共用 clearOk，铁律 21/26）。
+        if (siege && pDist < 12 * BL && priest->ConvertCooldown <= 0 && clearOk) {
             // 在感化范围内→感化武器厂！
             HumanAction(priestSN, siege->SN);
             priestCounterCooldown = 60; priestMoveCooldown = 60;
-            DebugText(">> Priest converting Siege Workshop!");
+            DebugText(">> Priest converting Siege Workshop! path=legacy");
         } else if (priestCounterCooldown <= 0 || priestTooClose) {
-            // ★ 2026-09-12 改（用户需求"祭司反攻不要太靠前，尽量在安全距离"）：
-            //   旧版把祭司推到 target(敌基地)-5格(仅沿 DR 轴退5格)——祭司几乎与大军一起冲到敌基地外5格，
-            //   前线一崩、祭司暴露在敌塔/敌兵火力下 = 立即失败。
-            //   新方案：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格；
-            //   且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，
-            //   不单独前出、不冲进敌基地射程。感化武器厂那段(上方 if)保留但改为【被动】：只有祭司随大队推进后
-            //   自然进入感化范围才感化，不再主动前出到武器厂。
+            // ★ 2026-09-12（用户需求"祭司反攻不要太靠前"）：旧版把祭司推到 target(敌基地)-5格(仅沿 DR 轴)，
+            //   几乎与大军一起冲到敌方基地外 5 格，前线一崩就暴露在敌塔/敌兵火力下 = 立即失败。
+            //   新：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格，
+            //   且与反攻目标保持 ≥ PRIEST_MIN_DIST_TARGET 格。上方感化段保留但改为【被动】。
             double tcDR = rallyCtrDR, tcUR = rallyCtrUR;   // ★ 后方锚点 = 集结 TC（己方基地方向），祭司朝此方向退
             double sumDR = 0, sumUR = 0; int nArmy = 0;
             for (auto &a : info.armies) {
