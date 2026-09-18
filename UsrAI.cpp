@@ -4788,6 +4788,11 @@ void UsrAI::manageCounterAttack() {
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
                     kitingRetStuck[a.SN] = 0;   // ★ 2026-09-14：每开一个新撤退窗口都重试"远离目标"档
+                    // ★ 2026-09-18 M4（结构修正）：窗口开始必须同时清除 kitingRetPrevDK，否则「撒不动」判定恒为真。
+                    //   铁证（gi/kb 各 24 局）：新一轮 RETREAT 由「敌贴身 dK<=0.5R/0.9R」触发，而 prevDK 是上一轮窗口末（撒得最远）的 dK
+                    //   ⇒ 本轮首帧 dK 必定 < prevDK+0.3 ⇒ stuck 必堆到 1 ⇒ 第 1 档「远离敌」永远被跳过，只能走第 2 档「朝 TC」（方向盲）。
+                    //   实测对应：stuck=0 的 1739 次 ≈ stage=1 的 1737 次；stage=2 占 76.3%、其 dK 拉开比仅 15%，而 stage=1 为 90%。
+                    kitingRetPrevDK.erase(a.SN);
                                                 //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
                 // ★ 敌近提前撤：SHOOT 内敌逼近到 0.9R(复合弓 6.3 格)就不必等满 30 帧（远程敌 0.5 秒可贴到 5 格）。
@@ -4798,6 +4803,11 @@ void UsrAI::manageCounterAttack() {
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
                     kitingRetStuck[a.SN] = 0;   // ★ 2026-09-14：每开一个新撤退窗口都重试"远离目标"档
+                    // ★ 2026-09-18 M4（结构修正）：窗口开始必须同时清除 kitingRetPrevDK，否则「撒不动」判定恒为真。
+                    //   铁证（gi/kb 各 24 局）：新一轮 RETREAT 由「敌贴身 dK<=0.5R/0.9R」触发，而 prevDK 是上一轮窗口末（撒得最远）的 dK
+                    //   ⇒ 本轮首帧 dK 必定 < prevDK+0.3 ⇒ stuck 必堆到 1 ⇒ 第 1 档「远离敌」永远被跳过，只能走第 2 档「朝 TC」（方向盲）。
+                    //   实测对应：stuck=0 的 1739 次 ≈ stage=1 的 1737 次；stage=2 占 76.3%、其 dK 拉开比仅 15%，而 stage=1 为 90%。
+                    kitingRetPrevDK.erase(a.SN);
                                                 //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
                 bool coolPhase = (frame - phaseFrame >= PHASE_COOLDOWN);
@@ -4807,6 +4817,11 @@ void UsrAI::manageCounterAttack() {
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
                     kitingRetStuck[a.SN] = 0;   // ★ 2026-09-14：每开一个新撤退窗口都重试"远离目标"档
+                    // ★ 2026-09-18 M4（结构修正）：窗口开始必须同时清除 kitingRetPrevDK，否则「撒不动」判定恒为真。
+                    //   铁证（gi/kb 各 24 局）：新一轮 RETREAT 由「敌贴身 dK<=0.5R/0.9R」触发，而 prevDK 是上一轮窗口末（撒得最远）的 dK
+                    //   ⇒ 本轮首帧 dK 必定 < prevDK+0.3 ⇒ stuck 必堆到 1 ⇒ 第 1 档「远离敌」永远被跳过，只能走第 2 档「朝 TC」（方向盲）。
+                    //   实测对应：stuck=0 的 1739 次 ≈ stage=1 的 1737 次；stage=2 占 76.3%、其 dK 拉开比仅 15%，而 stage=1 为 90%。
+                    kitingRetPrevDK.erase(a.SN);
                                                 //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
                 //   RETREAT 退出条件【双路径】（用户原话"直到敌出射程外再攻击"）：
