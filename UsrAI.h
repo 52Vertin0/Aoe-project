@@ -188,6 +188,11 @@ private:
     std::map<int,int> armyReturnTry;      // 单位SN → 多半径×多角度螺旋重试计数(0~23)
     std::map<int,double> armyIssueDR, armyIssueUR; // 上次下发回TC移动指令时的位置（卡死检测）
     std::map<int,int> armyIssueFrame;     // 上次下发回TC移动指令的帧号
+    // ★ 2026-09-17 待命指令去重（用户：「避免刷屏」+「停驻集结时不要站在同一点」）：
+    //   原 holdNearBase 无任何节流 ⇒ 单位在向落点行军期间（WALKING）每帧重发同一条 HumanMove，
+    //   实测单局重复日志 577~1349 条、且同档位多单位落点完全重合。此处记录上次下发的落点与帧号。
+    std::map<int,double> armyHoldGoalDR, armyHoldGoalUR;  // 上次下发的待命落点（判"是否同一目标"）
+    std::map<int,int> armyHoldCmdFrame;                   // 上次下发待命指令的帧号（重发节流窗口）
     // ★ 村民撤退TC旁的绕路状态（与军队同理：TC建筑中心不可达→改环上可达空地，防刷屏卡死）★
     std::map<int,int> farmerReturnTry;    // 村民SN → 螺旋重试计数
     std::map<int,double> farmerIssueDR, farmerIssueUR; // 上次下发撤退指令位置（卡死检测）
@@ -234,6 +239,13 @@ private:
     //   解法＝目标粘滞 + 攻击令节流：沿用旧目标，仅在"目标消失/跑出范围/新目标明显更近"时才切换。
     std::map<int,int> kitingTargetSN;   // 复合弓 SN → 粘滞目标 SN（反攻拉扯的目标锚）
     std::map<int,int> kitingAtkFrame;   // 复合弓 SN → 上次下发攻击令的帧号（节流，防每帧重发）
+    // ★ 2026-09-15「复合弓兵不要拉扯箭塔」：SN → 最近一次因"射程 < 箭塔射程"而放弃的敌塔 SN。
+    //   仅用于日志去重（同一塔只打一条 [TOWER-SKIP]），不参与任何决策。
+    std::map<int,int> towerSkipSN;
+    // ★ 2026-09-20 方案 B【Tier-2 推进偏置】：SN → 当前正被用作"落点偏置目标"的敌塔 SN。
+    //   仅用于日志去重（同一兵对同一塔只打一条 [TOWER-APPROACH]），不参与任何决策；
+    //   决策依据每帧由 findNearestEnemyTower(…, TOWER_APPROACH_RANGE*BL) 现算，绝不读这张表。
+    std::map<int,int> towerBiasSN;
     // 投石车 standoff/拉扯（独立表，不与弓兵共用，避免下游串味）
     std::map<int,int> catTargetSN;      // 投石车 SN → 粘滞目标 SN
     std::map<int,int> catTargetFrame;   // 投石车 SN → 上次重新评估目标的帧号（每 30 帧一次）
