@@ -113,18 +113,6 @@ ins UsrIns;
 //   原 MAX_STOCK=2 下多群瞪羚（典型 3~4 群）只能有 2 群被覆盖、其余猎人空跑回最近仓库。
 #define MAX_STOCK 4             // 仓库上限：每群覆盖 1 座 + TC 旁首仓 1 座 + 远距覆盖 1~2 座 = 4 座
 //   ★ 实测补（2026-09-04）：此前缺此上限，旧"第二仓库"段每帧重发令 + 不传坐标 ⇒ 贴 TC 多建 3 座仓库。
-// ★★★ 2026-09-20 新增（用户报"同一个瞪羚群附近会建 2 座仓库"）：仓库令【落地静默期】。
-//   一次仓库建造令下发后，在 STOCK_ORDER_SETTLE 帧内、且距上次仓库令落点 ≤20 格的远距瞪羚整批判为"非远距"。
-//   根因：`tryBuild` 成功 ≠ 仓库出现在 info.buildings —— 村民还在路上时该点连地基都没有；
-//     而覆盖判据（clusterCovered / isFarGazelle）只看 info.buildings ⇒ 刚下发的仓库对判据【不可见】；
-//     tryBuild 又只设 buildCooldown=5 ⇒ 5 帧后就对【同一个群】再下一次令。
-//   实测（700 局）：相邻两条仓库令间隔恰为 5 帧的有 166 次，其中 85 次落在同一个群（块距≤9）；
-//     585 个多仓局里 45.6% 出现"同群/同点"重复；每局 3 条令（= 预置首仓1 + 连发3 = MAX_STOCK 4）占 66.6%。
-//   首版只用 600 帧纯时间窗，验证批实测残留重复全部卡在 +601 帧（= 远距群村民走到才下地基，>600 帧仍不可见）
-//     ⇒ 改为【按落点 + 长窗口】：窗口内只挡"距上次落点≤20格"的群（精确），且窗口拉长到 3000 帧(=120游戏秒)
-//     覆盖最远村民路程；窗口期满后若仓库始终没落地(静默失败)则放行重发（这本就是需要的，不构成死锁）。
-//   落点落地后即由"在建仓库也算覆盖锚点"(isFarGazelle/clusterCovered 去掉 Percent==100) 判据接管。
-#define STOCK_ORDER_SETTLE 3000
 // ★ 第二仓库（远距瞪羚群仓库）的最少瞪羚数门槛（2026-09-07 用户需求"没瞪羚就跳过建造第二仓库"）。
 //   判定用"距 TC>20 且 距所有现有 Stock>20"的远距瞪羚数量；低于此数则【完全跳过】（既不建、也不让 needSecondStock 阻塞市场/靶场）。
 //   默认 2：为 1 只离群瞪羚花 150 木 + 村民长途跋涉不划算。⚠ 改 1 = 有 1 只就建；改 3+ = 必须成群。
@@ -158,7 +146,6 @@ ins UsrIns;
                                   //   让 manageBuildings 另择新址重建。修"地基永久卡 0% 无人施工"。
 #define PENDING_BUILD_TIMEOUT 300 // 建造指令结果迟迟不回的超时(帧)：超时则清掉占位，防止永久虚占名额
 #define BUILD_GAP 1              // 建筑间距：候选建筑footprint外扩1格内不得有其他建筑(含敌我)，避免建筑成墙堵死路
-#define RES_BUILD_GAP 2          // 资源(树/矿)间距：匹配 forestGrid 把树±2 标不可走，防止树/矿旁址被引擎 ret=4 拒
 #define MELEE_OVERFLOW_FOOD 150      // 后期/反攻"爆近战"食物溢出阈值：食物≥此值才大规模造近战兵(棍棒/方阵)
 // ★★★ 2026-09-13 方阵兵编制比例（用户要求"放宽方阵兵数量"，选定 3:4 温和档）★★★
 //   上限公式：hop < HOPLITE_RATIO_NUM/DEN × comp + FLOOR（旧版硬编码 (comp+4)/2 ⇒ 长期趋近 1:2；新版 3/4×comp+2 ⇒ 趋近 3:4）
@@ -300,12 +287,21 @@ ins UsrIns;
 #define MIN_GOLD_WORKERS 1      // 至少1人挖金！复合弓兵/阔剑兵/方阵兵/投石车/后勤科技真扣黄金
 // ★ 资源停采上限（2026-09-01）：存量达到即停止派/补采该资源，人力转向其他资源
 #define STONE_CAP_STOP 300   // 石头≥300 不再采石（2026-09-13 用户需求「再多建一座箭塔」：3座箭塔=开局150石建第1座+额外采300石建第2~3座，故上限300）
-// ★ 2026-09-03 用户需求："木头维持150左右、优先食物"。木头是"够用就行"的资源：
-//   日常水位 150（够房屋30/谷仓120/兵营125/靶场150/马厩150/市场150/农场75），省下人力全投食物。
-//   但后期有高木头门槛：反攻多靶场(WAVE3_TIME后 Wood≥230)、学院(反攻期 Wood≥210)，
-//   故 WAVE3_TIME 后临时放宽到 250，避免这些关键建筑被 150 水位卡死、永远建不了。
-#define WOOD_CAP_STOP  220   // 木头≥220 日常停采（2026-09-12 用户需求"提高上限"150→220：多存 70 木覆盖多靶场+学院同时建）
-#define WOOD_CAP_STOP_LATE 320 // 反攻准备期(WAVE3_TIME后)木头水位（2026-09-12 250→320：反攻期 5~6 靶场并发 + 学院 + 马厩 80~250 木余量）
+// ★ 木头水位沿革（当前值见下方两个宏）：
+//   2026-09-03 用户需求"木头维持150左右、优先食物"⇒ 日常 150（够房屋30/谷仓120/兵营125/靶场150/马厩150/市场150/农场75），省人力投食物。
+//   2026-09-12 150→220（多存 70 木覆盖多靶场+学院同时建）。
+//   2026-09-21 220→400（用户需求，见下）。
+//   ⚠ 木头水位不是"越低越省人力"：水位同时是【停采门禁】，水位越低 ⇒ 死区（四门齐关）来得越早。
+// ★ 2026-09-21 用户需求「提高木头上限为400」：日常 220→400、反攻期 320→400（两档并档）。
+//   动机（实测，见 aoe3_idle_deadzone_20260921.html）：9~13 分钟出现「四道采集门禁同时关闭」的死区 —
+//     木≥220 锁死 / 金（未升铜器 goldTarget 恒 0）/ 石（3 塔满⇒永久停采）/ 食物（浆果3+瞪羚2+农场1 全满员），
+//     而兜底分支 `if (tree && !woodStop)` 被同一个木闸反杀 ⇒ 村民原地 IDLE（峰值 15/22 = 68%）。
+//   抬高木闸的直接效果：木头继续囤到 400 ⇒ 靶场150/学院180/马厩150 这类大额木耗更易被一次性付清，
+//     木耗越快 ⇒ 木位越快跌破上限 ⇒ 死区窗口越短（此为正相关的预期机制，需实测确认，见验证批）。
+//   ⚠ 两档必须同时抬：`woodStop` 用三目取 LATE 档（frame>=WAVE3_TIME），若只抬日常档，
+//     14 分时上限反而从 400 掉回 320 ⇒ 木位落在 320~400 就会出现新的"到点即回撤"扰动。
+#define WOOD_CAP_STOP  400   // 木头≥400 日常停采（2026-09-12 150→220；2026-09-21 用户需求 220→400）
+#define WOOD_CAP_STOP_LATE 400 // 反攻准备期(WAVE3_TIME后)木头水位（2026-09-12 250→320；2026-09-21 320→400 与日常并档）
 #define WOOD_KEEP_MIN  2     // 木头达上限回撤时保留的伐木工人数
 #define GOLD_CAP_STOP  1000  // ★ 黄金≥1000 不再派金工（2026-09-12 800→1000：一场反攻 20 CB + 10 方阵 + 1 投石车 ≈ 800~900 黄金花完，留 100 余量）
                                 //   ★【2026-09-11 3.0.7f 改】每矿堆 200→400，黄金总量上限同步翻倍(400→800)。
@@ -1618,7 +1614,7 @@ void UsrAI::manageBuildings() {
     auto tryBuildMarket = [&](const char *tag) {
         if (!builtThisFrame &&
             countBuildingsExisting(BUILDING_MARKET) == 0 &&
-            countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= BUILD_MARKET_WOOD) {
+            countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {
             builtThisFrame = tryBuild(BUILDING_MARKET, 3);
             if (builtThisFrame)
                 DebugText(QString("[MARKET f=%1] %2 wood=%3").arg(frame).arg(tag).arg((int)info.Wood));
@@ -1638,7 +1634,7 @@ void UsrAI::manageBuildings() {
         }
     };
     auto tryBuildTower = [&]() {
-        if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME && info.Stone >= BUILD_ARROWTOWER_STONE) {
+        if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME && info.Stone >= 150) {
             builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
             if (builtThisFrame) towerCount++;
         }
@@ -1725,10 +1721,8 @@ void UsrAI::manageBuildings() {
                 // ★ 2026-09-15 收口：同一"本簇是否已被现成仓库覆盖"判据原先在本块内写了两遍
                 //   （建造循环 1 次 + allCovered 判定 1 次）——判据写两遍即等于只剩一遍生效。
                 auto clusterCovered = [&](double cdr, double cur) {
-                    // ★ 2026-09-20：去掉 `Percent == 100`（原只看【已完工】仓库）—— 在建/在途的仓库同样算覆盖。
-                    //   否则刚下发的仓库在建成前对覆盖判据不可见 ⇒ 同一个群被反复下令（实测 45.6% 的多仓局出现同群重复）。
                     for (auto &b : info.buildings)
-                        if (b.Type == BUILDING_STOCK &&
+                        if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
                             calDistance(cdr, cur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
                                 < GAZELLE_HUNT_RANGE * gBL)
                             return true;
@@ -1873,32 +1867,11 @@ void UsrAI::manageBuildings() {
 //     没有"建不建得起"，木材卡在中间区间时市场会被永久冻结、靶场冻到 14 分钟。   ⚠ gazelleAlive==0 ⇒ 恒 false，让位闸同步失效，否则会被一个永远建不出来的仓库饿死。
 // ★ 2026-09-15 收口："远距瞪羚"判据（距 TC>20 且 距所有已建成仓库>20）原先在【预判定】与【实际建造】两处各写一遍
 //   —— 两处口径必须完全一致，否则会出现"预判定说该建、建造块却不建"的空转。
-// ★ 2026-09-20 修正（用户报"同一个瞪羚群附近会建 2 座仓库"）：上述判据原文是"距所有【已建成 Percent==100】
-//   仓库>20"，而 tryBuild 成功 → 仓库出现在 info.buildings 之间存在一段窗口（村民在路上时【连地基都没有】）
-//   ⇒ 刚下发的那座对判据彻底不可见 ⇒ buildCooldown(5 帧) 一过就对【同一个群】重复下令，直到撞上
-//   MAX_STOCK(4) 或木材闸(150) 才停；且每次都换一个空闲村民 ⇒ 落点被 tryBuild 偏移表(±3/±6)与
-//   findBuildSite 兜底推到旁边 1~9 格 = 肉眼看到的"同一群旁边并排 2~3 座仓库"。
-//   现改为①锚点不再要求 Percent==100（在建也算）②上次仓库令后 STOCK_ORDER_SETTLE 帧内整批判为"非远距"。
         auto isFarGazelle = [&](const tagResource &r, double tcDRx, double tcURx, double blx) -> bool {
             if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) return false;
-            // ★ 2026-09-20 防连发（本判据是唯一真源：让位闸 needSecondStock 与下方建造块共用）：
-            //   上一次仓库令下发后 STOCK_ORDER_SETTLE 帧内，距其【落点 ≤20 格】的群整批判为"非远距" ⇒
-            //   不会在同一群重复下单。理由见常量定义处——tryBuild 成功 ≠ 仓库落地（村民在路上时
-            //   info.buildings 里没有该地基）⇒ 不设此闸就会在 buildCooldown(5 帧) 后对同一个群重复下令。
-            //   用"落点+长窗口"而非"纯时间窗"：远距群村民走到才下地基(>600帧仍不可见)，纯时间窗会在
-            //   地基落地前失效（验证批实测残留重复全卡在 +601 帧）；落点落地后由下方"在建也算覆盖"判据接管。
-            { auto itS = lastBuildIssueFrame.find(BUILDING_STOCK);
-              if (itS != lastBuildIssueFrame.end() && frame - itS->second <= STOCK_ORDER_SETTLE
-                  && lastStockOrderDR >= 0) {
-                double rBlkDR = r.DR / blx, rBlkUR = r.UR / blx;
-                if (calDistance(rBlkDR, rBlkUR, (double)lastStockOrderDR, (double)lastStockOrderUR) < 20.0)
-                    return false;   // 距上次仓库落点 ≤20 格 ⇒ 同一群，整批不过度下单
-                // 否则（不同群）落点窗口内不挡，允许正常建第二座远距仓
-              } }
             if (calDistance(tcDRx, tcURx, r.DR, r.UR) < 20 * blx) return false;
-            // ★ 2026-09-20：去掉 `Percent == 100` ⇒ 在建仓库也算覆盖锚点，否则首座未完工时可再建第二座。
             for (auto &b : info.buildings)
-                if (b.Type == BUILDING_STOCK) {
+                if (b.Type == BUILDING_STOCK && b.Percent == 100) {
                     double gDR = (b.BlockDR + 1) * blx, gUR = (b.BlockUR + 1) * blx;
                     if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * blx) return false;
                 }
@@ -1927,20 +1900,14 @@ void UsrAI::manageBuildings() {
 
         // ★ 2026-09-13 闸门可观测性（新增，用于实证"市场/靶场是否被让位闸饿死"）：
         //   每 300 帧打印一次让位闸全量状态。needStock=1 且 market/range 长期=0 ⇒ 就是被饿死。
-        if (frame % 300 == 0) {
-            // ★ 2026-09-20：补 settle 闸可观测性（铁律 53：判据的输入集合规模必须可打印，否则"0 输出"分不清
-            //   没触发 / 没候选 / 被过滤）。距上次仓库令 <= STOCK_ORDER_SETTLE 时，远距瞪羚会被本闸整批过滤。
-            auto itS = lastBuildIssueFrame.find(BUILDING_STOCK);
-            int sinceStockOrder = (itS != lastBuildIssueFrame.end()) ? (frame - itS->second) : -1;
-            DebugText(QString("[GATE f=%1] needStock=%2 gazAlive=%3 stock=%4 wood=%5 | market=%6 range=%7 granary=%8 | snGB=%9 | 距上次仓库令=%10帧 settle闸=%11(skip<阈)")
+        if (frame % 300 == 0)
+            DebugText(QString("[GATE f=%1] needStock=%2 gazAlive=%3 stock=%4 wood=%5 | market=%6 range=%7 granary=%8 | snGB=%9")
                       .arg(frame).arg(needSecondStock ? 1 : 0).arg(gazelleAlive)
                       .arg(countBuildingsExisting(BUILDING_STOCK)).arg((int)info.Wood)
                       .arg(countBuildingsExisting(BUILDING_MARKET))
                       .arg(countBuildingsExisting(BUILDING_RANGE))
                       .arg(countBuildingsExisting(BUILDING_GRANARY))
-                      .arg(storageNearGazelleBuilt)
-                      .arg(sinceStockOrder).arg(STOCK_ORDER_SETTLE));
-        }
+                      .arg(storageNearGazelleBuilt));
 
         // ★ 第二仓库：为"距现有 Stock 均 >20 格的远距瞪羚群"建一座，落在群中心。
         //   ⚠ 三要素缺一不可（旧版缺陷导致贴 TC 多建 3 座）：① MAX_STOCK 闸；② 不能每帧重发令
@@ -2825,7 +2792,7 @@ void UsrAI::assignIdleSimple() {
         }
     }
 
-    // ========== ★ 资源达上限回撤：把多余伐木/采石/采金工转移到缺口资源 ========== 木头≥400 / 石头≥120 / 黄金过剩 时，已派工人应停采，人力转去"当前最缺的资源"：
+    // ========== ★ 资源达上限回撤：把多余伐木/采石/采金工转移到缺口资源 ========== 木头≥WOOD_CAP_STOP / 石头≥STONE_CAP_STOP / 黄金过剩 时，已派工人应停采，人力转去"当前最缺的资源"：
     //   缺木(<120) 时直接去伐木，否则先食物、食物接不住再伐木（不再转黄金，黄金正是过剩方）。
     // 节流：每 10 帧最多撤 1 人（防震荡）；伐木保留 WOOD_KEEP_MIN 保底，采石全撤，采金保留 MIN_GOLD_WORKERS。
     // ★★★ 2026-09-17 修「采金人数偏少」：撤销 "woodOverTarget" 入口闸 ★★★
@@ -5438,22 +5405,10 @@ tagResource* UsrAI::findBestWoodTree(double dr, double ur) {
     double bestScore = 1e12;
     tagResource* nearestAnchorTree = nullptr;  // 兜底：全池里离锚点最近的树（不受硬闸/满员限制）
     double bestAnchorDist = 1e12;
-    int enclosedSkipped = 0;   // ★ 诊断：被"围死预检"跳过的树数（验证批确认预检生效）
-
-    // ★ 2026-09-21 可达性预检（复用建筑选址的 isSiteReachable）：被建筑/地形围死的树村民永远走不到=卡死。
-    //   实证（714 局）：2321/2321 例寻路卡死全在游戏后期（基地成形、树被围墙/建筑围死），
-    //     且 330 例同局同棵树被反复卡死（拉黑 15000 帧到期后重新被派）。在此预检比 detectStuckGatherers
-    //     的 1500 帧超时拉黑更早更彻底——村民从一开始就不被派去围死的树，既消除 60s 干站空窗，
-    //     也消除"拉黑到期→再派→再卡"的循环。无地图数据时 isSiteReachable 放行，不会误杀。
-    auto treeReachable = [&](const tagResource &rr) -> bool {
-        int bdr = (int)(rr.DR / BL), bur = (int)(rr.UR / BL);
-        return isSiteReachable(bdr, bur, 1);
-    };
 
     for (auto &r : info.resources) {
         if (r.Type != RESOURCE_TREE || r.Cnt <= 0) continue;
         if (stuckResourceUntil.count(r.SN)) continue;      // 不可达的树，跳过
-        if (!treeReachable(r)) { enclosedSkipped++; continue; }  // ★ 围死的树：村民走不到，直接跳过（避免卡死+反复重派）
 
         // ---- 树 → 最近已建成锚点(STOCK/CENTER) ----
         double anchorD2 = 1e12;
@@ -5476,9 +5431,6 @@ tagResource* UsrAI::findBestWoodTree(double dr, double ur) {
 
         // 兜底：全池里离锚点最近【且未满员】的树（不受硬闸限制，避免跑远树）。   ★ 2026-09-08：原实现不判满员——硬闸内树全满员时会退到这棵树，反而挤成 2 人，
         //     与"每棵树最多 1 人"冲突。故此处同步遵守人数上限。
-        // ★ 兜底树【不要求可达性】：宁可退回一棵可能被围死的树（由 detectStuckGatherers 兜底拉黑），
-        //   也绝不让"整局找不到树"→ 木经济崩盘。isSiteReachable 对森林内树有假阳性（周围非草地格被判障碍），
-        //   故兜底放宽为可达性可选，只在主选路径上做围死预检。
         if (!treeFull && anchorD < bestAnchorDist) { bestAnchorDist = anchorD; nearestAnchorTree = &r; }
 
         if (anchorD > maxAnchor) continue;   // ★ 硬闸：离仓库/TC 太远的树不派工
@@ -5508,9 +5460,9 @@ tagResource* UsrAI::findBestWoodTree(double dr, double ur) {
         }
         double ad = (bd2 < 1e12) ? (std::sqrt(bd2) / BL) : -1.0;
         double vd = std::sqrt((best->DR - dr) * (best->DR - dr) + (best->UR - ur) * (best->UR - ur)) / BL;
-        DebugText(QString("WOOD-TREE | sn=%1 anchor=%2BL villager=%3BL cnt=%4 (maxAnchor=%5BL) | enclosedSkipped=%6")
+        DebugText(QString("WOOD-TREE | sn=%1 anchor=%2BL villager=%3BL cnt=%4 (maxAnchor=%5BL)")
                   .arg(best->SN).arg(ad, 0, 'f', 1).arg(vd, 0, 'f', 1)
-                  .arg(best->Cnt).arg(WOOD_MAX_ANCHOR_DIST).arg(enclosedSkipped));
+                  .arg(best->Cnt).arg(WOOD_MAX_ANCHOR_DIST));
     }
     return best;
 }
@@ -5628,37 +5580,31 @@ bool UsrAI::isPositionFree(int blockDR, int blockUR, int size) {
         }
     }
 
-    // ★ 建筑间距检查（对称外扩）：候选 footprint 与既有建筑都外扩 BUILD_GAP 后判相交。
-    //   旧实现只外扩候选、用既有 EXACT footprint 去撞 ⇒ 漏掉"候选与既有仅隔 1 格"的址，
-    //   引擎按双方碰撞外扩判重叠 → 以 ret=4 OVERLAP 拒址 → 反复下发失败"一直待建"（§8）。
-    //   对称外扩 = 候选 + 既有各外扩 BUILD_GAP，等价于要求两建筑中心间距 ≥ size+2*BUILD_GAP。
+    // ★ 建筑间距检查：候选 footprint 外扩 BUILD_GAP 格内不得与任何建筑相交(含边界)，
+    //   否则建筑会紧贴成墙、堵死村民/士兵的通行路线。外扩 1 格 = 建筑之间至少留 1 格通道。
     for (auto &b : info.buildings) {
         int bSize = (b.Type == BUILDING_HOME || b.Type == BUILDING_ARROWTOWER) ? 2 : 3;
-        int c0 = blockDR - BUILD_GAP, c1 = blockDR + size + BUILD_GAP;
-        int c2 = blockUR - BUILD_GAP, c3 = blockUR + size + BUILD_GAP;
-        int e0 = b.BlockDR - BUILD_GAP, e1 = b.BlockDR + bSize + BUILD_GAP;
-        int e2 = b.BlockUR - BUILD_GAP, e3 = b.BlockUR + bSize + BUILD_GAP;
-        if (c0 < e1 && c1 > e0 && c2 < e3 && c3 > e2) return false;
+        for (int i = blockDR - BUILD_GAP; i < blockDR + size + BUILD_GAP; ++i)
+            for (int j = blockUR - BUILD_GAP; j < blockUR + size + BUILD_GAP; ++j)
+                if (i >= b.BlockDR && i < b.BlockDR + bSize &&
+                    j >= b.BlockUR && j < b.BlockUR + bSize) return false;
     }
 
-    // 敌方建筑间距检查（已探索区域内的敌方建筑同样阻挡建造，同样对称外扩）
+    // 敌方建筑间距检查（已探索区域内的敌方建筑同样阻挡建造）
     for (auto &b : info.enemy_buildings) {
         int bSize = (b.Type == BUILDING_HOME || b.Type == BUILDING_ARROWTOWER) ? 2 : 3;
-        int c0 = blockDR - BUILD_GAP, c1 = blockDR + size + BUILD_GAP;
-        int c2 = blockUR - BUILD_GAP, c3 = blockUR + size + BUILD_GAP;
-        int e0 = b.BlockDR - BUILD_GAP, e1 = b.BlockDR + bSize + BUILD_GAP;
-        int e2 = b.BlockUR - BUILD_GAP, e3 = b.BlockUR + bSize + BUILD_GAP;
-        if (c0 < e1 && c1 > e0 && c2 < e3 && c3 > e2) return false;
+        for (int i = blockDR - BUILD_GAP; i < blockDR + size + BUILD_GAP; ++i)
+            for (int j = blockUR - BUILD_GAP; j < blockUR + size + BUILD_GAP; ++j)
+                if (i >= b.BlockDR && i < b.BlockDR + bSize &&
+                    j >= b.BlockUR && j < b.BlockUR + bSize) return false;
     }
 
-    // 资源重叠检查（对称外扩）：树/矿也外扩 RES_BUILD_GAP，候选 footprint 外扩 BUILD_GAP 后
-    //   与其相交即不可建。旧实现只判"资源正好压在 footprint 上" ⇒ 树/矿旁的址被放过、被引擎 ret=4 拒。
-    //   RES_BUILD_GAP=2 匹配 forestGrid 把树±2 标不可走的引擎语义。
+    // 资源重叠检查
     for (auto &r : info.resources) {
         if (r.Cnt <= 0) continue;
-        int c0 = blockDR - BUILD_GAP, c1 = blockDR + size + BUILD_GAP;
-        int c2 = blockUR - BUILD_GAP, c3 = blockUR + size + BUILD_GAP;
-        if (c0 <= r.BlockDR && r.BlockDR < c1 && c2 <= r.BlockUR && r.BlockUR < c3) return false;
+        for (int i = blockDR; i < blockDR + size; ++i)
+            for (int j = blockUR; j < blockUR + size; ++j)
+                if (i == r.BlockDR && j == r.BlockUR) return false;
     }
 
     // ★ 避开狮子周围区域：狮子会攻击靠近的建筑/村民，建在狮子附近会导致建好即被骚扰、
@@ -6263,7 +6209,6 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     pendingBuildIns[buildInsId] = {f->SN, buildingType};
     pendingBuildInsFrame[buildInsId] = frame;
     lastBuildIssueFrame[buildingType] = frame;
-    if (buildingType == BUILDING_STOCK) { lastStockOrderDR = x; lastStockOrderUR = y; }  // ★ 2026-09-20 记录落点，供 isFarGazelle 按落点排除同群重复下单
 
     // 记录尝试过的位置，防止反复在同一位置建造失败
     int key = x * 1000 + y;

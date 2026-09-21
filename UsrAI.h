@@ -22,7 +22,6 @@ public:
               buildCooldown(0), techCooldown(0), trainCooldown(0),
               debugTimer(0), farmTarget(0),
               storageNearGazelleBuilt(0),
-              lastStockOrderDR(-1), lastStockOrderUR(-1),
               priestMoveCooldown(0),
               priestCounterCooldown(0),
               wheelResearched(false), broadswordResearched(false),
@@ -130,7 +129,6 @@ private:
     std::map<int,int> depositStartFrame;
     int farmTarget;          // 目标农场数量
     int storageNearGazelleBuilt; // 瞪羚群中心仓库是否已建（0=未建，每局仅建1座）
-    int lastStockOrderDR, lastStockOrderUR; // ★ 最近一次仓库令的【落点】(块坐标)，用于"已下单未落地"窗口内按落点排除同群重复下单
 
     // 祭司移动防抖（防止HumanMove死循环）
     int priestMoveCooldown;
@@ -244,6 +242,9 @@ private:
     // ★ 2026-09-15「复合弓兵不要拉扯箭塔」：SN → 最近一次因"射程 < 箭塔射程"而放弃的敌塔 SN。
     //   仅用于日志去重（同一塔只打一条 [TOWER-SKIP]），不参与任何决策。
     std::map<int,int> towerSkipSN;
+    // ★ 2026-09-21「复合弓兵不要拉扯战车弓兵和投石车」：SN → 最近一次因"射程不占优"而放弃拉扯的【敌方兵种】。
+    //   仅用于 [KIT-NO] 日志去重（同一兵同兵种只打一条），不参与任何决策。
+    std::map<int,int> kiteSkipSort;
     // ★ 2026-09-20 方案 B【Tier-2 推进偏置】：SN → 当前正被用作"落点偏置目标"的敌塔 SN。
     //   仅用于日志去重（同一兵对同一塔只打一条 [TOWER-APPROACH]），不参与任何决策；
     //   决策依据每帧由 findNearestEnemyTower(…, TOWER_APPROACH_RANGE*BL) 现算，绝不读这张表。
