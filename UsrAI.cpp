@@ -5437,10 +5437,22 @@ tagResource* UsrAI::findBestWoodTree(double dr, double ur) {
     double bestScore = 1e12;
     tagResource* nearestAnchorTree = nullptr;  // 兜底：全池里离锚点最近的树（不受硬闸/满员限制）
     double bestAnchorDist = 1e12;
+    int enclosedSkipped = 0;   // ★ 诊断：被"围死预检"跳过的树数（验证批确认预检生效）
+
+    // ★ 2026-09-21 可达性预检（复用建筑选址的 isSiteReachable）：被建筑/地形围死的树村民永远走不到=卡死。
+    //   实证（714 局）：2321/2321 例寻路卡死全在游戏后期（基地成形、树被围墙/建筑围死），
+    //     且 330 例同局同棵树被反复卡死（拉黑 15000 帧到期后重新被派）。在此预检比 detectStuckGatherers
+    //     的 1500 帧超时拉黑更早更彻底——村民从一开始就不被派去围死的树，既消除 60s 干站空窗，
+    //     也消除"拉黑到期→再派→再卡"的循环。无地图数据时 isSiteReachable 放行，不会误杀。
+    auto treeReachable = [&](const tagResource &rr) -> bool {
+        int bdr = (int)(rr.DR / BL), bur = (int)(rr.UR / BL);
+        return isSiteReachable(bdr, bur, 1);
+    };
 
     for (auto &r : info.resources) {
         if (r.Type != RESOURCE_TREE || r.Cnt <= 0) continue;
         if (stuckResourceUntil.count(r.SN)) continue;      // 不可达的树，跳过
+        if (!treeReachable(r)) { enclosedSkipped++; continue; }  // ★ 围死的树：村民走不到，直接跳过（避免卡死+反复重派）
 
         // ---- 树 → 最近已建成锚点(STOCK/CENTER) ----
         double anchorD2 = 1e12;
@@ -5463,6 +5475,9 @@ tagResource* UsrAI::findBestWoodTree(double dr, double ur) {
 
         // 兜底：全池里离锚点最近【且未满员】的树（不受硬闸限制，避免跑远树）。   ★ 2026-09-08：原实现不判满员——硬闸内树全满员时会退到这棵树，反而挤成 2 人，
         //     与"每棵树最多 1 人"冲突。故此处同步遵守人数上限。
+        // ★ 兜底树【不要求可达性】：宁可退回一棵可能被围死的树（由 detectStuckGatherers 兜底拉黑），
+        //   也绝不让"整局找不到树"→ 木经济崩盘。isSiteReachable 对森林内树有假阳性（周围非草地格被判障碍），
+        //   故兜底放宽为可达性可选，只在主选路径上做围死预检。
         if (!treeFull && anchorD < bestAnchorDist) { bestAnchorDist = anchorD; nearestAnchorTree = &r; }
 
         if (anchorD > maxAnchor) continue;   // ★ 硬闸：离仓库/TC 太远的树不派工
@@ -5492,9 +5507,9 @@ tagResource* UsrAI::findBestWoodTree(double dr, double ur) {
         }
         double ad = (bd2 < 1e12) ? (std::sqrt(bd2) / BL) : -1.0;
         double vd = std::sqrt((best->DR - dr) * (best->DR - dr) + (best->UR - ur) * (best->UR - ur)) / BL;
-        DebugText(QString("WOOD-TREE | sn=%1 anchor=%2BL villager=%3BL cnt=%4 (maxAnchor=%5BL)")
+        DebugText(QString("WOOD-TREE | sn=%1 anchor=%2BL villager=%3BL cnt=%4 (maxAnchor=%5BL) | enclosedSkipped=%6")
                   .arg(best->SN).arg(ad, 0, 'f', 1).arg(vd, 0, 'f', 1)
-                  .arg(best->Cnt).arg(WOOD_MAX_ANCHOR_DIST));
+                  .arg(best->Cnt).arg(WOOD_MAX_ANCHOR_DIST).arg(enclosedSkipped));
     }
     return best;
 }
