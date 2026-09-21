@@ -113,6 +113,18 @@ ins UsrIns;
 //   原 MAX_STOCK=2 下多群瞪羚（典型 3~4 群）只能有 2 群被覆盖、其余猎人空跑回最近仓库。
 #define MAX_STOCK 4             // 仓库上限：每群覆盖 1 座 + TC 旁首仓 1 座 + 远距覆盖 1~2 座 = 4 座
 //   ★ 实测补（2026-09-04）：此前缺此上限，旧"第二仓库"段每帧重发令 + 不传坐标 ⇒ 贴 TC 多建 3 座仓库。
+// ★★★ 2026-09-20 新增（用户报"同一个瞪羚群附近会建 2 座仓库"）：仓库令【落地静默期】。
+//   一次仓库建造令下发后，在 STOCK_ORDER_SETTLE 帧内、且距上次仓库令落点 ≤20 格的远距瞪羚整批判为"非远距"。
+//   根因：`tryBuild` 成功 ≠ 仓库出现在 info.buildings —— 村民还在路上时该点连地基都没有；
+//     而覆盖判据（clusterCovered / isFarGazelle）只看 info.buildings ⇒ 刚下发的仓库对判据【不可见】；
+//     tryBuild 又只设 buildCooldown=5 ⇒ 5 帧后就对【同一个群】再下一次令。
+//   实测（700 局）：相邻两条仓库令间隔恰为 5 帧的有 166 次，其中 85 次落在同一个群（块距≤9）；
+//     585 个多仓局里 45.6% 出现"同群/同点"重复；每局 3 条令（= 预置首仓1 + 连发3 = MAX_STOCK 4）占 66.6%。
+//   首版只用 600 帧纯时间窗，验证批实测残留重复全部卡在 +601 帧（= 远距群村民走到才下地基，>600 帧仍不可见）
+//     ⇒ 改为【按落点 + 长窗口】：窗口内只挡"距上次落点≤20格"的群（精确），且窗口拉长到 3000 帧(=120游戏秒)
+//     覆盖最远村民路程；窗口期满后若仓库始终没落地(静默失败)则放行重发（这本就是需要的，不构成死锁）。
+//   落点落地后即由"在建仓库也算覆盖锚点"(isFarGazelle/clusterCovered 去掉 Percent==100) 判据接管。
+#define STOCK_ORDER_SETTLE 3000
 // ★ 第二仓库（远距瞪羚群仓库）的最少瞪羚数门槛（2026-09-07 用户需求"没瞪羚就跳过建造第二仓库"）。
 //   判定用"距 TC>20 且 距所有现有 Stock>20"的远距瞪羚数量；低于此数则【完全跳过】（既不建、也不让 needSecondStock 阻塞市场/靶场）。
 //   默认 2：为 1 只离群瞪羚花 150 木 + 村民长途跋涉不划算。⚠ 改 1 = 有 1 只就建；改 3+ = 必须成群。
@@ -1712,8 +1724,10 @@ void UsrAI::manageBuildings() {
                 // ★ 2026-09-15 收口：同一"本簇是否已被现成仓库覆盖"判据原先在本块内写了两遍
                 //   （建造循环 1 次 + allCovered 判定 1 次）——判据写两遍即等于只剩一遍生效。
                 auto clusterCovered = [&](double cdr, double cur) {
+                    // ★ 2026-09-20：去掉 `Percent == 100`（原只看【已完工】仓库）—— 在建/在途的仓库同样算覆盖。
+                    //   否则刚下发的仓库在建成前对覆盖判据不可见 ⇒ 同一个群被反复下令（实测 45.6% 的多仓局出现同群重复）。
                     for (auto &b : info.buildings)
-                        if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
+                        if (b.Type == BUILDING_STOCK &&
                             calDistance(cdr, cur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
                                 < GAZELLE_HUNT_RANGE * gBL)
                             return true;
@@ -1858,11 +1872,32 @@ void UsrAI::manageBuildings() {
 //     没有"建不建得起"，木材卡在中间区间时市场会被永久冻结、靶场冻到 14 分钟。   ⚠ gazelleAlive==0 ⇒ 恒 false，让位闸同步失效，否则会被一个永远建不出来的仓库饿死。
 // ★ 2026-09-15 收口："远距瞪羚"判据（距 TC>20 且 距所有已建成仓库>20）原先在【预判定】与【实际建造】两处各写一遍
 //   —— 两处口径必须完全一致，否则会出现"预判定说该建、建造块却不建"的空转。
+// ★ 2026-09-20 修正（用户报"同一个瞪羚群附近会建 2 座仓库"）：上述判据原文是"距所有【已建成 Percent==100】
+//   仓库>20"，而 tryBuild 成功 → 仓库出现在 info.buildings 之间存在一段窗口（村民在路上时【连地基都没有】）
+//   ⇒ 刚下发的那座对判据彻底不可见 ⇒ buildCooldown(5 帧) 一过就对【同一个群】重复下令，直到撞上
+//   MAX_STOCK(4) 或木材闸(150) 才停；且每次都换一个空闲村民 ⇒ 落点被 tryBuild 偏移表(±3/±6)与
+//   findBuildSite 兜底推到旁边 1~9 格 = 肉眼看到的"同一群旁边并排 2~3 座仓库"。
+//   现改为①锚点不再要求 Percent==100（在建也算）②上次仓库令后 STOCK_ORDER_SETTLE 帧内整批判为"非远距"。
         auto isFarGazelle = [&](const tagResource &r, double tcDRx, double tcURx, double blx) -> bool {
             if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) return false;
+            // ★ 2026-09-20 防连发（本判据是唯一真源：让位闸 needSecondStock 与下方建造块共用）：
+            //   上一次仓库令下发后 STOCK_ORDER_SETTLE 帧内，距其【落点 ≤20 格】的群整批判为"非远距" ⇒
+            //   不会在同一群重复下单。理由见常量定义处——tryBuild 成功 ≠ 仓库落地（村民在路上时
+            //   info.buildings 里没有该地基）⇒ 不设此闸就会在 buildCooldown(5 帧) 后对同一个群重复下令。
+            //   用"落点+长窗口"而非"纯时间窗"：远距群村民走到才下地基(>600帧仍不可见)，纯时间窗会在
+            //   地基落地前失效（验证批实测残留重复全卡在 +601 帧）；落点落地后由下方"在建也算覆盖"判据接管。
+            { auto itS = lastBuildIssueFrame.find(BUILDING_STOCK);
+              if (itS != lastBuildIssueFrame.end() && frame - itS->second <= STOCK_ORDER_SETTLE
+                  && lastStockOrderDR >= 0) {
+                double rBlkDR = r.DR / blx, rBlkUR = r.UR / blx;
+                if (calDistance(rBlkDR, rBlkUR, (double)lastStockOrderDR, (double)lastStockOrderUR) < 20.0)
+                    return false;   // 距上次仓库落点 ≤20 格 ⇒ 同一群，整批不过度下单
+                // 否则（不同群）落点窗口内不挡，允许正常建第二座远距仓
+              } }
             if (calDistance(tcDRx, tcURx, r.DR, r.UR) < 20 * blx) return false;
+            // ★ 2026-09-20：去掉 `Percent == 100` ⇒ 在建仓库也算覆盖锚点，否则首座未完工时可再建第二座。
             for (auto &b : info.buildings)
-                if (b.Type == BUILDING_STOCK && b.Percent == 100) {
+                if (b.Type == BUILDING_STOCK) {
                     double gDR = (b.BlockDR + 1) * blx, gUR = (b.BlockUR + 1) * blx;
                     if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * blx) return false;
                 }
@@ -1891,14 +1926,20 @@ void UsrAI::manageBuildings() {
 
         // ★ 2026-09-13 闸门可观测性（新增，用于实证"市场/靶场是否被让位闸饿死"）：
         //   每 300 帧打印一次让位闸全量状态。needStock=1 且 market/range 长期=0 ⇒ 就是被饿死。
-        if (frame % 300 == 0)
-            DebugText(QString("[GATE f=%1] needStock=%2 gazAlive=%3 stock=%4 wood=%5 | market=%6 range=%7 granary=%8 | snGB=%9")
+        if (frame % 300 == 0) {
+            // ★ 2026-09-20：补 settle 闸可观测性（铁律 53：判据的输入集合规模必须可打印，否则"0 输出"分不清
+            //   没触发 / 没候选 / 被过滤）。距上次仓库令 <= STOCK_ORDER_SETTLE 时，远距瞪羚会被本闸整批过滤。
+            auto itS = lastBuildIssueFrame.find(BUILDING_STOCK);
+            int sinceStockOrder = (itS != lastBuildIssueFrame.end()) ? (frame - itS->second) : -1;
+            DebugText(QString("[GATE f=%1] needStock=%2 gazAlive=%3 stock=%4 wood=%5 | market=%6 range=%7 granary=%8 | snGB=%9 | 距上次仓库令=%10帧 settle闸=%11(skip<阈)")
                       .arg(frame).arg(needSecondStock ? 1 : 0).arg(gazelleAlive)
                       .arg(countBuildingsExisting(BUILDING_STOCK)).arg((int)info.Wood)
                       .arg(countBuildingsExisting(BUILDING_MARKET))
                       .arg(countBuildingsExisting(BUILDING_RANGE))
                       .arg(countBuildingsExisting(BUILDING_GRANARY))
-                      .arg(storageNearGazelleBuilt));
+                      .arg(storageNearGazelleBuilt)
+                      .arg(sinceStockOrder).arg(STOCK_ORDER_SETTLE));
+        }
 
         // ★ 第二仓库：为"距现有 Stock 均 >20 格的远距瞪羚群"建一座，落在群中心。
         //   ⚠ 三要素缺一不可（旧版缺陷导致贴 TC 多建 3 座）：① MAX_STOCK 闸；② 不能每帧重发令
@@ -6200,6 +6241,7 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     pendingBuildIns[buildInsId] = {f->SN, buildingType};
     pendingBuildInsFrame[buildInsId] = frame;
     lastBuildIssueFrame[buildingType] = frame;
+    if (buildingType == BUILDING_STOCK) { lastStockOrderDR = x; lastStockOrderUR = y; }  // ★ 2026-09-20 记录落点，供 isFarGazelle 按落点排除同群重复下单
 
     // 记录尝试过的位置，防止反复在同一位置建造失败
     int key = x * 1000 + y;
