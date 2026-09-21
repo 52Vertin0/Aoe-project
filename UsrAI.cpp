@@ -99,6 +99,12 @@ ins UsrIns;
 //   2026-09-15 曾实现成"射程<塔(8格)的兵种全禁打塔"（复合弓/战车弓 7、弓兵 5、投石兵 4）——用户本意是【允许打塔、只禁拉扯】。
 //   "拉扯箭塔"根因：选塔后若走 issueMarch 推进段会绕塔圈被动接战；现改为选塔即 return 站桩直接打（不进推进段），天然不拉扯。
 //   故只【复合弓兵 AT_COMPOSITE_BOWMAN】恢复打塔；战车弓/弓兵/投石兵射程仍<塔，保持不打塔。判据见 canHitTower。
+// ★ 2026-09-21 用户需求「复合弓兵不要拉扯战车弓兵和投石车（攻击距离比它们小）」：
+//   拉扯的收益前提 = 我方射程【严格大于】对方；射程相等/更短时，逼近到自身射程边缘必然同时进入对方射程 ⇒ 纯亏。
+//   真值(config.json 已回代)：复合弓 DIS=7 ｜ 战车弓 DIS=7(相等) ｜ 投石车 DIS=10(更长) ⇒ 二者不进"拉扯目标"候选。
+//   实现：manageCounterAttack 的拉扯目标选取改用 kiteRangeAdvantage 过滤（findKiteTarget 取代 findNearestEnemyNoStone），
+//   原「投石车兜底」段删除；判据对【所有】远程兵种生效（避免同源漏改）。投石车仍留给祭司感化 / 我方投石车压制。
+//   观测：拉扯日志 [KIT-R]/[KIT-S] 新增 tSort=（目标兵种）；验收判据 = tSort 永不出现 8(投石车)/12(战车弓)。
 #define ARROWTOWER_RANGE 8.0    // 敌方箭塔射程(格)，与 config.json DIS_ARROWTOWER 一致
 // ★★★ 2026-09-20 方案 B【分层】：修「反攻时攻击箭塔时有部分士兵不攻击」（用户拍板 B）★★★
 //   Tier-1（d ≤ TOWER_TARGET_RANGE = 12）：语义完全不变 —— 发 HumanAction(塔) 站桩打塔（不拉扯）。
@@ -4125,7 +4131,10 @@ void UsrAI::manageCounterAttack() {
                sort == AT_CHARIOT || sort == AT_BROADSWORDSMAN;
     };
 
-    // 各远程兵种最大攻击射程(格)：投石车10 / 复合弓7 / 战车弓7 / 弓5 / 投石兵4（与 config.json 一致）。   用于反攻拉扯(kiting)：把敌方保持在最远射程边缘无伤输出。
+    // 各远程兵种最大攻击射程(格)：投石车10 / 复合弓7 / 战车弓7 / 弓5 / 投石兵4。
+    //   ★ 2026-09-21 已对 config.json 回代核验（技能 §0：任何"代码常量==外部配置"的断言必须抓真值）：
+    //     DIS_STONE_THROWER=10、DIS_COMPOSITE_BOWMAN=7、DIS_CHARIOT_ARCHER=7、DIS_BOWMAN=5、DIS_SLINGER=4 —— 全部一致。
+    //   用于反攻拉扯(kiting)：把敌方保持在最远射程边缘无伤输出。
     auto rangedMaxRange = [&](int sort) -> double {
         switch (sort) {
             case AT_STONE_THROWER:   return 10.0 * BL;
@@ -4137,17 +4146,55 @@ void UsrAI::manageCounterAttack() {
         }
     };
 
+    // ★★★★★ 2026-09-21 用户需求「复合弓兵不要拉扯战车弓兵和投石车（攻击距离比它们小）」★★★★★
+    //   拉扯(kiting)的收益前提是【我方射程严格大于对方】：把敌保持在最远射程边缘，自己挨不到打。
+    //   射程相等或更短时，逼近到自身射程边缘必然同时进入对方射程 ⇒ 挨打却没有输出优势，纯亏
+    //   （撤了打不着、不撤就被打）。故"射程不占优"的敌单位【不进拉扯目标候选】。
+    //   真值（config.json）：复合弓 7 vs 战车弓 7（相等）、vs 投石车 10（更长）⇒ 两者皆不拉扯。
+    //   ⚠ 近战 / 村民 / 祭司等无射程单位（isRanged=false）永远可拉扯；判据只对远程敌生效。
+    //   ⚠ 同一判据对所有远程兵种生效（复合弓7/战车弓7/弓兵5/投石兵4 vs 投石车10 全部不占优）
+    //     —— 避免"改了复合弓、弓兵照样去拉投石车"的同源漏改（铁律 21/26）。
+    auto kiteRangeAdvantage = [&](int selfSort, int enemySort) -> bool {
+        if (enemySort < 0 || !isRanged(enemySort)) return true;   // 近战/村民/祭司：无威胁射程
+        return rangedMaxRange(selfSort) > rangedMaxRange(enemySort);
+    };
+
     // ★ 2026-09-15 去重（铁律 21/26）：按 SN 在【敌军队→敌农民→敌建筑】中定位坐标。
     //   原代码在 3 处（拉扯粘滞目标 / 投石车粘滞目标 / 投石车威胁点）各抄一份同样的三层循环，语义完全一致。
     //   命中敌军队时顺带回填 isMelee（供拉扯对近战敌更早撤）；三类都没有则返回 false。   ⚠ SN 全图唯一 ⇒ 多查一类（建筑）不会改变任何原有分支的结果。
-    auto lookupEnemySN = [&](int sn, double &x, double &y, bool *pMelee = nullptr) -> bool {
+    //   ★ 2026-09-21 追加回填 pSort（命中兵种；村民/建筑 = -1）——供"射程占优"判据与 [KIT-*] 日志用，不改任何原有分支。
+    auto lookupEnemySN = [&](int sn, double &x, double &y, bool *pMelee = nullptr, int *pSort = nullptr) -> bool {
         for (auto &e : info.enemy_armies)
-            if (e.SN == sn) { x = e.DR; y = e.UR; if (pMelee) *pMelee = isMeleeSort(e.Sort); return true; }
+            if (e.SN == sn) { x = e.DR; y = e.UR; if (pMelee) *pMelee = isMeleeSort(e.Sort); if (pSort) *pSort = e.Sort; return true; }
         for (auto &e : info.enemy_farmers)
-            if (e.SN == sn) { x = e.DR; y = e.UR; return true; }
+            if (e.SN == sn) { x = e.DR; y = e.UR; if (pSort) *pSort = -1; return true; }
         for (auto &b : info.enemy_buildings)
-            if (b.SN == sn) { x = (b.BlockDR + 1.0) * BL; y = (b.BlockUR + 1.0) * BL; return true; }
+            if (b.SN == sn) { x = (b.BlockDR + 1.0) * BL; y = (b.BlockUR + 1.0) * BL; if (pSort) *pSort = -1; return true; }
         return false;
+    };
+
+    // ★ 2026-09-21 拉扯专用选敌：只在"射程占优"的敌人里取最近者。
+    //   与 findNearestEnemyNoStone 的差别【只有】这一条过滤 —— 两级兜底语义（军队优先、无军队才退村民）严格保持原样；
+    //   投石车本来就被该函数排除（留给祭司感化），此处不再单独兜底（原"投石车兜底"段已删，见下方相位机注释）。
+    //   出参 osort = 命中目标兵种（村民/未知 = -1）；skipSort = 被"射程不占优"跳过的最近敌方兵种（无 = -1，仅用于日志观测）。
+    auto findKiteTarget = [&](int selfSort, double dr, double ur, double range, int &osort, int &skipSort) -> int {
+        int bestSN = -1; double bestD = range * range; osort = -1; skipSort = -1;
+        double skipD = 1e12;
+        for (const auto &e : info.enemy_armies) {
+            double d = (e.DR - dr) * (e.DR - dr) + (e.UR - ur) * (e.UR - ur);
+            if (!kiteRangeAdvantage(selfSort, e.Sort)) {          // ★ 射程不占优 ⇒ 绝不做拉扯目标
+                if (d < range * range && d < skipD) { skipD = d; skipSort = e.Sort; }   // 仅记 20 格内的（日志口径="附近"）
+                continue;
+            }
+            if (d < bestD) { bestD = d; bestSN = e.SN; osort = e.Sort; }
+        }
+        if (bestSN >= 0) return bestSN;
+        bestD = range * range;
+        for (const auto &e : info.enemy_farmers) {                // 村民无射程 ⇒ 可拉扯（保持原兜底语义）
+            double d = (e.DR - dr) * (e.DR - dr) + (e.UR - ur) * (e.UR - ur);
+            if (d < bestD) { bestD = d; bestSN = e.SN; osort = -1; }
+        }
+        return bestSN;
     };
 
     // ====== 1. 侦察阶段：寻找敌方武器厂 ======
@@ -4544,35 +4591,37 @@ void UsrAI::manageCounterAttack() {
                 int kEnemy = -1;
                 double kEX = 0, kEY = 0; bool kGot = false;
                 bool kMelee = false;
+                int  kSort = -1;         // ★ 2026-09-21：拉扯目标兵种（判"射程是否占优"+日志用）
+                int  kSkipSort = -1;     // ★ 2026-09-21：被"射程不占优"跳过的最近敌方兵种（仅日志）
                 if (kitingTargetSN.count(a.SN)) {
                     int cur = kitingTargetSN[a.SN];
-                    kGot = lookupEnemySN(cur, kEX, kEY, &kMelee);          // 粘滞目标仍存活?
-                    if (kGot && calDistance(a.DR, a.UR, kEX, kEY) > 20 * BL) kGot = false;  // 目标跑远→放手
+                    kGot = lookupEnemySN(cur, kEX, kEY, &kMelee, &kSort);   // 粘滞目标仍存活?
+                    // ★ 2026-09-21：跑远→放手；【射程不占优→放手】—— 不变量是"粘滞目标一定是可拉扯目标"
+                    //   （只有 findKiteTarget 会写这张表，它已按同一判据过滤）；此守卫是防御性断言，防未来改动绕过过滤。
+                    if (kGot && (calDistance(a.DR, a.UR, kEX, kEY) > 20 * BL ||
+                                 !kiteRangeAdvantage(a.Sort, kSort))) kGot = false;
                     if (kGot) kEnemy = cur;
                 }
                 if (!kGot) {
-                    kEnemy = findNearestEnemyNoStone(a.DR, a.UR, 20 * BL);
-                    if (kEnemy >= 0) kGot = lookupEnemySN(kEnemy, kEX, kEY, &kMelee);
+                    // ★ 2026-09-21：改为"射程占优"专用选敌（原 findNearestEnemyNoStone 会把射程 7 的战车弓
+                    //   选为复合弓(7)的拉扯目标 —— 射程不占优，拉扯纯亏，用户明确要求不拉扯）。
+                    kEnemy = findKiteTarget(a.Sort, a.DR, a.UR, 20 * BL, kSort, kSkipSort);
+                    if (kEnemy >= 0) kGot = lookupEnemySN(kEnemy, kEX, kEY, &kMelee, &kSort);
                 }
-                // ★ 投石车兜底：findNearestEnemyNoStone 写死 continue 投石车 ⇒ 射程内"只有投石车"时
-                //   kGot=false → dK=1e12 → 全部相位转移不触发 → 走 issueMarch 推进而非攻击。
-                //   改：noStone 找不到时，在 R+1.5 格内找最近的投石车补位（投石车射程 10、复合弓 7）。
-                if (!kGot) {
-                    double bestSD = 1e12; int bestSSN = -1; double bestSEx = 0, bestSEy = 0;
-                    for (auto &e : info.enemy_armies) {
-                        if (e.Sort != AT_STONE_THROWER) continue;
-                        double dd = calDistance(a.DR, a.UR, e.DR, e.UR);
-                        if (dd < bestSD) { bestSD = dd; bestSSN = e.SN; bestSEx = e.DR; bestSEy = e.UR; }
-                    }
-                    // 找投石车 + 在 R+1.5 内（稍大些允许打一下就撤）
-                    if (bestSSN >= 0 && bestSD <= R + 1.5 * BL) {
-                        kEnemy = bestSSN;
-                        kEX = bestSEx; kEY = bestSEy;
-                        kMelee = false;   // 投石车当作远程处理
-                        kGot = true;
-                    }
-                }
+                // ★ 2026-09-21 已删「投石车兜底」段：原逻辑在 noStone 找不到目标时，把 R+1.5 格内的投石车
+                //   拉进复合弓的打-拉循环（注释原文："射程内只有投石车时 kGot=false → 走推进而非攻击"）。
+                //   但投石车射程 10 > 复合弓 7 ⇒ 正属用户本次要求取消的"拉扯射程不占优的敌人"；
+                //   投石车按既有设计留给【祭司感化】与【我方投石车压制】(findCatapultTarget)，弓兵不参与。
+                //   语义回到：附近只有投石车时不选它 → 落下方推进/打建筑分支（与 findNearestEnemyNoStone 的原有语义一致）。
                 if (kEnemy >= 0 && kGot) kitingTargetSN[a.SN] = kEnemy;   // ★ 记录/刷新粘滞目标
+                // ★ 观测（铁律 34：关键决策点必须可观测）：附近有敌、却因"射程不占优"一个可拉扯目标都没有 ⇒ 打一条。
+                //   按 (SN, 兵种) 去重 ⇒ 每兵每种最多 1 条，不刷屏。   验收判据 = 该行出现的 Sort 恒 ∈ {8 投石车, 12 战车弓}。
+                if (kEnemy < 0 && kSkipSort >= 0 &&
+                    (!kiteSkipSort.count(a.SN) || kiteSkipSort[a.SN] != kSkipSort)) {
+                    kiteSkipSort[a.SN] = kSkipSort;
+                    DebugText(QString("[KIT-NO f=%1] SN=%2 无可拉扯目标：附近敌 Sort=%3 射程>我%4格 ⇒ 不拉扯(落推进/打建筑)")
+                              .arg(frame).arg(a.SN).arg(kSkipSort).arg(R / BL, 0, 'f', 1));
+                }
                 double dK = kGot ? calDistance(a.DR, a.UR, kEX, kEY) : 1e12;
 
                 // —— 终止触发（无条件、无节流）：从 SHOOT 贴身 <0.5R 立即切 RETREAT ——
@@ -4713,12 +4762,15 @@ void UsrAI::manageCounterAttack() {
                     // —— 终极兜底：三档全失败 → 本帧不下令，相位机下一帧再试 ——
                     // ★ 观测增强：原 `frame % 50` 采样率仅 1/50，反攻期常整段漏掉 RETREAT 窗口。改为每次进入
                     //   撤退窗口必打；本块已被 canReissue(30 帧) 限制，每弓兵每 30 帧最多一条，不会刷屏。
-                    DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 stuck=%6 aged=%7 self=(%8,%9) tgt=(%10,%11)")
+                    // ★ 2026-09-21 追加 `tSort=`（目标兵种）：验收"不拉扯射程不占优的敌人"的直接证据 ——
+                    //   改后 tSort 恒不应出现 8(投石车)/12(战车弓)；12/8 出现在这里 = 判据漏改。
+                    DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 stuck=%6 aged=%7 self=(%8,%9) tgt=(%10,%11) tSort=%12")
                               .arg(frame).arg(a.SN).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1)
                               .arg(kitStage).arg(kitingRetStuck.count(a.SN) ? kitingRetStuck[a.SN] : 0)
                               .arg(phaseAged)
                               .arg(a.DR / BL, 0, 'f', 1).arg(a.UR / BL, 0, 'f', 1)
-                              .arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1));
+                              .arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1)
+                              .arg(kSort));
                     marchCmds++;
                     continue;   // RETREAT 段不落站桩/推进
                 }
@@ -4740,8 +4792,9 @@ void UsrAI::manageCounterAttack() {
                         kitingAtkFrame[a.SN] = frame;
                     }
                     if (frame % 100 == 0)
-                        DebugText(QString("[KIT-S f=%1] SN=%2 phaseAged=%3 dK=%4 R=%5")
-                                  .arg(frame).arg(a.SN).arg(phaseAged).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1));
+                        DebugText(QString("[KIT-S f=%1] SN=%2 phaseAged=%3 dK=%4 R=%5 tSort=%6")
+                                  .arg(frame).arg(a.SN).arg(phaseAged).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1)
+                                  .arg(kSort));
                     marchCmds++;
                     continue;   // 接敌带→站桩/引擎逼近,绝不落下方推进段
                 }
