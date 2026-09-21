@@ -105,7 +105,9 @@ ins UsrIns;
 //   实现：manageCounterAttack 的拉扯目标选取改用 kiteRangeAdvantage 过滤（findKiteTarget 取代 findNearestEnemyNoStone），
 //   原「投石车兜底」段删除；判据对【所有】远程兵种生效（避免同源漏改）。投石车仍留给祭司感化 / 我方投石车压制。
 //   观测：拉扯日志 [KIT-R]/[KIT-S] 新增 tSort=（目标兵种）；验收判据 = tSort 永不出现 8(投石车)/12(战车弓)。
-#define ARROWTOWER_RANGE 8.0    // 敌方箭塔射程(格)，与 config.json DIS_ARROWTOWER 一致
+// ⚠ 2026-09-21 注释纠错（**仅注释，值未动**）：原注释写"与 config.json DIS_ARROWTOWER 一致"，真值为 **7**，与 8.0 **不一致**。
+//   代码保持 8.0 是有意的保守取值（本文件多处依赖"塔射程 8"做站位/打塔判定）⇒ 改值属行为变更，须独立成批验证（遗留 #8）。
+#define ARROWTOWER_RANGE 8.0    // 本文件内部使用的"敌箭塔射程"口径(格)；config.json DIS_ARROWTOWER=7（见上，勿再声称一致）
 // ★★★ 2026-09-20 方案 B【分层】：修「反攻时攻击箭塔时有部分士兵不攻击」（用户拍板 B）★★★
 //   Tier-1（d ≤ TOWER_TARGET_RANGE = 12）：语义完全不变 —— 发 HumanAction(塔) 站桩打塔（不拉扯）。
 //   Tier-2（12 < d ≤ TOWER_APPROACH_RANGE = 30）：① **不发攻击令**（不打断上游 kiting / 接敌带 / 攻击令节流）；
@@ -226,16 +228,26 @@ ins UsrIns;
 // ★★★ 2026-09-16 用户需求：「祭司感化武器厂的【唯一】限制条件 = 敌方全部箭塔拆完」★★★
 //   用户原话：「在敌方全部箭塔拆完后再感化，箭塔拆完意味着敌方军队已全灭」⇒ 只留"塔全拆"一道闸（塔是最后防线）。
 //   实测 ps1 `f=44900 [SIEGE-WAIT] alive=0 towers=4` ⇒ 敌兵确实先归零而塔恒在。
-//   ② 判据必须是【全局】敌塔数==0（不是祭司周边 14 格的局部 localClear），否则等于把塔从 14 格外放过。
+//   ② 判据必须是【全局】敌塔数（不是祭司周边 14 格的局部 localClear），否则等于把塔从 14 格外放过。
 //   ③ ⚠ 塔数取 info.enemy_buildings，**受 explored||visible 约束** ⇒ 必须叠加【已探明保险】（见下一条注释）。
-#define PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR true   // true = 启用「敌塔全拆」唯一闸；false = 回退为旧的局部清场
-// 已探明保险：要求【当前帧】info.enemy_buildings 里至少有这么多条目，才相信"塔已全拆"。   ★★★ 2026-09-17 修复：由 2 改为 1 ★★★
+#define PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR true   // true = 启用「敌塔清够」唯一闸；false = 回退为旧的局部清场
+// ★★★ 2026-09-21 用户需求：「剩余 2 座箭塔时祭司就可以感化敌方武器厂了」⇒ 阈值 0 → PRIEST_TOWERS_CLEAR_MAX(=2)。
+//   依据（全库 vf_* 共 40 条 [SIEGE-WAIT]，探针 siewgate_probe.py，本轮实测）：
+//     ① 40/40 条 dS<=12 ⇒ 祭司【真的走到了】感化射程内（12 格），瓶颈就是这道闸本身，
+//        而不是"门外的前出"⇒ 旧备选方案 A（把前出门改成 localClear）不必要，只放宽本阈值即可；
+//     ② 40/40 条 alive==0 ⇒ 旧注释的依据「箭塔拆完意味着敌方军队已全灭」成立：被拦下的时刻敌军确实已全灭；
+//     ③ 可达样本的塔数分布 = 1:27 / 2:6 / 3:3 / 4:4，**towers==0 出现 0 次** ⇒ 旧闸 `==0` 是【结构性死锁】而非概率低
+//        （同 N-1 判断：塔被拆会重建 ⇒ "瞬时归零"在本关卡不可达）；
+//     ④ 放宽到 <=2 可放行 33/40 = 82%（<=1 则 68%）⇒ 取 2，与用户口径一致。
+//   ⚠ 语义边界：改的是"允许起手"的门槛，不是"塔不用管了" —— 剩余 3/4 座时仍然拦（[SIEGE-WAIT] 日志带 lim= 自描述）。
+#define PRIEST_TOWERS_CLEAR_MAX 2   // ★ 2026-09-21：剩余敌箭塔 <= 此值即视为"塔已清够"（原为硬编码 ==0 ⇒ 结构性死锁）
+// 已探明保险：要求【当前帧】info.enemy_buildings 里至少有这么多条目，才相信"塔已清够"。   ★★★ 2026-09-17 修复：由 2 改为 1 ★★★
 //   enemyBldSeenN 是【当前帧列表长度】(受 explored||visible 约束)，**不是历史累计**。而终局状态恰恰是
 //   "塔被拆光 ⇒ 基地只剩武器厂 1 个建筑" ⇒ seen 必然掉到 1 ⇒ 要求 >=2 等于要求"除武器厂外还剩 ≥1 个建筑"，
 //   与"塔全拆"互斥 ⇒ **结构死锁**。铁证 fd4：f=43500 起恒 gT=0 seen=1（祭司 dS=6.9 格、hp=1.00 却不出手），
 //   日志 [SIEGE-WAIT] 直接坐实是本保险项在拦；全库 220 条 gT==0 样本中 seen>=2 者 **0 条** ⇒ 上线至今通过率 0%
 //   （加闸后各批起手均 0；修为 1 后 th6 首次起手并获胜）。   保留 seen>=1 的意义：列表全空(seen=0) 时无法区分"真拆光"与"视野丢失" ⇒ 仍须拦截（保守）。
-//   组合语义：①武器厂坐标已持久记忆(ssn!=-1 ⇒ 确实推进过) ②当前仍看得见敌建筑(seen>=1) ③视野无塔(gT==0) ⇒ 放行。
+//   组合语义：①武器厂坐标已持久记忆(ssn!=-1 ⇒ 确实推进过) ②当前仍看得见敌建筑(seen>=1) ③视野内敌塔数 <= MAX ⇒ 放行。
 #define PRIEST_TOWERS_CLEAR_MIN_SEEN 1
 #define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // ★★★ 临时封禁开关：改 true→false 即可恢复建造 ★★★
@@ -5060,12 +5072,14 @@ void UsrAI::manageCounterAttack() {
             for (auto &b : info.enemy_buildings)
                 if (b.Type == BUILDING_ARROWTOWER &&
                     calDistance(priest->DR, priest->UR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < PRIEST_SIEGE_CLEAR_TOWER_R * BL) { localClear = false; break; }
-        // 全局闸：敌箭塔数 == 0，且已探明保险通过（确实探过敌基地，而非"什么都没看见"）。   ⚠ 保险条件用 enemySiegeSN != -1（武器厂坐标已持久记忆）+ 已探明敌建筑数达标：
-        //     否则视野丢失的瞬间 enemy_buildings 会变空 ⇒ 误判"塔全拆" ⇒ 祭司孤身送死。
-        const bool towersAllDown = (enemyTowerN == 0)
+        // 全局闸：敌箭塔数 <= PRIEST_TOWERS_CLEAR_MAX，且已探明保险通过（确实探过敌基地，而非"什么都没看见"）。   ⚠ 保险条件用 enemySiegeSN != -1（武器厂坐标已持久记忆）+ 已探明敌建筑数达标：
+        //     否则视野丢失的瞬间 enemy_buildings 会变空 ⇒ enemyTowerN 假性归零 ⇒ 误判"塔已清够" ⇒ 祭司孤身送死。
+        // ★ 2026-09-21：阈值由硬编码 ==0 放宽为 <= PRIEST_TOWERS_CLEAR_MAX(2)（用户需求，详见文件头同条注释）。
+        //   变量名同步 towersAllDown → towersClearEnough：名字必须与语义一致，否则下一个人会按名字读代码。
+        const bool towersClearEnough = (enemyTowerN <= PRIEST_TOWERS_CLEAR_MAX)
                                 && (enemySiegeSN != -1)
                                 && (enemyBldSeenN >= PRIEST_TOWERS_CLEAR_MIN_SEEN);
-        const bool clearOk = PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR ? towersAllDown : localClear;
+        const bool clearOk = PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR ? towersClearEnough : localClear;
 
 // ★★★ 2026-09-14 关键修复：武器厂感化【提前到状态/移动闸之前】★★★
 //   铁证：[LC-DBG] 8 局仅命中 1 次 ⇒ 下方整段执行率 <1%（被 NowState 闸 + priestMoveCooldown 闸挡住）。
@@ -5074,16 +5088,19 @@ void UsrAI::manageCounterAttack() {
         if (enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
             double sD0 = calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL);
             if (sD0 <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
-                // ★★ 2026-09-16 唯一闸：敌塔未全拆 ⇒ 本帧不起手（不发令 ⇒ 不进入施法 ⇒ 不会被打断重置）
+                // ★★ 2026-09-16 唯一闸：敌塔尚未清够 ⇒ 本帧不起手（不发令 ⇒ 不进入施法 ⇒ 不会被打断重置）
                 if (PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR && !clearOk) {
                     if (frame % 100 == 0) {
-                        // ★ 2026-09-17：补 alive=（敌活兵数）——用户的场景是"敌军全灭【且】箭塔全拆"，
+                        // ★ 2026-09-17：补 alive=（敌活兵数）——用户的场景是"敌军全灭【且】箭塔已拆"，
                         //   两个条件必须能在日志里分别核对（原格式只有 towers/seen，无法验证"全灭"）。
+                        // ★ 2026-09-21：补 lim=（当前放行阈值）——日志必须自描述，否则阈值改过之后旧探针会把
+                        //   "上限"读成"上限为 0"（本文件已因注释/口径不自描述踩过多次，见 skill §2.18 ①）。
                         int aliveE0 = 0;
                         for (auto &e : info.enemy_armies) if (e.Blood > 0) aliveE0++;
-                        DebugText(QString("[SIEGE-WAIT f=%1] hp=%2 towers=%3 seen=%4 alive=%5 dS=%6")
+                        DebugText(QString("[SIEGE-WAIT f=%1] hp=%2 towers=%3 seen=%4 alive=%5 dS=%6 lim=%7")
                                   .arg(frame).arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2)
-                                  .arg(enemyTowerN).arg(enemyBldSeenN).arg(aliveE0).arg(sD0 / BL, 0, 'f', 1));
+                                  .arg(enemyTowerN).arg(enemyBldSeenN).arg(aliveE0).arg(sD0 / BL, 0, 'f', 1)
+                                  .arg(PRIEST_TOWERS_CLEAR_MAX));
                     }
                     return;
                 }
