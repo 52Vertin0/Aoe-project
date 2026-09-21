@@ -158,6 +158,7 @@ ins UsrIns;
                                   //   让 manageBuildings 另择新址重建。修"地基永久卡 0% 无人施工"。
 #define PENDING_BUILD_TIMEOUT 300 // 建造指令结果迟迟不回的超时(帧)：超时则清掉占位，防止永久虚占名额
 #define BUILD_GAP 1              // 建筑间距：候选建筑footprint外扩1格内不得有其他建筑(含敌我)，避免建筑成墙堵死路
+#define RES_BUILD_GAP 2          // 资源(树/矿)间距：匹配 forestGrid 把树±2 标不可走，防止树/矿旁址被引擎 ret=4 拒
 #define MELEE_OVERFLOW_FOOD 150      // 后期/反攻"爆近战"食物溢出阈值：食物≥此值才大规模造近战兵(棍棒/方阵)
 // ★★★ 2026-09-13 方阵兵编制比例（用户要求"放宽方阵兵数量"，选定 3:4 温和档）★★★
 //   上限公式：hop < HOPLITE_RATIO_NUM/DEN × comp + FLOOR（旧版硬编码 (comp+4)/2 ⇒ 长期趋近 1:2；新版 3/4×comp+2 ⇒ 趋近 3:4）
@@ -1617,7 +1618,7 @@ void UsrAI::manageBuildings() {
     auto tryBuildMarket = [&](const char *tag) {
         if (!builtThisFrame &&
             countBuildingsExisting(BUILDING_MARKET) == 0 &&
-            countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= 150) {
+            countBuildingsExisting(BUILDING_GRANARY) >= 1 && info.Wood >= BUILD_MARKET_WOOD) {
             builtThisFrame = tryBuild(BUILDING_MARKET, 3);
             if (builtThisFrame)
                 DebugText(QString("[MARKET f=%1] %2 wood=%3").arg(frame).arg(tag).arg((int)info.Wood));
@@ -1637,7 +1638,7 @@ void UsrAI::manageBuildings() {
         }
     };
     auto tryBuildTower = [&]() {
-        if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME && info.Stone >= 150) {
+        if (!builtThisFrame && towerCount < MAX_TOWERS && frame < WAVE3_TIME && info.Stone >= BUILD_ARROWTOWER_STONE) {
             builtThisFrame = tryBuild(BUILDING_ARROWTOWER, 2);
             if (builtThisFrame) towerCount++;
         }
@@ -5627,31 +5628,37 @@ bool UsrAI::isPositionFree(int blockDR, int blockUR, int size) {
         }
     }
 
-    // ★ 建筑间距检查：候选 footprint 外扩 BUILD_GAP 格内不得与任何建筑相交(含边界)，
-    //   否则建筑会紧贴成墙、堵死村民/士兵的通行路线。外扩 1 格 = 建筑之间至少留 1 格通道。
+    // ★ 建筑间距检查（对称外扩）：候选 footprint 与既有建筑都外扩 BUILD_GAP 后判相交。
+    //   旧实现只外扩候选、用既有 EXACT footprint 去撞 ⇒ 漏掉"候选与既有仅隔 1 格"的址，
+    //   引擎按双方碰撞外扩判重叠 → 以 ret=4 OVERLAP 拒址 → 反复下发失败"一直待建"（§8）。
+    //   对称外扩 = 候选 + 既有各外扩 BUILD_GAP，等价于要求两建筑中心间距 ≥ size+2*BUILD_GAP。
     for (auto &b : info.buildings) {
         int bSize = (b.Type == BUILDING_HOME || b.Type == BUILDING_ARROWTOWER) ? 2 : 3;
-        for (int i = blockDR - BUILD_GAP; i < blockDR + size + BUILD_GAP; ++i)
-            for (int j = blockUR - BUILD_GAP; j < blockUR + size + BUILD_GAP; ++j)
-                if (i >= b.BlockDR && i < b.BlockDR + bSize &&
-                    j >= b.BlockUR && j < b.BlockUR + bSize) return false;
+        int c0 = blockDR - BUILD_GAP, c1 = blockDR + size + BUILD_GAP;
+        int c2 = blockUR - BUILD_GAP, c3 = blockUR + size + BUILD_GAP;
+        int e0 = b.BlockDR - BUILD_GAP, e1 = b.BlockDR + bSize + BUILD_GAP;
+        int e2 = b.BlockUR - BUILD_GAP, e3 = b.BlockUR + bSize + BUILD_GAP;
+        if (c0 < e1 && c1 > e0 && c2 < e3 && c3 > e2) return false;
     }
 
-    // 敌方建筑间距检查（已探索区域内的敌方建筑同样阻挡建造）
+    // 敌方建筑间距检查（已探索区域内的敌方建筑同样阻挡建造，同样对称外扩）
     for (auto &b : info.enemy_buildings) {
         int bSize = (b.Type == BUILDING_HOME || b.Type == BUILDING_ARROWTOWER) ? 2 : 3;
-        for (int i = blockDR - BUILD_GAP; i < blockDR + size + BUILD_GAP; ++i)
-            for (int j = blockUR - BUILD_GAP; j < blockUR + size + BUILD_GAP; ++j)
-                if (i >= b.BlockDR && i < b.BlockDR + bSize &&
-                    j >= b.BlockUR && j < b.BlockUR + bSize) return false;
+        int c0 = blockDR - BUILD_GAP, c1 = blockDR + size + BUILD_GAP;
+        int c2 = blockUR - BUILD_GAP, c3 = blockUR + size + BUILD_GAP;
+        int e0 = b.BlockDR - BUILD_GAP, e1 = b.BlockDR + bSize + BUILD_GAP;
+        int e2 = b.BlockUR - BUILD_GAP, e3 = b.BlockUR + bSize + BUILD_GAP;
+        if (c0 < e1 && c1 > e0 && c2 < e3 && c3 > e2) return false;
     }
 
-    // 资源重叠检查
+    // 资源重叠检查（对称外扩）：树/矿也外扩 RES_BUILD_GAP，候选 footprint 外扩 BUILD_GAP 后
+    //   与其相交即不可建。旧实现只判"资源正好压在 footprint 上" ⇒ 树/矿旁的址被放过、被引擎 ret=4 拒。
+    //   RES_BUILD_GAP=2 匹配 forestGrid 把树±2 标不可走的引擎语义。
     for (auto &r : info.resources) {
         if (r.Cnt <= 0) continue;
-        for (int i = blockDR; i < blockDR + size; ++i)
-            for (int j = blockUR; j < blockUR + size; ++j)
-                if (i == r.BlockDR && j == r.BlockUR) return false;
+        int c0 = blockDR - BUILD_GAP, c1 = blockDR + size + BUILD_GAP;
+        int c2 = blockUR - BUILD_GAP, c3 = blockUR + size + BUILD_GAP;
+        if (c0 <= r.BlockDR && r.BlockDR < c1 && c2 <= r.BlockUR && r.BlockUR < c3) return false;
     }
 
     // ★ 避开狮子周围区域：狮子会攻击靠近的建筑/村民，建在狮子附近会导致建好即被骚扰、
