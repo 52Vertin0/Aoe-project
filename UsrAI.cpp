@@ -152,6 +152,20 @@ ins UsrIns;
 #define PENDING_BUILD_TIMEOUT 300 // 建造指令结果迟迟不回的超时(帧)：超时则清掉占位，防止永久虚占名额
 #define BUILD_GAP 1              // 建筑间距：候选建筑footprint外扩1格内不得有其他建筑(含敌我)，避免建筑成墙堵死路
 #define MELEE_OVERFLOW_FOOD 150      // 后期/反攻"爆近战"食物溢出阈值：食物≥此值才大规模造近战兵(棍棒/方阵)
+// ★★★ 2026-09-22 拉扯距离重标定：「撤得开」与「打得到」的平衡 ★★★
+// （用户需求：反攻时，应对远程有时复合弓兵拉扯远了会打不到，做好平衡）
+// 实测基线（12 局 gsk / 10919 个撤退窗口，探针 kite_range_probe.py）——
+//   ① 旧退出阈值 = R + BREATH = 7+4 = 11 格、旧撤退落点 = R×1.9 = 13.3 格，而自身射程 R = 7 格
+//      ⇒ 90.3% 的撤退窗口 dK > R（撤出自身射程）⇒ 撤完还得走 4~6.3 格才能重新开火；
+//   ② 撤退窗口间隔 ≈30 帧 < 攻击保护期 60 帧 ⇒ 保护期结构性地永不过期 ⇒ SHOOT 段一条攻击令都不发
+//      （铁证：vf_gsk_1 SN=91396 在 f=33737~34553 的 800 帧里，撤退令 30 条、攻击令 0 条）。
+// 平衡口径：撤退距离改由【威胁半径】决定，并以【自身射程】为硬上限 ⇒ 撤完仍在射程内，切回 SHOOT 立刻能打。
+//   威胁半径：远程敌 = 其最大射程；近战/村民 = 0（贴脸威胁由下方 0.5R 无条件撤退兜底）
+//   ⇒ RET_D = clamp(威胁半径 + SAFE_MARGIN, MIN_KEEP, R)，恒 ≤ R ⇒ 不变量"撤完即能打"。
+#define KITING_SAFE_MARGIN   2.0   // 脱离威胁射程后的安全余量(格)
+#define KITING_MIN_KEEP      5.0   // 撤退后至少保持的距离(格)：防贴脸，同时不越过自身射程
+#define KITING_HYST          2.0   // 迟滞带宽度(格)：T_IN = T_OUT − 本值，必须为正否则"一撤就被打回"
+#define KITING_LANDING_SLACK 0.5   // 撤退落点相对退出阈值的余量(格)：确保落点真的越过 T_OUT
 // ★★★ 2026-09-13 方阵兵编制比例（用户要求"放宽方阵兵数量"，选定 3:4 温和档）★★★
 // 上限公式：hop < HOPLITE_RATIO_NUM/DEN × comp + FLOOR（旧版硬编码 (comp+4)/2 ⇒ 长期趋近 1:2；新版 3/4×comp+2 ⇒ 趋近 3:4）
 // 逐点对照(comp→hop上限)：0→2 / 2→3 / 4→5 / 6→6 / 8→8 / 10→9 / 20→17 / 40→32（comp≤2 时与旧版一致，不断肉盾）。
@@ -4435,7 +4449,9 @@ void UsrAI::manageCounterAttack() {
 // ★ 2026-09-18 迟滞带修正（用户：「与敌方军队交手后就完全不撤退了」）。铁证：旧值 1.5 ⇒ 退出阈值 = R+1.5 = 8.5 格，
 // 而下方【接敌带】给付线上限是 R+2.0 = 9 格 ⇒ 8.5 < 9 ⇒ 一撤到 8.5 就立刻被判"仍在接敌带" ⇒ 发攻击令、引擎自行逼近 ⇒ 撤退净效果≈0（实测 gi 批 24 局：96.7% 的撤退窗口在 60 帧内出现攻击令）。
 // 改为 4.0 ⇒ 退出阈值 11 格 > 接敌带 9 格，形成 +2 格迟滞带（撤到 11 格才允许重新接战）。
-                const double BREATH = 4.0 * BL;             // 须 > 接敌带 2.0 格，否则迟滞带为负 = 白撤
+                // ★ 2026-09-22 原 `BREATH = 4.0 格`（退出阈值 R+4 = 11 格）已由下方距离模型取代：
+                //   退出阈值改由【威胁半径】推导且以自身射程 R 为上限 ⇒ 迟滞带宽度由 KITING_HYST 显式给定，
+                //   不再依赖"退出阈值 > 接敌带 2.0 格"这种间接约束（那种写法一旦 R 变化就会再次变成负迟滞带）。
                 // ★ AoE3 7e = 25 fps(1500 帧/分钟)：60 帧 = 2.4 秒、30 帧 = 1.2 秒。工程铁律：frame→秒 一律 ÷25。
                 const int SHOOT_FRAMES = 30;               // SHOOT 相位持续 ≈1.2 秒@25fps（用户需求"打一下就走"——打一发就走，不多停留）
                 const int PHASE_COOLDOWN = 20;             // 相位内不重发指令 ≈0.8 秒（让一撤走完）
@@ -4483,6 +4499,14 @@ void UsrAI::manageCounterAttack() {
                     kiteSkipSort[a.SN] = kSkipSort;
                     DebugText(QString("[KIT-NO f=%1] SN=%2 无可拉扯目标：附近敌 Sort=%3 射程>我%4格 ⇒ 不拉扯(落推进/打建筑)").arg(frame).arg(a.SN).arg(kSkipSort).arg(R / BL, 0, 'f', 1));
                 }
+                // ★★★ 2026-09-22 拉扯距离模型（「撤得开」×「打得到」的平衡）★★★
+                // 威胁半径：远程敌 = 其最大射程（撤到它射程外即可）；近战/村民 = 0（贴身威胁由下方 0.5R 无条件撤退兜底）。
+                // RET_D（=退出阈值=撤退后保持的距离）恒 ≤ R ⇒ 撤完仍在自身射程内 ⇒ 切回 SHOOT 立刻能打，不再空走 4~6.3 格。
+                // T_IN / T_OUT 构成 KITING_HYST 格正迟滞带；T_IN 不低于 0.5R（贴脸线），避免两条触发互相打架。
+                const double THREAT_R = (kSort >= 0 && isRanged(kSort)) ? rangedMaxRange(kSort) : 0.0;
+                const double RET_D = min(max(THREAT_R + KITING_SAFE_MARGIN * BL, KITING_MIN_KEEP * BL), R);
+                const double T_OUT = RET_D;
+                const double T_IN  = max(0.5 * R, RET_D - KITING_HYST * BL);
                 double dK = kGot ? calDistance(a.DR, a.UR, kEX, kEY) : 1e12;
 
                 // —— 终止触发（无条件、无节流）：从 SHOOT 贴身 <0.5R 立即切 RETREAT ——
@@ -4499,7 +4523,7 @@ void UsrAI::manageCounterAttack() {
                                                 //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
                 // ★ 敌近提前撤：SHOOT 内敌逼近到 0.9R(复合弓 6.3 格)就不必等满 30 帧（远程敌 0.5 秒可贴到 5 格）。 与"打满 30 帧"构成双触发。⚠ 只在 phase=0(SHOOT)内触发。
-                if (phase == 0 && kGot && dK > 0.5 * R && dK <= 0.9 * R && phaseAged >= 6) {
+                if (phase == 0 && kGot && dK > 0.5 * R && dK <= T_IN && phaseAged >= 6) {
                     // phaseAged>=6 帧≈0.24 秒最小驻留,避免刚切进 SHOOT 立刻因敌近距离又撤回去, 造成"反复横跳"震荡(每帧切相位,实际伤害 0)。
                     phase = 1; kitingPhase[a.SN] = 1; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
@@ -4524,13 +4548,14 @@ void UsrAI::manageCounterAttack() {
                     kitingRetPrevDK.erase(a.SN);
                                                 //   （旧实现 stuck>0 就永久跳过第 1 档 ⇒ 只能朝 TC 撤 ⇒ 越撤越贴敌）
                 }
-                // RETREAT 退出条件【双路径】（用户原话"直到敌出射程外再攻击"）： ① 优选：敌距 ≥ R+BREATH(1.5 格)  ② 兜底：RETREAT 持续 ≥ 60 帧(2.4 秒)强制切回
+                // RETREAT 退出条件【双路径】（用户原话"直到敌出射程外再攻击"）： ① 优选：dK ≥ T_OUT(=RET_D，威胁半径推导，且恒 ≤ 自身射程 R)
+                // ② 兜底：RETREAT 持续 ≥ 60 帧(2.4 秒)强制切回。★ 2026-09-22 旧①为 `R+BREATH`=11 格（> 射程 R=7）⇒ 撤到达标即丢输出，已改为 T_OUT。
                 // 没敌/在 RETREAT 阶段：走下方推进 (issueMarch)
-                if (phase == 1 && kGot && dK >= R + BREATH) {
+                if (phase == 1 && kGot && dK >= T_OUT) {
                     phase = 0; kitingPhase[a.SN] = 0; kitingPhaseFrame[a.SN] = frame;
                     phaseFrame = frame; phaseAged = 0;
                 } else if (phase == 1 && phaseAged >= RETREAT_FRAMES) {
-                    // ⚠ 用"相位节流"上限做兜底：敌追着我时撤不到 dK≥R+BREATH，2.4 秒后再给"再射"机会。   本帧只切相位，真正撤/射在下一相位段（节流让一射走完）。
+                    // ⚠ 用"相位节流"上限做兜底：敌追着我时撤不到 dK≥T_OUT，2.4 秒后再给"再射"机会。   本帧只切相位，真正撤/射在下一相位段（节流让一射走完）。
                     if (coolPhase) {
                         phase = 0; kitingPhase[a.SN] = 0; kitingPhaseFrame[a.SN] = frame;
                         phaseFrame = frame; phaseAged = 0;
@@ -4538,12 +4563,15 @@ void UsrAI::manageCounterAttack() {
                 }
 
                 if (phase == 1 && kGot && canReissue) {
-                    // —— RETREAT 阶段：沿"远离敌"方向撤，落点 = 敌 + KITING_RETREAT_MULT*R × unitVector ——
-                    // ★ 2026-09-11：旧 0.85(远程敌)/1.1(近战敌) < 1 ⇒ 撤退落点落在自身射程 R 之内、比原地更近敌 ⇒ 退出条件 dK≥R+BREATH 永不满足 ⇒ 永远在射程内被贴脸打。
+                    // —— RETREAT 阶段：沿"远离敌"方向撤，落点 = 敌 + KIT_LAND × unitVector ——
                     // ★ 2026-09-12 fallback 链：第1档"远离敌"可能撞海/林 ⇒ 二级朝己方 TC 撤、三级朝祭司撤； 全失败则本帧不下令（下一帧再试），绝不让单位往海里走。
-                    // ★ 2026-09-18：撤退落点必须【真的越过退出阈值】。退出阈值 = R+BREATH = 7+4 = 11 格， 而旧 1.4R/1.5R = 9.8/10.5 格 < 11 ⇒ 永远撤不到阈值，只能靠 60 帧兜底强制切回 SHOOT
-                    // （实测 78% 撤退窗口落点距自身 8~15 格，但「实走/应走」仅 39%）。 改 1.8R/1.9R = 12.6/13.3 格，留 1.6 格余量确保满足退出条件。
-                    const double KITING_RETREAT_MULT = kMelee ? 1.9 : 1.8;
+                    // ★ 2026-09-22 演化史（保留以便读懂为什么是这个数）：
+                    //   0.85/1.1 R（2026-09-11）< R ⇒ 落点比原地更近敌，退出条件永不满足；
+                    //   → 1.4/1.5 R（09-18）9.8/10.5 格 < 旧退出阈值 11 格 ⇒ 仍撤不到；
+                    //   → 1.8/1.9 R（09-18）12.6/13.3 格 > 自身射程 7 格 ⇒ 「撤得开」达标但「打不到」——
+                    //     撤完必须重新走 4~6.3 格才有输出，且撤退窗口(30 帧)比攻击保护期(60 帧)更密 ⇒ SHOOT 段被结构性封死。
+                    //   → 现版（09-22）：落点 = RET_D + SLACK，由【威胁半径】推導并以【自身射程】为上限 ⇒ 撤完即在射程内。
+                    const double KIT_LAND = RET_D + KITING_LANDING_SLACK * BL;   // 略越过 T_OUT，确保退出条件真的满足
                     double ux = (a.DR - kEX) / (dK + 1e-6), uy = (a.UR - kEY) / (dK + 1e-6);
                     const double angs[5] = {0.0, 0.6, -0.6, 1.2, -1.2};
                     const double angsT[5] = {0.0, 0.5, -0.5, 1.0, -1.0};  // TC fallback 用更窄角度(TC 必存在,角度越准越好)
@@ -4580,8 +4608,8 @@ void UsrAI::manageCounterAttack() {
                     // —— 第 1 档:沿"远离敌"方向撤（上一轮撤不动则跳过，改走第 2 档） ——
                     for (int ai = 0; ai < 5 && !kitMoved && !skipAwayStage; ++ai) {
                         double ca = std::cos(angs[ai]), sa = std::sin(angs[ai]);
-                        tryRetreatLanding(kEX + (ux*ca - uy*sa) * R * KITING_RETREAT_MULT,
-                                          kEY + (uy*ca + ux*sa) * R * KITING_RETREAT_MULT, 1);
+                        tryRetreatLanding(kEX + (ux*ca - uy*sa) * KIT_LAND,
+                                          kEY + (uy*ca + ux*sa) * KIT_LAND, 1);
                     }
                     // —— 第 2 档:朝己方 TC 方向撤 12 格(TC 必在已探索空旷区,几乎总可走) ——
                     if (!kitMoved) {
@@ -4614,9 +4642,12 @@ void UsrAI::manageCounterAttack() {
                     // —— 终极兜底：三档全失败 → 本帧不下令，相位机下一帧再试 ——
                     // ★ 观测增强：原 `frame % 50` 采样率仅 1/50，反攻期常整段漏掉 RETREAT 窗口。改为每次进入 撤退窗口必打；本块已被 canReissue(30 帧) 限制，每弓兵每 30 帧最多一条，不会刷屏。
                     // ★ 2026-09-21 追加 `tSort=`（目标兵种）：验收"不拉扯射程不占优的敌人"的直接证据 —— 改后 tSort 恒不应出现 8(投石车)/12(战车弓)；12/8 出现在这里 = 判据漏改。
-                    DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 stuck=%6 aged=%7 self=(%8,%9) tgt=(%10,%11) tSort=%12")
+                    // ★ 2026-09-22 追加 retD/tin/thr（距离模型的输出）——验收"撤完是否仍在自身射程内"的直接依据：
+                    //   landD = 落点距目标 = KIT_LAND（应与 retD 同量级且 ≤ R）；thr = 目标威胁半径（远程敌=其射程）。
+                    DebugText(QString("[KIT-R f=%1] SN=%2 dK=%3 R=%4 stage=%5 stuck=%6 aged=%7 self=(%8,%9) tgt=(%10,%11) tSort=%12 retD=%13 tin=%14 thr=%15 melee=%16")
                               .arg(frame).arg(a.SN).arg(dK / BL, 0, 'f', 1).arg(R / BL, 0, 'f', 1).arg(kitStage).arg(kitingRetStuck.count(a.SN) ? kitingRetStuck[a.SN] : 0).arg(phaseAged)
-                              .arg(a.DR / BL, 0, 'f', 1).arg(a.UR / BL, 0, 'f', 1).arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1).arg(kSort));
+                              .arg(a.DR / BL, 0, 'f', 1).arg(a.UR / BL, 0, 'f', 1).arg(kitX / BL, 0, 'f', 1).arg(kitY / BL, 0, 'f', 1).arg(kSort)
+                              .arg(RET_D / BL, 0, 'f', 1).arg(T_IN / BL, 0, 'f', 1).arg(THREAT_R / BL, 0, 'f', 1).arg(kMelee ? 1 : 0));
                     marchCmds++;
                     continue;   // RETREAT 段不落站桩/推进
                 }
@@ -4626,7 +4657,12 @@ void UsrAI::manageCounterAttack() {
                 // 仅 27 条 SHOOT 采样、dK 一路 7.9→1.8 被贴脸）。新：dK ≤ R+2 即视为接敌带，只发攻击令不发移动令。
                 if (phase == 0 && kGot && dK <= R + 2.0 * BL) {
                     // —— SHOOT 阶段射程内攻击(撤完保护期 60 帧内不重发,符合用户"攻击目标间隔扩大"指示) ——
-                    const int RETREAT_PROTECT_FRAMES = 60;   // ★ 60 帧 ≈2.4 秒(原 30 帧=1.2 秒)——撤完等久一点再开火
+                    // ★ 2026-09-22 「撤完等久一点再开火」60 帧 → 15 帧（0.6 秒）。这是"打不到"的第二根因：
+                    //   撤退重发间隔仅 ≈30 帧，而保护期 60 帧 > 30 ⇒ 保护期【结构性地】永不过期 ⇒ SHOOT 段进了也不发攻击令
+                    //   （铁证 vf_gsk_1 SN=91396：f=33737~34553 的 800 帧里撤退令 30 条、攻击令 0 条）。
+                    //   保护期的原本目的（"撤完别立刻开火，免得引擎又把单位带回射程"）现在由【撤退距离 ≤ 自身射程】直接保证，
+                    //   故只保留最小去抖量。
+                    const int RETREAT_PROTECT_FRAMES = 15;
                     const int SHOOT_REISSUE_FRAMES   = 20;   // ★ 2026-09-14 攻击令最小重发间隔(≈0.8 秒)
                     bool retreatProt = lastRetreatFrame.count(a.SN) &&
                                        (frame - lastRetreatFrame[a.SN] < RETREAT_PROTECT_FRAMES);
