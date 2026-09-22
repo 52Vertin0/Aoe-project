@@ -1921,13 +1921,20 @@ void UsrAI::manageBuildings() {
 //     没有"建不建得起"，木材卡在中间区间时市场会被永久冻结、靶场冻到 14 分钟。   ⚠ gazelleAlive==0 ⇒ 恒 false，让位闸同步失效，否则会被一个永远建不出来的仓库饿死。
 // ★ 2026-09-15 收口："远距瞪羚"判据（距 TC>20 且 距所有已建成仓库>20）原先在【预判定】与【实际建造】两处各写一遍
 //   —— 两处口径必须完全一致，否则会出现"预判定说该建、建造块却不建"的空转。
-        auto isFarGazelle = [&](const tagResource &r, double tcDRx, double tcURx, double blx) -> bool {
+        //   ★ 2026-09-22 加 `pGateHit` 出参（默认 nullptr，**被挡下的只数**）：让调用方能量出"被落点闸挡下的
+        //     瞪羚数"，这是验收③的量化证据 —— 否则"没下单"分不清【本来就没远距群】还是【被闸挡下】。
+        //     ⚠ 只在【一处】实现判据、两处调用（预判定不传 / 建造块传 &gateHit），不写第二遍。
+        auto isFarGazelle = [&](const tagResource &r, double tcDRx, double tcURx, double blx,
+                                int *pGateHit = nullptr) -> bool {
             if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) return false;
             // ★ 2026-09-22「避免一个瞪羚群附近重复建 2 个仓库」主修点：刚给这个群下过仓库令
             //   （村民还在路上、地基都还没出现）⇒ 本帧不再判为"远距"，否则 buildCooldown(5 帧) 一到
             //   就对同一个群重复下单（改前 795 局实测 54.9% 的多仓局有此现象）。
             //   窗口 STOCK_ORDER_SETTLE 到期后自动放行重发 ⇒ 静默失败（村民阵亡/选址非法）不构成死锁。
-            if (stockOrderPending(r.DR / blx, r.UR / blx)) return false;
+            if (stockOrderPending(r.DR / blx, r.UR / blx)) {
+                if (pGateHit) ++(*pGateHit);
+                return false;
+            }
             if (calDistance(tcDRx, tcURx, r.DR, r.UR) < 20 * blx) return false;
             // ★ 2026-09-22：去掉 `Percent == 100` —— 在建/已下地基的仓库同样是锚点，
             //   否则首座未完工时，同一批远距瞪羚会再次满足"距所有已完工仓库>20"。
@@ -1991,8 +1998,9 @@ void UsrAI::manageBuildings() {
             double tcUR = center ? (center->BlockUR + 1) * BL : 0;
             // 收集"距 TC>20 且 距所有现有 Stock>20"的瞪羚
             std::vector<std::pair<double,double>> farGaz;
+            int gateHit = 0;   // ★ 2026-09-22：被"落点记忆"闸挡下的瞪羚数（验收③的量化证据）
             for (auto &r : info.resources)
-                if (isFarGazelle(r, tcDR, tcUR, BL))
+                if (isFarGazelle(r, tcDR, tcUR, BL, &gateHit))
                     farGaz.emplace_back(r.DR, r.UR);
             // ★ 2026-09-07：数量闸——远距瞪羚不足 MIN_GAZELLE_FOR_SECOND_STOCK 只就不建
             if ((int)farGaz.size() >= MIN_GAZELLE_FOR_SECOND_STOCK) {
@@ -2011,21 +2019,34 @@ void UsrAI::manageBuildings() {
                     int tBlockDR = (int)(centerDR / BL) - 1;
                     int tBlockUR = (int)(centerUR / BL) - 1;
                     // ★ 关键：传坐标。仓库将落在远距瞪羚群中心，而非 TC 附近
-                    builtThisFrame = tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR);
+                    // ★★ 2026-09-22（本轮第二处修因）第 6 参 noFallback = **true** ★★
+                    //   原为 false ⇒ 13 个偏移位都放不下时，会落到 `findBuildSite()` 的**通用兜底**（TC 旁）——
+                    //   于是"给 (50,55) 的群下单、实际建到 (11,15)"（实测 vf_sd_3：群中心块 (50,55) → 建在距 TC
+                    //   8.5 块处）。危害有二：① 仓库离它要服务的兽群 50+ 块 = **150 木白发**；
+                    //   ② 两条"不同群"的令都跑飞到 TC 旁 ⇒ 并排 4 块 = 肉眼看到的"同一个群附近建了 2 座仓库"
+                    //   （vf_sd_3 f18024(11,15) / f18029(11,19)，间隔 5 帧 —— 只靠"落点记忆"拦不住，因为落点
+                    //   记的是**选址**、闸判的是**瞪羚位置**，两者被兜底彻底解耦）。
+                    //   与第二谷仓同口径（它早已用 noFallback=true）：群边放不下 ⇒ 本帧不建、下帧重试，绝不乱落。
+                    builtThisFrame = tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR, true);
                     // ★ 2026-09-22 下单观测（无条件）：验收判据必须是【产物量】而不是"日志有没有打"
                     //   （本块原无任何日志，导致此前只能从 [BUILD-ISSUE] 反推，且近场块的日志带 frame%60 采样）。
                     if (builtThisFrame)
                         DebugText(QString("[STOCK-ORD f=%1] 第二仓库 群中心块(%2,%3) 远距瞪羚=%4 现存仓=%5/%6 木=%7")
                                   .arg(frame).arg(tBlockDR).arg(tBlockUR).arg((int)farGaz.size())
                                   .arg(countBuildingsExisting(BUILDING_STOCK)).arg(MAX_STOCK).arg((int)info.Wood));
+                    else if (frame % 300 == 0)
+                        // 有候选却建不出 ⇒ 选址冲突/没空闲村民/木不够。不打印就分不清"没候选"还是"发令失败"。
+                        DebugText(QString("[STOCK-ORD-FAIL f=%1] 群中心块(%2,%3) 远距瞪羚=%4 木=%5 ⇒ tryBuild 失败")
+                                  .arg(frame).arg(tBlockDR).arg(tBlockUR).arg((int)farGaz.size()).arg((int)info.Wood));
                 }
             }
             // ★ 2026-09-22 可观测性（铁律 53）：远距瞪羚被落点闸整批挡下时也要留痕，
             //   否则"本帧没下单"分不清【本帧没远距群】还是【被落点闸过滤】。
-            else if (!stockOrderFrame.empty() && frame % 300 == 0)
-                DebugText(QString("[STOCK-SUPPRESS f=%1] 远距瞪羚=%2 < 阈值%3 ⇒ 不下单（落点记忆 %4 条有效）")
+            //   gateHit = 只被"落点记忆"挡下（而非因太靠近 TC/既有仓库）的那部分 ⇒ 闸生效的直接计数。
+            else if (gateHit > 0 && frame % 300 == 0)
+                DebugText(QString("[STOCK-SUPPRESS f=%1] 远距瞪羚=%2 < 阈值%3（其中被落点闸挡下 %4 只；落点记忆 %5 条）")
                           .arg(frame).arg((int)farGaz.size()).arg(MIN_GAZELLE_FOR_SECOND_STOCK)
-                          .arg((int)stockOrderFrame.size()));
+                          .arg(gateHit).arg((int)stockOrderFrame.size()));
         }
 
         // ★ 第二谷仓：为"TC 之外 ≥6 丛的远距浆果群"建一座，落在群中心（用户需求 2026-09-07）。
