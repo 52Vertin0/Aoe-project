@@ -121,6 +121,20 @@ ins UsrIns;
 //   原 MAX_STOCK=2 下多群瞪羚（典型 3~4 群）只能有 2 群被覆盖、其余猎人空跑回最近仓库。
 #define MAX_STOCK 4             // 仓库上限：每群覆盖 1 座 + TC 旁首仓 1 座 + 远距覆盖 1~2 座 = 4 座
 //   ★ 实测补（2026-09-04）：此前缺此上限，旧"第二仓库"段每帧重发令 + 不传坐标 ⇒ 贴 TC 多建 3 座仓库。
+// ★★★ 2026-09-22 用户需求「避免一个瞪羚群附近重复建 2 个仓库」★★★
+//   根因（三类判据各自失明，缺一不可）：
+//     ① "远距群"判据 isFarGazelle 的锚点只看【已完工 Percent==100】的仓库；
+//     ② tryBuild 成功 ≠ 仓库出现在 info.buildings —— 村民还在路上时连地基都没有（乐观判据缺失）；
+//     ③ 唯一拦得住的是总量闸 `countBuildingsExisting < MAX_STOCK`——它把"在途"算进去了，但【不认坐标】
+//        ⇒ 只能等凑满 4 座才停。
+//   ⇒ buildCooldown(5 帧) 一过，同一群再次满足"距所有已完工仓库>20" ⇒ 对同一个群重复下单，
+//     落点又被 findBuildSite 兜底/偏移表挪 1~9 格 ⇒ 肉眼看到的"同一群旁边并排 2~3 座仓库"。
+//   改前基线（795 局 / 706 批，探针 stock_order_probe.py）：多仓局 645 局中，同点(块距≤9) 46.0%
+//     ＋ 同群(10~20) 8.8% = 54.9%；典型 dm8 f33369(51,49) → f33374(51,49) 同块、仅隔 5 帧（= buildCooldown）。
+//   修法（落点记忆，唯一真源在 tryBuild）：见 stockOrderPending() / stockOrderDR-UR-Frame。
+#define STOCK_ORDER_SETTLE     3000   // 落点记忆有效窗口(帧)=120 游戏秒（覆盖最远村民走到工地的时间）
+#define STOCK_ORDER_MERGE_BLK  20.0   // 与落点块距 ≤ 此值 ⇒ 判为"同一个群"（块；与 isFarGazelle 的 20 格锚点同口径）
+#define STOCK_ORDER_RING       4      // 只记最近 N 次仓库令落点（= 最多同时在建的仓库数 = MAX_STOCK）
 // ★ 第二仓库（远距瞪羚群仓库）的最少瞪羚数门槛（2026-09-07 用户需求"没瞪羚就跳过建造第二仓库"）。
 //   判定用"距 TC>20 且 距所有现有 Stock>20"的远距瞪羚数量；低于此数则【完全跳过】（既不建、也不让 needSecondStock 阻塞市场/靶场）。
 //   默认 2：为 1 只离群瞪羚花 150 木 + 村民长途跋涉不划算。⚠ 改 1 = 有 1 只就建；改 3+ = 必须成群。
@@ -1677,11 +1691,29 @@ void UsrAI::manageBuildings() {
         return n;
     };
 
+// ★★★ 2026-09-22 用户需求「避免一个瞪羚群附近重复建 2 个仓库」：仓库令【落点记忆】判据（唯一真源）★★★
+//   给定块坐标，判断"最近下发的仓库令是否就落在这里/附近（且仍在有效窗口内）"。
+//   本函数两条建仓路径（下方近场块 + postW2 第二仓库块）共用它 ⇒ 判据只写一遍（铁律 21/26）。
+//   ⚠ 窗口到期后自动放行重发：村民阵亡 / 选址被判非法导致仓库始终没落地时，不会永久锁死。
+    auto stockOrderPending = [&](double blkDR, double blkUR) -> bool {
+        int nOrd = (int)stockOrderFrame.size();
+        for (int i = 0; i < nOrd; ++i)
+            if (frame - stockOrderFrame[i] <= STOCK_ORDER_SETTLE &&
+                calDistance(blkDR, blkUR, (double)stockOrderDR[i], (double)stockOrderUR[i]) < STOCK_ORDER_MERGE_BLK)
+                return true;
+        return false;
+    };
+
 // ====== ★★★ 瞪羚群中心仓库：全建筑最高优先级（用户需求：村民打猎前先建仓库）★★★ ======
 //   ① 块放在 preW1 之前 ⇒ 抢在房屋/兵营/靶场/市场/农场之前消耗木材；
 //   ② 闸门用"TC 可猎范围内有瞪羚"而非"已经在打猎" ⇒ 仓库在猎人出发前落地，不再空跑往返；
 //   ③ 聚类只在距 TC ≤ GAZELLE_HUNT_RANGE 的瞪羚里选（与猎人选取范围一致），否则会建在"全图最密但村民根本不会去"的假群上。
 //   建的是仓库 STOCK 而非谷仓：瞪羚肉 ProductSort=HUMAN_STOCKFOOD，只能交付仓库（Building.cpp:549）。
+//   ⚠ 2026-09-22 实测：本块在 795 局里【0 次成功建仓】—— `[GAZELLE-STOCK]` 全库 0 条，
+//     且 `snGB=1` 在全部 3203 条 [GATE] 行里恒为 1 ⇒ 闸门 `storageNearGazelleBuilt == 0` 在
+//     剧本预置仓库(11097)存在时当帧即被 `existingStocks > 0` 置 1 ⇒ 本块实质不可达。
+//     ★ 因此本轮"同一瞪羚群附近重复建 2 座仓库"的全部建仓令都来自 postW2 的第二仓库块（见下）。
+//       （另注：本块日志带 `frame % 60 == 0` 采样，即使可达也会漏记大部分令。）
     if (!builtThisFrame && storageNearGazelleBuilt == 0 && frame < GAZELLE_STOCK_WINDOW_END &&
         houseCount >= GAZELLE_STOCK_MIN_HOUSES && info.Wood >= BUILD_STOCK_WOOD) {
         const double gBL = (double)BLOCKSIDELENGTH;
@@ -1739,8 +1771,12 @@ void UsrAI::manageBuildings() {
                 // ★ 2026-09-15 收口：同一"本簇是否已被现成仓库覆盖"判据原先在本块内写了两遍
                 //   （建造循环 1 次 + allCovered 判定 1 次）——判据写两遍即等于只剩一遍生效。
                 auto clusterCovered = [&](double cdr, double cur) {
+                    // ★ 2026-09-22：① 刚下过仓库令、村民还在路上的落点也算覆盖（本块虽因 snGB 闸实务不可达，
+                    //   但两条路径的锚点口径必须一致，否则哪天闸一松开重复建造立刻复发）；② 去掉 `Percent == 100`
+                    //   —— 在建（已下地基）的仓库同样是锚点。
+                    if (stockOrderPending(cdr / gBL, cur / gBL)) return true;
                     for (auto &b : info.buildings)
-                        if (b.Type == BUILDING_STOCK && b.Percent == 100 &&
+                        if (b.Type == BUILDING_STOCK &&
                             calDistance(cdr, cur, (b.BlockDR + 1) * gBL, (b.BlockUR + 1) * gBL)
                                 < GAZELLE_HUNT_RANGE * gBL)
                             return true;
@@ -1887,9 +1923,16 @@ void UsrAI::manageBuildings() {
 //   —— 两处口径必须完全一致，否则会出现"预判定说该建、建造块却不建"的空转。
         auto isFarGazelle = [&](const tagResource &r, double tcDRx, double tcURx, double blx) -> bool {
             if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) return false;
+            // ★ 2026-09-22「避免一个瞪羚群附近重复建 2 个仓库」主修点：刚给这个群下过仓库令
+            //   （村民还在路上、地基都还没出现）⇒ 本帧不再判为"远距"，否则 buildCooldown(5 帧) 一到
+            //   就对同一个群重复下单（改前 795 局实测 54.9% 的多仓局有此现象）。
+            //   窗口 STOCK_ORDER_SETTLE 到期后自动放行重发 ⇒ 静默失败（村民阵亡/选址非法）不构成死锁。
+            if (stockOrderPending(r.DR / blx, r.UR / blx)) return false;
             if (calDistance(tcDRx, tcURx, r.DR, r.UR) < 20 * blx) return false;
+            // ★ 2026-09-22：去掉 `Percent == 100` —— 在建/已下地基的仓库同样是锚点，
+            //   否则首座未完工时，同一批远距瞪羚会再次满足"距所有已完工仓库>20"。
             for (auto &b : info.buildings)
-                if (b.Type == BUILDING_STOCK && b.Percent == 100) {
+                if (b.Type == BUILDING_STOCK) {
                     double gDR = (b.BlockDR + 1) * blx, gUR = (b.BlockUR + 1) * blx;
                     if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * blx) return false;
                 }
@@ -1918,14 +1961,22 @@ void UsrAI::manageBuildings() {
 
         // ★ 2026-09-13 闸门可观测性（新增，用于实证"市场/靶场是否被让位闸饿死"）：
         //   每 300 帧打印一次让位闸全量状态。needStock=1 且 market/range 长期=0 ⇒ 就是被饿死。
-        if (frame % 300 == 0)
-            DebugText(QString("[GATE f=%1] needStock=%2 gazAlive=%3 stock=%4 wood=%5 | market=%6 range=%7 granary=%8 | snGB=%9")
+        if (frame % 300 == 0) {
+            // ★ 2026-09-22：补"仓库令落点记忆"的自描述 —— 判据的输入量必须能从日志直接读到（铁律 53），
+            //   否则"本帧没下单"分不清【没远距群】还是【被落点闸挡下】。
+            QString ordTxt;
+            for (int i = 0; i < (int)stockOrderFrame.size(); ++i)
+                ordTxt += QString("(%1,%2)Δ%3 ").arg(stockOrderDR[i]).arg(stockOrderUR[i])
+                          .arg(frame - stockOrderFrame[i]);
+            if (ordTxt.isEmpty()) ordTxt = QString("无");
+            DebugText(QString("[GATE f=%1] needStock=%2 gazAlive=%3 stock=%4 wood=%5 | market=%6 range=%7 granary=%8 | snGB=%9 | 仓库令落点=%10")
                       .arg(frame).arg(needSecondStock ? 1 : 0).arg(gazelleAlive)
                       .arg(countBuildingsExisting(BUILDING_STOCK)).arg((int)info.Wood)
                       .arg(countBuildingsExisting(BUILDING_MARKET))
                       .arg(countBuildingsExisting(BUILDING_RANGE))
                       .arg(countBuildingsExisting(BUILDING_GRANARY))
-                      .arg(storageNearGazelleBuilt));
+                      .arg(storageNearGazelleBuilt).arg(ordTxt));
+        }
 
         // ★ 第二仓库：为"距现有 Stock 均 >20 格的远距瞪羚群"建一座，落在群中心。
         //   ⚠ 三要素缺一不可（旧版缺陷导致贴 TC 多建 3 座）：① MAX_STOCK 闸；② 不能每帧重发令
@@ -1961,8 +2012,20 @@ void UsrAI::manageBuildings() {
                     int tBlockUR = (int)(centerUR / BL) - 1;
                     // ★ 关键：传坐标。仓库将落在远距瞪羚群中心，而非 TC 附近
                     builtThisFrame = tryBuild(BUILDING_STOCK, 3, false, tBlockDR, tBlockUR);
+                    // ★ 2026-09-22 下单观测（无条件）：验收判据必须是【产物量】而不是"日志有没有打"
+                    //   （本块原无任何日志，导致此前只能从 [BUILD-ISSUE] 反推，且近场块的日志带 frame%60 采样）。
+                    if (builtThisFrame)
+                        DebugText(QString("[STOCK-ORD f=%1] 第二仓库 群中心块(%2,%3) 远距瞪羚=%4 现存仓=%5/%6 木=%7")
+                                  .arg(frame).arg(tBlockDR).arg(tBlockUR).arg((int)farGaz.size())
+                                  .arg(countBuildingsExisting(BUILDING_STOCK)).arg(MAX_STOCK).arg((int)info.Wood));
                 }
             }
+            // ★ 2026-09-22 可观测性（铁律 53）：远距瞪羚被落点闸整批挡下时也要留痕，
+            //   否则"本帧没下单"分不清【本帧没远距群】还是【被落点闸过滤】。
+            else if (!stockOrderFrame.empty() && frame % 300 == 0)
+                DebugText(QString("[STOCK-SUPPRESS f=%1] 远距瞪羚=%2 < 阈值%3 ⇒ 不下单（落点记忆 %4 条有效）")
+                          .arg(frame).arg((int)farGaz.size()).arg(MIN_GAZELLE_FOR_SECOND_STOCK)
+                          .arg((int)stockOrderFrame.size()));
         }
 
         // ★ 第二谷仓：为"TC 之外 ≥6 丛的远距浆果群"建一座，落在群中心（用户需求 2026-09-07）。
@@ -6279,6 +6342,20 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     pendingBuildIns[buildInsId] = {f->SN, buildingType};
     pendingBuildInsFrame[buildInsId] = frame;
     lastBuildIssueFrame[buildingType] = frame;
+    // ★★★ 2026-09-22「避免一个瞪羚群附近重复建 2 个仓库」：仓库令【落点记忆】（唯一真源）★★★
+    //   记在 tryBuild 里 = 任何建仓路径（近场块 / 第二仓库块 / 未来新增）都自动覆盖，判据不会漏。
+    //   (x,y) 是【最终选址】的块坐标（偏移表 / findBuildSite 之后），与 [BUILD-ISSUE] 的 at= 同一口径。
+    //   只记最近 STOCK_ORDER_RING 条（= 最多同时在建的仓库数），更早的裁掉（平行数组一起裁，保持同下标）。
+    if (buildingType == BUILDING_STOCK) {
+        stockOrderDR.push_back(x);
+        stockOrderUR.push_back(y);
+        stockOrderFrame.push_back(frame);
+        while ((int)stockOrderFrame.size() > STOCK_ORDER_RING) {
+            stockOrderDR.erase(stockOrderDR.begin());
+            stockOrderUR.erase(stockOrderUR.begin());
+            stockOrderFrame.erase(stockOrderFrame.begin());
+        }
+    }
 
     // 记录尝试过的位置，防止反复在同一位置建造失败
     int key = x * 1000 + y;

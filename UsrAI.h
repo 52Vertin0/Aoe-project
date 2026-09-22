@@ -4,6 +4,7 @@
 #include "ai.h"
 #include <set>
 #include <map>
+#include <vector>
 #include <algorithm>
 #include <cmath>
 
@@ -124,6 +125,14 @@ private:
     std::map<int,int> orphanBuildFrame;     // 孤儿地基SN → 上次补派村民的帧号（重派节流）
     std::map<int,int> builderDispatchFrame; // ★ 建造者SN → 本次建造令下发帧（硬超时起点；重派不重置）
     std::map<int,int> lastBuildIssueFrame;  // 建筑类型 → 最近一次下发建造指令的帧号（防异步回写窗口内重复建造）
+    // ★★★ 2026-09-22「避免一个瞪羚群附近重复建 2 个仓库」：最近 N 次【仓库】建造令的落点（块坐标）+ 下发帧。
+    //   唯一用途 = 喂 stockOrderPending()：窗口内把"距落点 ≤20 块"的瞪羚判为该群刚下过令 ⇒ 不再重复下单。
+    //   为什么必须自己记：tryBuild 成功 ≠ 仓库出现在 info.buildings（村民在路上时连地基都没有），
+    //   而 isFarGazelle 的锚点只能看 info.buildings ⇒ 不看落点就一定漏。
+    //   ⚠ 三只数组严格同下标（平行数组一旦被 sort/去重就错位）；此处只 push_back + 裁头，绝不排序。
+    std::vector<int> stockOrderDR;      // 落点块 DR
+    std::vector<int> stockOrderUR;      // 落点块 UR
+    std::vector<int> stockOrderFrame;   // 落点下发帧（窗口 STOCK_ORDER_SETTLE 到期即自动失效 ⇒ 静默失败可重发）
     std::set<int> deadBuildings;      // 卡在0%的废弃地基SN（超时后忽略，避免阻塞后续建造）
     std::set<int> depositFarmers;
     std::map<int,int> depositStartFrame;
