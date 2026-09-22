@@ -135,6 +135,27 @@ ins UsrIns;
 #define STOCK_ORDER_SETTLE     3000   // 落点记忆有效窗口(帧)=120 游戏秒（覆盖最远村民走到工地的时间）
 #define STOCK_ORDER_MERGE_BLK  20.0   // 与落点块距 ≤ 此值 ⇒ 判为"同一个群"（块；与 isFarGazelle 的 20 格锚点同口径）
 #define STOCK_ORDER_RING       4      // 只记最近 N 次仓库令落点（= 最多同时在建的仓库数 = MAX_STOCK）
+// ★★★ 2026-09-22 用户需求「金矿旁边没有仓库的话也要建仓库」★★★
+//   机制依据（引擎侧已核实，不是推测）：矿工背包满后由 `Core_List::findResourceBuiding()`
+//   （Core_List.cpp:736）在【距资源所在处最近】的已完工建筑里选交付点（Manhattan 距离），
+//   候选 = TC ∪ `Resource::get_ReturnBuildingType()`（Resource.cpp:8）：
+//     金/木/石/兽肉 → BUILDING_STOCK【仓库】；浆果·农田 → GRANARY；鱼肉 → DOCK。
+//   ⇒ 仓库必须落在【金矿旁】才缩短往返；落在 TC 旁对金矿毫无意义
+//     （本图 map3.njust 的 8 簇金矿距 TC 16.7 / 21.0 / 51.6 / 55.9 / 57.8 / 64.0 / 76.4 / 100.1 块）。
+//   ⛔ 预算必须【额外】给，不能与瞪羚共用 MAX_STOCK：全库 764 局实测 stock 吃满 MAX_STOCK=4 的占
+//      562 局(73.6%) ⇒ 共用预算时瞪羚先把 3 个名额吃光、金矿仓永远排不上队（结构不可达，非概率低）。
+//      故：金矿仓用独立的计数器 `goldStockOrders < MAX_GOLD_STOCK`，总量闸放到 MAX_STOCK+MAX_GOLD_STOCK。
+//      ⚠ 不能用"距金矿 ≤20 块的仓库数"当预算判据：剧本预置首仓 (13,34) 距最近的近距金矿格只有 19.4 块
+//        （实测 gst 批 3/3 局开局即计到 1）⇒ 那是把闸门开局就自锁、金矿仓永远建不出。
+//   ⚠ 已知代价：金矿仓会与瞪羚共用总量闸 ⇒ 在"瞪羚尚未吃满 4 座"的少数局里，金矿仓可能顶掉 1 座瞪羚仓
+//      （总量仍 ≤ MAX_STOCK+MAX_GOLD_STOCK）。是否给瞪羚补偿 1 个名额待实测数据再定。
+//   ★ 触发源 = 「村民此刻正在开采的远金矿」（唯一比瞪羚侧多的实质条件）：
+//     本图 64 格金矿里 55 格满足"距 TC>20 且 距仓库>20"，最密的簇心在 (11,94)（离 TC 76 块）——
+//     按"最密簇"选会建在一座 AI 根本不会去采的矿旁（120 木白发）。按"在用"选，落点必然真被用到；
+//     也正因如此【不需要】像瞪羚那样的"至少 N 只"数量闸：有人在那采本身就是"值得建"的证明。
+#define GOLD_STOCK_ANCHOR_RANGE  20.0  // 金矿格距 TC / 距现有任意仓库 均须 > 此值（块；与第二仓库 20 格同口径）
+#define MAX_GOLD_STOCK           1     // 金矿仓库额外名额（不吃 MAX_STOCK 的瞪羚预算 ⇒ 总量上限 = MAX_STOCK + 1）
+#define GOLD_STOCK_WOOD_MARGIN   30    // 木材余量保险（口径同第二仓库：info.Wood ≥ BUILD_STOCK_WOOD + 30）
 // ★ 第二仓库（远距瞪羚群仓库）的最少瞪羚数门槛（2026-09-07 用户需求"没瞪羚就跳过建造第二仓库"）。
 //   判定用"距 TC>20 且 距所有现有 Stock>20"的远距瞪羚数量；低于此数则【完全跳过】（既不建、也不让 needSecondStock 阻塞市场/靶场）。
 //   默认 2：为 1 只离群瞪羚花 150 木 + 村民长途跋涉不划算。⚠ 改 1 = 有 1 只就建；改 3+ = 必须成群。
@@ -2047,6 +2068,104 @@ void UsrAI::manageBuildings() {
                 DebugText(QString("[STOCK-SUPPRESS f=%1] 远距瞪羚=%2 < 阈值%3（其中被落点闸挡下 %4 只；落点记忆 %5 条）")
                           .arg(frame).arg((int)farGaz.size()).arg(MIN_GAZELLE_FOR_SECOND_STOCK)
                           .arg(gateHit).arg((int)stockOrderFrame.size()));
+        }
+
+        // ====== ★★★ 金矿仓库（2026-09-22 用户需求「金矿旁边没有仓库的话也要建仓库」）★★★ ======
+        //   机制依据（引擎侧已核实，非推测）：矿工背包满后由 `Core_List::findResourceBuiding()`
+        //   （Core_List.cpp:736）在【距资源所在处最近】的已完工建筑里选交付点（Manhattan 距离），
+        //   候选 = TC ∪ `Resource::get_ReturnBuildingType()`（Resource.cpp:8）：
+        //     金/木/石/兽肉 → BUILDING_STOCK【仓库】；浆果·农田 → GRANARY；鱼肉 → DOCK。
+        //   ⇒ 仓库必须落在【金矿旁】才缩短往返；落在 TC 旁对金矿毫无意义（本图 8 簇金矿距 TC 16.7~100 块）。
+        //   ★ 触发源 = 「村民此刻正在开采的远金矿」，不是"最密的远金矿"（与瞪羚侧唯一的实质差异）：
+        //     本图 64 格金矿里 55 格满足"距 TC>20 且 距仓库>20"，最密的簇心在 (11,94)（离 TC 76 块）
+        //     —— 按密度选会建在一座 AI 根本不会去采的矿旁（120 木白发）。按"在用"选，落点必然被用到。
+        //   ★ 独立预算（MAX_GOLD_STOCK）：全库 764 局 stock 吃满 MAX_STOCK=4 的占 562 局(73.6%)，
+        //     与瞪羚共用预算等于永远排不上队 ⇒ 用「服务金矿的仓库数」单独计数，总量闸放到 MAX_STOCK+1。
+        //   ⚠ 本块【不参与】needSecondStock 让位闸（市场/靶场不被它阻塞）⇒ 不引入新的饿死路径。
+        if (postBronze && frame > WAVE2_TIME) {
+            const double BLg = (double)BLOCKSIDELENGTH;
+            // 只在"可能下单"或"该打自检行"时才做重活（farmers × 金矿 的两重遍历不便宜）
+            const bool wantGoldEval =
+                (frame % 300 == 0) ||
+                (!builtThisFrame && info.Wood >= BUILD_STOCK_WOOD + GOLD_STOCK_WOOD_MARGIN);
+            if (wantGoldEval) {
+                auto gc = findBuilding(BUILDING_CENTER);
+                const double tcDRg = gc ? (gc->BlockDR + 1) * BLg : 0;
+                const double tcURg = gc ? (gc->BlockUR + 1) * BLg : 0;
+                // ② 存活金矿快照（③④⑤ 三处共用，避免反复遍历 info.resources）
+                std::vector<tagResource *> goldAliveV;
+                for (auto &r : info.resources)
+                    if (r.Type == RESOURCE_GOLD && r.Cnt > 0) goldAliveV.push_back(&r);
+                // ③ 远金矿集 = 距 TC>20 且 距所有仓库>20（＝引擎交付口径下往返 >40 块），并套落点闸
+                std::vector<tagResource *> farGoldV;
+                const int goldAliveN = (int)goldAliveV.size();
+                int gateHitG = 0;
+                for (auto *r : goldAliveV) {
+                    // 刚给这座矿下过仓库令（村民还在路上）⇒ 不再判为"远"（与瞪羚侧共用同一把闸）
+                    if (stockOrderPending(r->DR / BLg, r->UR / BLg)) { ++gateHitG; continue; }
+                    if (calDistance(tcDRg, tcURg, r->DR, r->UR) < GOLD_STOCK_ANCHOR_RANGE * BLg) continue;
+                    bool nearStock = false;
+                    for (auto &b : info.buildings)
+                        if (b.Type == BUILDING_STOCK &&
+                            calDistance(r->DR, r->UR, (b.BlockDR + 1) * BLg, (b.BlockUR + 1) * BLg)
+                                < GOLD_STOCK_ANCHOR_RANGE * BLg) { nearStock = true; break; }
+                    if (nearStock) continue;
+                    farGoldV.push_back(r);
+                }
+                // ④ 在用远金矿格 = 某村民当前工作目标（WorkObjectSN）指向的远金矿
+                std::vector<std::pair<double,double>> inUse;
+                for (auto &fm : info.farmers) {
+                    if (fm.WorkObjectSN <= 0) continue;
+                    for (auto *r : farGoldV)
+                        if (r->SN == fm.WorkObjectSN) { inUse.emplace_back(r->DR, r->UR); break; }
+                }
+                // ⑤ 候选 = 在用格 ∪ 与其同簇(6 格)的远金矿格（扩到整簇，簇中心才是有意义的落点）
+                std::vector<std::pair<double,double>> cand;
+                if (!inUse.empty())
+                    for (auto *r : farGoldV)
+                        for (auto &p : inUse)
+                            if (calDistance(r->DR, r->UR, p.first, p.second) < 6 * BLg) {
+                                cand.emplace_back(r->DR, r->UR); break;
+                            }
+                // ⑥ 下单（四闸：有人在采 / 独立预算未用满 / 总量未超 / 木够）
+                if (!builtThisFrame && !cand.empty() &&
+                    goldStockOrders < MAX_GOLD_STOCK &&
+                    countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK + MAX_GOLD_STOCK &&
+                    info.Wood >= BUILD_STOCK_WOOD + GOLD_STOCK_WOOD_MARGIN) {
+                    // 6 格邻域聚类 → 取最大簇中心（与第二仓库同算法）
+                    double bestSumDR = 0, bestSumUR = 0; int bestCnt = 0;
+                    for (auto &seed : cand) {
+                        double sumDR = 0, sumUR = 0; int cnt = 0;
+                        for (auto &g : cand)
+                            if (calDistance(seed.first, seed.second, g.first, g.second) < 6 * BLg) {
+                                sumDR += g.first; sumUR += g.second; cnt++;
+                            }
+                        if (cnt > bestCnt) { bestCnt = cnt; bestSumDR = sumDR; bestSumUR = sumUR; }
+                    }
+                    if (bestCnt > 0 && info.Wood >= BUILD_STOCK_WOOD) {
+                        const int tGDR = (int)(bestSumDR / bestCnt / BLg) - 1;
+                        const int tGUR = (int)(bestSumUR / bestCnt / BLg) - 1;
+                        // noFallback=true：矿旁放不下就本帧不建（下帧重试），绝不落回 TC 旁
+                        // —— 落回 TC 旁 = 120 木白发（矿工仍旧往返几十块），与第二仓库/第二谷仓同口径。
+                        builtThisFrame = tryBuild(BUILDING_STOCK, 3, false, tGDR, tGUR, true);
+                        if (builtThisFrame) {
+                            goldStockOrders++;   // ★ 只有真下单才计数（tryBuild 失败 = 没花木，下帧重试）
+                            DebugText(QString("[GOLD-STOCK f=%1] 在用金矿簇心块(%2,%3) 簇内=%4 在用格=%5 远金矿格=%6 金矿仓令=%7/%8 木=%9")
+                                      .arg(frame).arg(tGDR).arg(tGUR).arg(bestCnt).arg((int)inUse.size())
+                                      .arg((int)farGoldV.size()).arg(goldStockOrders).arg(MAX_GOLD_STOCK).arg((int)info.Wood));
+                        } else if (frame % 300 == 0)
+                            DebugText(QString("[GOLD-STOCK-FAIL f=%1] 在用金矿簇心块(%2,%3) 在用格=%4 远金矿格=%5 木=%6 ⇒ tryBuild 失败")
+                                      .arg(frame).arg(tGDR).arg(tGUR).arg((int)inUse.size())
+                                      .arg((int)farGoldV.size()).arg((int)info.Wood));
+                    }
+                }
+                // ⑦ 自描述（铁律 53）：判据输入集必须能从日志直接读到，否则"没建金矿仓"分不清
+                //    【本来就没有远金矿】/【没有人在采远金矿】/【独立预算已用满】/【被落点闸挡下】/【木不够】。
+                if (frame % 300 == 0)
+                    DebugText(QString("[GOLD-GATE f=%1] 存活金矿格=%2 远金矿格=%3 在用远金矿格=%4 金矿仓令=%5/%6 被落点闸挡下=%7 木=%8")
+                              .arg(frame).arg(goldAliveN).arg((int)farGoldV.size()).arg((int)inUse.size())
+                              .arg(goldStockOrders).arg(MAX_GOLD_STOCK).arg(gateHitG).arg((int)info.Wood));
+            }
         }
 
         // ★ 第二谷仓：为"TC 之外 ≥6 丛的远距浆果群"建一座，落在群中心（用户需求 2026-09-07）。

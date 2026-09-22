@@ -133,6 +133,11 @@ private:
     std::vector<int> stockOrderDR;      // 落点块 DR
     std::vector<int> stockOrderUR;      // 落点块 UR
     std::vector<int> stockOrderFrame;   // 落点下发帧（窗口 STOCK_ORDER_SETTLE 到期即自动失效 ⇒ 静默失败可重发）
+    // ★★★ 2026-09-22「金矿旁边没有仓库的话也要建仓库」：金矿仓库的【已下单数】= 独立预算的计数器。
+    //   为什么不判"距金矿 ≤20 块的仓库数"：剧本预置首仓在 (13,34)，距最近的近距金矿格只有 19.4 块
+    //   （实测 gst 批 3/3 局开局即 1）⇒ 用邻近判据等于闸门自锁、金矿仓永远建不出。
+    //   为什么不用 MAX_STOCK：全库 764 局 stock 吃满 4 的占 73.6% ⇒ 共用预算时瞪羚先吃光、金矿排不上队。
+    int goldStockOrders = 0;            // 金矿仓库已成功下单数（上限 MAX_GOLD_STOCK，不占用 MAX_STOCK 预算）
     std::set<int> deadBuildings;      // 卡在0%的废弃地基SN（超时后忽略，避免阻塞后续建造）
     std::set<int> depositFarmers;
     std::map<int,int> depositStartFrame;
