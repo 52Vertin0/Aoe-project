@@ -161,7 +161,12 @@ ins UsrIns;
 //      （铁证：vf_gsk_1 SN=91396 在 f=33737~34553 的 800 帧里，撤退令 30 条、攻击令 0 条）。
 // 平衡口径：撤退距离改由【威胁半径】决定，并以【自身射程】为硬上限 ⇒ 撤完仍在射程内，切回 SHOOT 立刻能打。
 //   威胁半径：远程敌 = 其最大射程；近战/村民 = 0（贴脸威胁由下方 0.5R 无条件撤退兜底）
-//   ⇒ RET_D = clamp(威胁半径 + SAFE_MARGIN, MIN_KEEP, R)，恒 ≤ R ⇒ 不变量"撤完即能打"。
+//   ⇒ RET_D = clamp(威胁半径 + SAFE_MARGIN, MIN_KEEP, R)，落点 KIT_LAND = min(RET_D + SLACK, R) ≤ R
+//     ⇒ 不变量【撤完即在自身射程内】严格成立（与 R 无关：R=7 落点 5.5 / R=5 落点 5.0，均 ≤ R）。
+// ⚠ 已知副作用（有意保留）：T_IN = max(0.5R, RET_D − HYST) 在 R=7/近战 时 = max(3.5, 3.0) = 3.5 = 0.5R
+//   ⇒ 上方「敌近提前撤(≤0.9R)」那条触发与「贴脸无条件撤(<0.5R)」合并成同一条 ⇒ 拉扯频率大幅下降、
+//     单位更多时间停在 SHOOT 段持续输出。这是本改动的效果来源（**非 bug**；量化见报告 aoe3_kite_balance_20260922.html）。
+//     若要恢复"更早撤"，把 MIN_KEEP 从 5.0 抬起即可（T_OUT 抬高 ⇒ T_IN 抬高），勿改 0.5R 兜底线。
 #define KITING_SAFE_MARGIN   2.0   // 脱离威胁射程后的安全余量(格)
 #define KITING_MIN_KEEP      5.0   // 撤退后至少保持的距离(格)：防贴脸，同时不越过自身射程
 #define KITING_HYST          2.0   // 迟滞带宽度(格)：T_IN = T_OUT − 本值，必须为正否则"一撤就被打回"
@@ -4571,7 +4576,10 @@ void UsrAI::manageCounterAttack() {
                     //   → 1.8/1.9 R（09-18）12.6/13.3 格 > 自身射程 7 格 ⇒ 「撤得开」达标但「打不到」——
                     //     撤完必须重新走 4~6.3 格才有输出，且撤退窗口(30 帧)比攻击保护期(60 帧)更密 ⇒ SHOOT 段被结构性封死。
                     //   → 现版（09-22）：落点 = RET_D + SLACK，由【威胁半径】推導并以【自身射程】为上限 ⇒ 撤完即在射程内。
-                    const double KIT_LAND = RET_D + KITING_LANDING_SLACK * BL;   // 略越过 T_OUT，确保退出条件真的满足
+                    // ★ 上限钳到 R：RET_D ≤ R 但 RET_D + SLACK 可能 > R（当 RET_D 被钳到 R 时，如我方 R=5 的弓箭手）
+                    //   ⇒ 不钳的话落点 = R+0.5 = 5.5 > 5，仍差 0.5 格才够得着，"撤完即在射程内"就不严格成立。
+                    //   钳后落点 = min(RET_D+0.5, R) ≥ RET_D = T_OUT ⇒ 退出条件照样满足（相等时也满足）。
+                    const double KIT_LAND = min(RET_D + KITING_LANDING_SLACK * BL, R);   // 略越过 T_OUT，且恒 ≤ 自身射程
                     double ux = (a.DR - kEX) / (dK + 1e-6), uy = (a.UR - kEY) / (dK + 1e-6);
                     const double angs[5] = {0.0, 0.6, -0.6, 1.2, -1.2};
                     const double angsT[5] = {0.0, 0.5, -0.5, 1.0, -1.0};  // TC fallback 用更窄角度(TC 必存在,角度越准越好)
