@@ -157,16 +157,23 @@ ins UsrIns;
 // 实测基线（12 局 gsk / 10919 个撤退窗口，探针 kite_range_probe.py）——
 //   ① 旧退出阈值 = R + BREATH = 7+4 = 11 格、旧撤退落点 = R×1.9 = 13.3 格，而自身射程 R = 7 格
 //      ⇒ 90.3% 的撤退窗口 dK > R（撤出自身射程）⇒ 撤完还得走 4~6.3 格才能重新开火；
-//   ② 撤退窗口间隔 ≈30 帧 < 攻击保护期 60 帧 ⇒ 保护期结构性地永不过期 ⇒ SHOOT 段一条攻击令都不发
-//      （铁证：vf_gsk_1 SN=91396 在 f=33737~34553 的 800 帧里，撤退令 30 条、攻击令 0 条）。
+//   ② 同一 SN 的撤退窗口间隔中位 = **60 帧**，恰好压住旧攻击保护期 60 帧 ⇒ 保护期卡在临界值上：
+//      窗口后 ≤15 帧内拿到同 SN 攻击令的仅 2.1%、≤30 帧 4.0%、≤60 帧 37.8%（同批 10919 窗口）。
+//      逐帧例：vf_gsk_1 SN=91396 在 f=33737~34553（816 帧）里撤退令 14 条、攻击令 0 条、移动令 14 条。
 // 平衡口径：撤退距离改由【威胁半径】决定，并以【自身射程】为硬上限 ⇒ 撤完仍在射程内，切回 SHOOT 立刻能打。
 //   威胁半径：远程敌 = 其最大射程；近战/村民 = 0（贴脸威胁由下方 0.5R 无条件撤退兜底）
 //   ⇒ RET_D = clamp(威胁半径 + SAFE_MARGIN, MIN_KEEP, R)，落点 KIT_LAND = min(RET_D + SLACK, R) ≤ R
-//     ⇒ 不变量【撤完即在自身射程内】严格成立（与 R 无关：R=7 落点 5.5 / R=5 落点 5.0，均 ≤ R）。
-// ⚠ 已知副作用（有意保留）：T_IN = max(0.5R, RET_D − HYST) 在 R=7/近战 时 = max(3.5, 3.0) = 3.5 = 0.5R
-//   ⇒ 上方「敌近提前撤(≤0.9R)」那条触发与「贴脸无条件撤(<0.5R)」合并成同一条 ⇒ 拉扯频率大幅下降、
-//     单位更多时间停在 SHOOT 段持续输出。这是本改动的效果来源（**非 bug**；量化见报告 aoe3_kite_balance_20260922.html）。
-//     若要恢复"更早撤"，把 MIN_KEEP 从 5.0 抬起即可（T_OUT 抬高 ⇒ T_IN 抬高），勿改 0.5R 兜底线。
+//     ⇒ 不变量【撤完即在自身射程内】按构造成立（与 R 无关）：实测「落点 > 自身射程」占比 100.0% → **0.0%**。
+// ⚠ 已知副作用（有意保留）：T_IN = max(0.5R, RET_D − HYST)。
+//   · 对【近战/村民】靶 RET_D = MIN_KEEP = 5.0 ⇒ T_IN = max(3.5, 3.0) = 3.5 = 0.5R ⇒ 上方「敌近提前撤(dK ≤ T_IN)」
+//     与「贴脸无条件撤(dK < 0.5R)」退化成同一条 ⇒ 拉扯频率大降（撤退窗口 10919 → 1410，−87%）、
+//     单位更多时间停在 SHOOT 段（[KIT-S] 采样 234 → 1944、射程内占比 22.6% → 55.7%）。这是效果来源，**非 bug**。
+//   · 对【远程】靶 RET_D = 威胁射程 + SAFE_MARGIN > 0.5R ⇒ T_IN = RET_D − HYST > 0.5R ⇒ 提前撤那条仍生效
+//     （敌弓兵射程 5 ⇒ RET_D = 7.0、T_IN = 5.0；落点 7.0 = 自身射程，卡在边界 ⇒ 想要双侧余量就把
+//      KITING_SAFE_MARGIN 2.0 → 1.0：RET_D 7.0→6.0、落点 →6.5，对方射程外 1.5 格、自身射程内 0.5 格）。
+//   ⚠ **本图(map3.njust) 敌方全是近战 + 塔：12 局 1410 个撤退窗口 100% 是近战靶（thr=0.0）**
+//     ⇒ 远程那条分支只能**解析推导、无法在本图实测**；要看实测需换含敌方弓兵/投石兵的关卡或评测机地图。
+//   要"更早撤"：把 KITING_MIN_KEEP 从 5.0 抬起（T_OUT=RET_D 抬高 ⇒ T_IN 抬高），勿改 0.5R 兜底线。
 #define KITING_SAFE_MARGIN   2.0   // 脱离威胁射程后的安全余量(格)
 #define KITING_MIN_KEEP      5.0   // 撤退后至少保持的距离(格)：防贴脸，同时不越过自身射程
 #define KITING_HYST          2.0   // 迟滞带宽度(格)：T_IN = T_OUT − 本值，必须为正否则"一撤就被打回"
@@ -349,6 +356,22 @@ ins UsrIns;
 #define STUCK_BLACKLIST_FRAMES 15000  // 不可达资源拉黑时长(10分钟,到期可重试)
 // processData - 主循环（每帧调用） 规则：祭司保命 > 失败检查 > 阶段切换 > 打猎 > 经济 > 军事 > 反攻
 void UsrAI::processData() {
+    // ★★★ 2026-09-23 环境自证：必须放在**首次 getInfo() 之前**。理由：OJ 上的崩溃发生在 getInfo() 内部
+    //   的深拷贝里，若把诊断放在 getInfo() 之后，那一局就什么线索都留不下。
+    //   零新增链接符号：GAME_VERSION / NOWPLAYER / MAXPLAYER 与文件里已在用的 MAP_L / MAP_U /
+    //   BLOCKSIDELENGTH 同属 RuntimeConfig 访问器（RuntimeConfig.h:38/51/54/81），已在同一链接单元。
+    //   目的：把评测机的**引擎版本 + 运行期玩家数**钉死，用于判定 Core.cpp 的 Buffer0/Buffer1[2]
+    //   是否与运行期 NOWPLAYER 不匹配（不匹配 ⇒ currentBuff[i] i>=2 越界 ⇒ 快照被踩 ⇒ 崩在 getInfo）。
+    {
+        static bool envLogged = false;
+        if (!envLogged) {
+            envLogged = true;
+            DebugText(QString("[ENV] engine=%1 NOWPLAYER=%2 MAXPLAYER=%3 represent=%4")
+                      .arg(QString::fromStdString(GAME_VERSION))
+                      .arg(NOWPLAYER).arg(MAXPLAYER).arg(NOWPLAYERREPRESENT));
+        }
+    }
+
     info = getInfo();
     frame = info.GameFrame;
 
@@ -4666,8 +4689,10 @@ void UsrAI::manageCounterAttack() {
                 if (phase == 0 && kGot && dK <= R + 2.0 * BL) {
                     // —— SHOOT 阶段射程内攻击(撤完保护期 60 帧内不重发,符合用户"攻击目标间隔扩大"指示) ——
                     // ★ 2026-09-22 「撤完等久一点再开火」60 帧 → 15 帧（0.6 秒）。这是"打不到"的第二根因：
-                    //   撤退重发间隔仅 ≈30 帧，而保护期 60 帧 > 30 ⇒ 保护期【结构性地】永不过期 ⇒ SHOOT 段进了也不发攻击令
-                    //   （铁证 vf_gsk_1 SN=91396：f=33737~34553 的 800 帧里撤退令 30 条、攻击令 0 条）。
+                    //   同一 SN 的撤退窗口间隔中位 = 60 帧，恰好压住旧保护期 60 帧 ⇒ 保护期卡在临界值上：
+                    //   窗口后 ≤15 帧能拿到同 SN 攻击令的仅 2.1%、≤30 帧 4.0%、≤60 帧 37.8%（gsk 12 局 10919 窗口）。
+                    //   逐帧例：vf_gsk_1 SN=91396 在 f=33737~34553（816 帧）里撤退令 14 条、攻击令 0 条、移动令 14 条。
+                    //   改后（15 帧）≤30 帧内重新开火的比例 = 4.0% → 26.5%。
                     //   保护期的原本目的（"撤完别立刻开火，免得引擎又把单位带回射程"）现在由【撤退距离 ≤ 自身射程】直接保证，
                     //   故只保留最小去抖量。
                     const int RETREAT_PROTECT_FRAMES = 15;
@@ -5239,6 +5264,43 @@ tagBuilding* UsrAI::findEnemyBuilding(int type) {
     return nullptr;
 }
 
+int UsrAI::buildingFootprintSize(int type) {
+    return (type == BUILDING_HOME || type == BUILDING_ARROWTOWER) ? 2 : 3;
+}
+
+bool UsrAI::footprintsOverlap(int ax, int ay, int aw, int ah,
+                             int bx, int by, int bw, int bh) {
+    return !(ax + aw <= bx || bx + bw <= ax || ay + ah <= by || by + bh <= ay);
+}
+
+bool UsrAI::inBounds(int blockDR, int blockUR, int size) {
+    return blockDR >= 0 && blockUR >= 0 && blockDR + size <= MAP_L && blockUR + size <= MAP_U;
+}
+
+bool UsrAI::isBlockedByBuildings(int blockDR, int blockUR, int size,
+                                const std::vector<tagBuilding>& buildings) const {
+    for (auto &b : buildings) {
+        int bSize = buildingFootprintSize(b.Type);
+        if (footprintsOverlap(blockDR - BUILD_GAP, blockUR - BUILD_GAP,
+                              size + 2 * BUILD_GAP, size + 2 * BUILD_GAP,
+                              b.BlockDR, b.BlockUR, bSize, bSize)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool UsrAI::isBlockedByResources(int blockDR, int blockUR, int size,
+                                const std::vector<tagResource>& resources) const {
+    for (auto &r : resources) {
+        if (r.Cnt <= 0) continue;
+        for (int i = blockDR; i < blockDR + size; ++i)
+            for (int j = blockUR; j < blockUR + size; ++j)
+                if (i == r.BlockDR && j == r.BlockUR) return true;
+    }
+    return false;
+}
+
 // ★ 2026-09-15 去重：敌方建筑里找距 (dr,ur) 最近者（= 下列三个查找函数共用的底座）。 距离口径 = 建筑中心 (BlockDR+1, BlockUR+1) × BLOCKSIDELENGTH（与旧代码逐字一致）。
 // bestD2 传入当前最优距离²并在命中时更新 ⇒ 调用方可把它与"单位候选"混在同一池里比较。
 int UsrAI::nearestEnemyBuildingFrom(double dr, double ur, double &bestD2, int typeFilter) {
@@ -5403,15 +5465,27 @@ int UsrAI::findCatapultTarget(double dr, double ur, double range) {
 }
 
 int UsrAI::countBuildings(int type) {
+    return countBuildings(type, false, true, false);
+}
+
+int UsrAI::countBuildings(int type, bool includePending, bool includeDead,
+                          bool countUnderConstruction) {
     int cnt = 0;
-    for (auto &b : info.buildings) if (b.Type == type && b.Percent == 100) cnt++;
+    for (auto &b : info.buildings) {
+        if (b.Type != type) continue;
+        if (!includeDead && deadBuildings.count(b.SN)) continue;
+        if (!countUnderConstruction && b.Percent < 100) continue;
+        cnt++;
+    }
+    if (includePending) {
+        for (auto &kv : pendingBuildIns)
+            if (kv.second.second == type) cnt++;
+    }
     return cnt;
 }
 
 int UsrAI::countBuildingsAll(int type) {
-    int cnt = 0;
-    for (auto &b : info.buildings) if (b.Type == type && !deadBuildings.count(b.SN)) cnt++;
-    return cnt;
+    return countBuildings(type, false, false, true);
 }
 
 // ★ "是否已存在（含地基/待回写指令）"计数：用于唯一建筑(市场/谷仓/兵营/靶场/马厩/学院) 的存在性门槛。
@@ -5446,8 +5520,7 @@ int UsrAI::countAllMilitary() {
 }
 
 bool UsrAI::isPositionFree(int blockDR, int blockUR, int size) {
-    if (blockDR < 0 || blockUR < 0 || blockDR + size > MAP_L || blockUR + size > MAP_U)
-        return false;
+    if (!inBounds(blockDR, blockUR, size)) return false;
     if (info.theMap == nullptr) return false;
 
     // 地形检查：草地 + 高度一致
@@ -5462,30 +5535,13 @@ bool UsrAI::isPositionFree(int blockDR, int blockUR, int size) {
     }
 
     // ★ 建筑间距检查：候选 footprint 外扩 BUILD_GAP 格内不得与任何建筑相交(含边界)， 否则建筑会紧贴成墙、堵死村民/士兵的通行路线。外扩 1 格 = 建筑之间至少留 1 格通道。
-    for (auto &b : info.buildings) {
-        int bSize = (b.Type == BUILDING_HOME || b.Type == BUILDING_ARROWTOWER) ? 2 : 3;
-        for (int i = blockDR - BUILD_GAP; i < blockDR + size + BUILD_GAP; ++i)
-            for (int j = blockUR - BUILD_GAP; j < blockUR + size + BUILD_GAP; ++j)
-                if (i >= b.BlockDR && i < b.BlockDR + bSize &&
-                    j >= b.BlockUR && j < b.BlockUR + bSize) return false;
-    }
+    if (isBlockedByBuildings(blockDR, blockUR, size, info.buildings)) return false;
 
     // 敌方建筑间距检查（已探索区域内的敌方建筑同样阻挡建造）
-    for (auto &b : info.enemy_buildings) {
-        int bSize = (b.Type == BUILDING_HOME || b.Type == BUILDING_ARROWTOWER) ? 2 : 3;
-        for (int i = blockDR - BUILD_GAP; i < blockDR + size + BUILD_GAP; ++i)
-            for (int j = blockUR - BUILD_GAP; j < blockUR + size + BUILD_GAP; ++j)
-                if (i >= b.BlockDR && i < b.BlockDR + bSize &&
-                    j >= b.BlockUR && j < b.BlockUR + bSize) return false;
-    }
+    if (isBlockedByBuildings(blockDR, blockUR, size, info.enemy_buildings)) return false;
 
     // 资源重叠检查
-    for (auto &r : info.resources) {
-        if (r.Cnt <= 0) continue;
-        for (int i = blockDR; i < blockDR + size; ++i)
-            for (int j = blockUR; j < blockUR + size; ++j)
-                if (i == r.BlockDR && j == r.BlockUR) return false;
-    }
+    if (isBlockedByResources(blockDR, blockUR, size, info.resources)) return false;
 
     // ★ 避开狮子周围区域：狮子会攻击靠近的建筑/村民，建在狮子附近会导致建好即被骚扰、
     // 村民往返送死。候选点中心离任一 RESOURCE_LION(Cnt>0) 过近即判为不可建。   用距离平方比较，避免引入 <cmath> 依赖；半径见 LION_AVOID_RADIUS。

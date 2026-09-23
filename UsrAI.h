@@ -52,6 +52,17 @@ public:
 private:
     void processData() override;
 
+    static int buildingFootprintSize(int type);
+    static bool footprintsOverlap(int ax, int ay, int aw, int ah,
+                                 int bx, int by, int bw, int bh);
+    static bool inBounds(int blockDR, int blockUR, int size);
+    bool isBlockedByBuildings(int blockDR, int blockUR, int size,
+                              const std::vector<tagBuilding>& buildings) const;
+    bool isBlockedByResources(int blockDR, int blockUR, int size,
+                              const std::vector<tagResource>& resources) const;
+    int countBuildings(int type, bool includePending, bool includeDead,
+                       bool countUnderConstruction);
+
     tagInfo getInfo() {
         return tagUsrGame.getInfo();
     }
