@@ -2,6 +2,7 @@
 #define USRAI_H
 
 #include "ai.h"
+#include <QEvent>
 #include <set>
 #include <map>
 #include <vector>
@@ -56,6 +57,10 @@ private:
     static bool footprintsOverlap(int ax, int ay, int aw, int ah,
                                  int bx, int by, int bw, int bh);
     static bool inBounds(int blockDR, int blockUR, int size);
+    bool isPassableAt(double x, double y, const std::vector<std::vector<char>>& forestGrid) const;
+    bool lookupEnemySN(int sn, double &x, double &y, bool *pMelee = nullptr, int *pSort = nullptr) const;
+    int findKiteTarget(int selfSort, double dr, double ur, double range, int &osort, int &skipSort) const;
+    void snapWalkable(double &x, double &y, const std::vector<std::vector<char>>& forestGrid) const;
     bool isBlockedByBuildings(int blockDR, int blockUR, int size,
                               const std::vector<tagBuilding>& buildings) const;
     bool isBlockedByResources(int blockDR, int blockUR, int size,
@@ -63,9 +68,13 @@ private:
     int countBuildings(int type, bool includePending, bool includeDead,
                        bool countUnderConstruction);
 
-    tagInfo getInfo() {
-        return tagUsrGame.getInfo();
-    }
+    // ==================== ★★★ 2026-09-23 OJ SIGSEGV 自救：快照改由"主线程"代取 ★★★ ====================
+    // 原实现 `tagInfo getInfo() { return tagUsrGame.getInfo(); }` 是**在 AI 线程直读引擎缓冲区**，
+    // 与主线程 Core::infoShare() 的 clear()/push_back() 竞争 ⇒ OJ 上 SIGSEGV。机理与修法见 UsrAI.cpp。 
+    // UsrAI 对象由主线程创建（MainWidget.cpp:1540）⇒ 投递给它的自定义事件由主线程事件循环处理。
+    enum { kSnapEventType = QEvent::User + 731 };
+    bool refreshSnapshot(tagInfo& dst);   // AI 线程：postEvent 请主线程代取快照，成功后写入 dst
+    bool event(QEvent* e) override;       // 主线程执行：真正执行 tagUsrGame.getInfo()
 
     int AddToIns(instruction ins) override {
         UsrIns.lock.lock();
@@ -229,7 +238,7 @@ private:
     std::map<int,int> marchStuckTry;      // 单位SN → 卡死重试档位(逐档换方向，绕出死角)
     std::map<int,double> marchIssueDR, marchIssueUR; // 上次记录的位置（判定是否真的有位移）
     // ★ 2026-09-07：单位SN → 上次记录的"距推进目标(targetDR/targetUR)的距离"。
-    //   卡死判据已由此字段接管（取代 marchIssueDR/UR 的"绝对位移"判据）——
+    //   卡死判据已由此字段接管（取代"绝对位移"判据）——
     //   只有【距目标真的变近】才算有效推进，原地来回抖动不再刷新计时。
     //   详见 manageCounterAttack() 内卡死检测处的注释。
     std::map<int,double> marchIssueDist;
@@ -298,6 +307,7 @@ private:
     tagFarmer* findIdleFarmerNear(double dr, double ur);
     // ★ 2026-09-12「先建仓库、再打猎」闸门：该瞪羚的交付仓库是否已就位（含在建/木不够/超时兜底）。
     bool gazelleDropoffReady(tagResource* r);
+    int countFarmersOnTarget(int sn);   // 统计 WorkObjectSN==sn 的村民数
     tagBuilding* findBuilding(int type);
     tagBuilding* findBuildingIncludingUnderConstruction(int type);
     tagBuilding* findEnemyBuilding(int type);
@@ -310,6 +320,7 @@ private:
     int nearestEnemyBuildingFrom(double dr, double ur, double &bestD2, int typeFilter);
     // ★ 2026-09-13：范围内【距离自己最近的敌方箭塔】SN（无则 -1）。士兵选建筑目标时优先打它。
     int findNearestEnemyTower(double dr, double ur, double range);
+    int findNearestEnemyUnit(double dr, double ur, double &bestD2, bool skipStone); // findNearestEnemySN/findCatapultTarget 共用
     tagResource* findNearestResource(int type, double dr, double ur);
     tagResource* findBestWoodTree(double dr, double ur);   // ★ 2026-09-06：砍树按"离仓库/TC 近"选树（带硬闸）
     int findNearestEnemySN(double dr, double ur, double range);
@@ -364,14 +375,24 @@ private:
     bool tryStartBronzeUpgrade();
     void manageEconomy();          // 经济（农民生产+分配+科技）
     void manageBuildings();        // 建造管理
+    void updateFarmTarget();
+    void managePriestScout();
+    void countFarmerWorkKinds(int &goldWorkers, int &woodWorkers, int &stoneWorkers, int &foodWorkers) const;
     void assignIdleFarmers();      // 空闲村民分配
     void assignIdleSimple();       // 最后兜底：无视复杂标记，派所有空闲村民到最近资源
     void manageTechUpgrade();      // 科技升级
     void managePriest();           // 祭司管理（最高优先级）
     void manageMilitary();         // military training and combat
-    void manageFirstWaveDefense(); // first-wave priest protection
+    void trainMilitaryUnits(bool isWarTime);
     void manageCarriedResources();
     void manageCounterAttack();    // 反攻
+    void counterFarmerAttack(double BL, double targetDR, double targetUR);
+    bool counterPriestGuard(double BL);
+    void counterPriestConvert(double BL, double targetDR, double targetUR,
+                              double rallyCtrDR, double rallyCtrUR,
+                              const std::vector<std::vector<char>>& forestGrid);
+    bool counterScoutAndPlan(double BL, double &targetDR, double &targetUR,
+                            const std::vector<std::vector<char>>& forestGrid);
     void manageHunting();          // 打猎模块
     void manageLionDefense();      // ★ 狮子防御：有狮子逼近/攻击我方单位时立刻就近派人猎杀
     void checkDefeat();            // 失败检查
