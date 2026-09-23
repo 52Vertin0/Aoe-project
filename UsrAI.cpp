@@ -6,7 +6,7 @@ ins UsrIns;
 /*##########DO NOT MODIFY THE CODE ABOVE##########*/
 
 // 波次时间（帧）- 来自任务文档
-#define WAVE1_TIME 5000
+#define WAVE1_TIME 6000
 #define WAVE2_TIME 13500
 #define WAVE3_TIME 21000
 
