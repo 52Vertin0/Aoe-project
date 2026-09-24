@@ -1787,7 +1787,7 @@ void UsrAI::manageBuildings() {
     };
     // 农场"木材需求额"：两处（postW1 / postW2）此前各算一遍同样的 6 行，口径必须同源。
     auto farmWoodNeedNow = [&]() {
-        bool cbPending = (!compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
+        bool cbPending = (postBronze && !compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
         return FARM_WOOD_NEED(storageNearGazelleBuilt == 1) + (cbPending ? COMPOSITE_BOW_WOOD_RESERVE : 0);
     };
     auto farmerCountNow = [&]() {
@@ -1980,7 +1980,7 @@ void UsrAI::manageBuildings() {
         int farmWoodNeed2 = farmWoodNeedNow();
         if (!builtThisFrame && marketReady && storageNearGazelleBuilt == 1 &&
                 (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME) &&
-                (compositeBowResearched || compositeBowQueued || frame >= FARM_WAIT_CB_FRAME) &&
+                (!postBronze || compositeBowResearched || compositeBowQueued || frame >= FARM_WAIT_CB_FRAME) &&
                 info.Wood >= farmWoodNeed2 && info.Meat >= 100) {
             int currentFarms = countFarmsForCap();
                 int targetFarms = std::min(std::max(0, farmerCountNow() - 2), MAX_FARMS);
@@ -2258,7 +2258,7 @@ void UsrAI::manageBuildings() {
         // ★ 2026-09-13 再加闸：木材加工科技（FARM_WAIT_WOOD_TECH_FRAME）+ 复合弓科技未就绪时再让出 100 木
         // （COMPOSITE_BOW_WOOD_RESERVE）。farmWoodTechOk 与 farmBowWoodOk 两道闸并联，任一超时兜底触发即放行。
         bool farmWoodTechOk = (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME);
-        bool farmBowWoodOk = (compositeBowResearched || compositeBowQueued ||
+        bool farmBowWoodOk = (!postBronze || compositeBowResearched || compositeBowQueued ||
                               frame >= FARM_WAIT_CB_FRAME);
         int farmWoodNeed = farmWoodNeedNow();
         if (!builtThisFrame && storageNearGazelleBuilt == 1 && farmWoodTechOk && farmBowWoodOk) {
