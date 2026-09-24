@@ -1810,10 +1810,10 @@ void UsrAI::manageBuildings() {
 // ====== ★★★ 瞪羚群中心仓库：全建筑最高优先级（用户需求：村民打猎前先建仓库）★★★ ====== ① 块放在 preW1 之前 ⇒ 抢在房屋/兵营/靶场/市场/农场之前消耗木材；
 // ② 闸门用"TC 可猎范围内有瞪羚"而非"已经在打猎" ⇒ 仓库在猎人出发前落地，不再空跑往返；
 // ③ 聚类只在距 TC ≤ GAZELLE_HUNT_RANGE 的瞪羚里选（与猎人选取范围一致），否则会建在"全图最密但村民根本不会去"的假群上。
-// 建的是仓库 STOCK 而非谷仓：瞪羚肉 ProductSort=HUMAN_STOCKFOOD，只能交付仓库（Building.cpp:549）。 ⚠ 2026-09-22 实测：本块在 795 局里【0 次成功建仓】—— `[GAZELLE-STOCK]` 全库 0 条，
-// 且 `snGB=1` 在全部 3203 条 [GATE] 行里恒为 1 ⇒ 闸门 `storageNearGazelleBuilt == 0` 在 剧本预置仓库(11097)存在时当帧即被 `existingStocks > 0` 置 1 ⇒ 本块实质不可达。
-// ★ 因此本轮"同一瞪羚群附近重复建 2 座仓库"的全部建仓令都来自 postW2 的第二仓库块（见下）。 （另注：本块日志带 `frame % 60 == 0` 采样，即使可达也会漏记大部分令。）
-    if (!builtThisFrame && storageNearGazelleBuilt == 0 && frame < GAZELLE_STOCK_WINDOW_END &&
+// ★ 2026-09-24 用户需求「存放狩猎瞪羚物资的仓库要尽早建」：删掉 `storageNearGazelleBuilt == 0` 外层闸。
+//   旧闸在剧本预置仓库(11097)存在时当帧就被 `existingStocks > 0` 置 1 ⇒ 本块直接不可达，近场仓库只能等 postW2 第二仓库块。
+//   现在 11 分钟窗口内、有房屋、木≥BUILD_STOCK_WOOD 就允许本块运行；建不建仍由 `clusterCovered` 逐簇判断，已有近场仓库的簇不会重复建。
+    if (!builtThisFrame && frame < GAZELLE_STOCK_WINDOW_END &&
         houseCount >= GAZELLE_STOCK_MIN_HOUSES && info.Wood >= BUILD_STOCK_WOOD) {
         const double gBL = (double)BLOCKSIDELENGTH;
         auto gCenter = findBuilding(BUILDING_CENTER);
