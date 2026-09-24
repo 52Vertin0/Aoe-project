@@ -458,7 +458,7 @@ bool UsrAI::refreshSnapshot(tagInfo& dst) {
         }
         ok = st.ready;
         if (ok) {
-            dst = st.buf;                     // 副本搬到调用方；此后 AI 线程再不碰引擎缓冲
+            swapTagInfo(dst, st.buf);         // 只交换容器所有权，避免 AI 线程再次 memcpy
         }
     }
 
@@ -467,13 +467,8 @@ bool UsrAI::refreshSnapshot(tagInfo& dst) {
         return true;
     }
 
-    // 兜底：主线程回环连续失联 ⇒ 退回旧直读路径（保留旧风险，但不让 AI 停摆）
-    if (++st.failStreak >= 5) {
-        st.failStreak = 0;
-        st.fallbackCount++;
-        dst = tagUsrGame.getInfo();
-        return true;
-    }
+    // 主线程回环失联时只跳过本帧；绝不回退到跨线程直读，避免重现 OJ 崩溃。
+    ++st.failStreak;
     st.skipCount++;
     return false;   // 本帧不动作（processData 直接返回）
 }
@@ -3357,43 +3352,6 @@ void UsrAI::manageTechUpgrade() {
     }
 
 
-    // ==================================================================
-    // ★★★ 2026-09-13 用户要求：【复合弓科技与护甲科技同一解锁窗口，不再互相阻塞】★★★
-    // 体感来源：实测 8 局发令帧中位 ≈ 19000(12.7 分)、最晚 24759，已过 WAVE3=21000 反攻线 ⇒ 反攻期前半段只能产【普通弓兵】(射程 5、无科技)；
-    //   ⚠ 2026-09-24 起**普通弓兵兜底分支已删** ⇒ 现在那个空窗是"**一个弓兵都产不出**"（靶场空转），不再是产普通弓兵。
-    // 根因二：① 本块原排在伐木块之后且受 `done` 串行（伐木本帧发令 ⇒ 本块当帧跳过）；② **木材供给才是真瓶颈** —— 12 座农场从 f≈13500 连建把木材长期压在 2~112
-    //   （k1: f=16380 wood=15 / f=20970 wood=2），而复合弓要 wood≥100（食物早已 208→621 远超 180）⇒ 从 f=13500 每 30 帧空转到 f=24759 才发令。
-    // ★ 修复：**解锁类科技（复合弓 / 护甲链）不看 `done`，各发各的** —— 分属不同建筑（靶场/仓库），`done` 只用于 techCooldown 节流。
-    // ⚠⚠ 09-24 块前移后**闸门已变**：本块与伐木块现在都位于下方 `if (!postBronze) return;` **之前** ⇒ **铜器前就会尝试研究**
-    //   （代价：提前吃掉 180 食/100 木，可能拖慢 800 食物升铜；对应 09-24 用户需求"尽早研究"）。现存闸门仅：靶场 Project 忙闲 / 成本 / 函数首 techCooldown 与 FOOD_PAUSE_TECH_TRAIN。
-    //   （塔科技 09-24 另加回 `!done &&`，仍串行；护甲链仍在 postBronze 之后。）
-    // ==================================================================
-    // ★ 引擎真实成本（Development.cpp:739-740）：只需「铜器时代 + 木材 + 食物」，**不需要黄金**，
-    // 且引擎层无阔剑前置 ⇒ 旧代码的 info.Gold>=40 是伪门槛，黄金不足时复合弓永远研究不了。 --- Range: 复合弓科技（解锁类：不被 done 阻塞）---
-    if (!compositeBowResearched && !compositeBowQueued) {
-        auto r = findBuilding(BUILDING_RANGE);
-        // ★ 复合弓科技诊断：每 30 帧打印一次闸门状态，定位"为什么不立刻升级"
-        if (frame % 30 == 0) {
-            int rngPct = -1, rngProj = -2;
-            auto rngAll = findBuildingIncludingUnderConstruction(BUILDING_RANGE);
-            if (rngAll) { rngPct = rngAll->Percent; rngProj = rngAll->Project; }
-            bool meatOK = (info.Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD);
-            bool woodOK = (info.Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD);
-            bool readyOK = (r && r->Project == ACT_NULL && meatOK && woodOK);
-            DebugText(QString("[CB f=%1] rngFound=%2 rngPct=%3 rngProj=%4 meat=%5(%6) wood=%7(%8) techCD=%9 ready=%10").arg(frame).arg(r ? 1 : 0).arg(rngPct).arg(rngProj)
-                .arg((int)info.Meat).arg(meatOK ? 1 : 0).arg((int)info.Wood).arg(woodOK ? 1 : 0).arg(techCooldown).arg(readyOK ? 1 : 0));
-        }
-        if (r && r->Project == ACT_NULL &&
-            info.Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD &&
-            info.Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD) {
-            BuildingAction(r->SN, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW);
-            compositeBowQueued = true;
-            done = true;
-            DebugText(QString("!! TECH CompositeBow f=%1 meat=%2 wood=%3").arg(frame).arg((int)info.Meat).arg((int)info.Wood));
-        }
-    }
-
-
     // ★ 2026-09-20 精简：谷仓箭塔科技链收口 —— 同一判据原先在 3 处（preW3 / milUnlocked 前 / TIER2）各写一遍， 逐字等价 ⇒ 抽为 lambda，调用点保持原位置 + 原守卫。findBuilding 为纯查找（只读循环），
     // 故 TIER2 那处把 `info.Meat >= 50` 提到外层与放在内层无行为差异，一并收口。
     // ⚠ 2026-09-24 **守卫已改**：新增 `!done &&` ⇒ 塔科技改为**受 done 串行**（本帧已发伐木/复合弓令则跳过），原先不受此限。
@@ -3448,9 +3406,45 @@ void UsrAI::manageTechUpgrade() {
         if (rng && rng->Project == BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) {
             compositeBowResearched = true;
         } else if (compositeBowQueued && rng && rng->Project == ACT_NULL) {
-            compositeBowResearched = true;
+            compositeBowQueued = false;   // ★ 引擎未受理（时代/资源被拒）⇒ 允许重试，不能乐观判成已研究
         }
     }
+
+    // ==================================================================
+    // ★★★ 2026-09-13 用户要求：【复合弓科技与护甲科技同一解锁窗口，不再互相阻塞】★★★
+    // 体感来源：实测 8 局发令帧中位 ≈ 19000(12.7 分)、最晚 24759，已过 WAVE3=21000 反攻线 ⇒ 反攻期前半段只能产【普通弓兵】(射程 5、无科技)；
+    //   ⚠ 2026-09-24 起**普通弓兵兜底分支已删** ⇒ 现在那个空窗是"**一个弓兵都产不出**"（靶场空转），不再是产普通弓兵。
+    // 根因二：① 本块原排在伐木块之后且受 `done` 串行（伐木本帧发令 ⇒ 本块当帧跳过）；② **木材供给才是真瓶颈** —— 12 座农场从 f≈13500 连建把木材长期压在 2~112
+    //   （k1: f=16380 wood=15 / f=20970 wood=2），而复合弓要 wood≥100（食物早已 208→621 远超 180）⇒ 从 f=13500 每 30 帧空转到 f=24759 才发令。
+    // ★ 解锁类科技（复合弓/护甲链）互不阻塞；但本帧已下其他科技令时 (`done`) 不再抢同帧资源，下一帧重试。
+    // ★ 引擎硬前置：复合弓科技要求 CIVILIZATION_BRONZEAGE（Development.cpp），
+    //   因此本块必须放在 `if (!postBronze) return;` 之后；铜器前只做木材加工，不碰复合弓。
+    // ==================================================================
+    // ★ 引擎真实成本（Development.cpp:739-740）：只需「铜器时代 + 木材 + 食物」，**不需要黄金**，
+    // 且引擎层无阔剑前置 ⇒ 旧代码的 info.Gold>=40 是伪门槛，黄金不足时复合弓永远研究不了。 --- Range: 复合弓科技（解锁类：不被 done 阻塞）---
+    if (!done && !compositeBowResearched && !compositeBowQueued) {
+        auto r = findBuilding(BUILDING_RANGE);
+        // ★ 复合弓科技诊断：每 30 帧打印一次闸门状态，定位"为什么不立刻升级"
+        if (frame % 30 == 0) {
+            int rngPct = -1, rngProj = -2;
+            auto rngAll = findBuildingIncludingUnderConstruction(BUILDING_RANGE);
+            if (rngAll) { rngPct = rngAll->Percent; rngProj = rngAll->Project; }
+            bool meatOK = (info.Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD);
+            bool woodOK = (info.Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD);
+            bool readyOK = (r && r->Project == ACT_NULL && meatOK && woodOK);
+            DebugText(QString("[CB f=%1] rngFound=%2 rngPct=%3 rngProj=%4 meat=%5(%6) wood=%7(%8) techCD=%9 ready=%10").arg(frame).arg(r ? 1 : 0).arg(rngPct).arg(rngProj)
+                .arg((int)info.Meat).arg(meatOK ? 1 : 0).arg((int)info.Wood).arg(woodOK ? 1 : 0).arg(techCooldown).arg(readyOK ? 1 : 0));
+        }
+        if (r && r->Project == ACT_NULL &&
+            info.Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD &&
+            info.Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD) {
+            BuildingAction(r->SN, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW);
+            compositeBowQueued = true;
+            done = true;
+            DebugText(QString("!! TECH CompositeBow f=%1 meat=%2 wood=%3").arg(frame).arg((int)info.Meat).arg((int)info.Wood));
+        }
+    }
+
 
     // ================================================================== --- Army camp: 阔剑科技（封禁中，见 DISABLE_BROADSWORD_TECH）---
     // 引擎条件已修正：阔剑科技现真扣 食物+黄金（need_Stone=0）。若解禁：把开关改 false，   且下方判据应改回 info.Gold（而非当前 info.Stone）。
