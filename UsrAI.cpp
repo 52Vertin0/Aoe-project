@@ -30,18 +30,30 @@ SnapState& snapState(const UsrAI* self) {
 }
 }  // namespace
 
+// ★★★ 兵种分类 / 射程判据（2026-09-23 重构：由 manageCounterAttack 内的局部 λ 提升为文件级 static）★★★
+//   提升原因：原 isRanged / isMeleeSort / rangedMaxRange / kiteRangeAdvantage 四个 λ 只在反攻函数体内可见，
+//   而 lookupEnemySN() / findKiteTarget() 提升为成员函数后仍要这批判据 ⇒ 不外提就得在两处各抄一份（铁律 21/26）。
+//   提升后各判据的表达式逐字未改，仅换了名字（前缀 sort 以示"按兵种编号判定"）。
+//
+// 远程兵种分类：有攻击距离、能隔着距离输出者。近战 / 村民 / 祭司 / 建筑不在此列。
 static inline bool sortIsRanged(int sort) {
     return sort == AT_STONE_THROWER || sort == AT_BOWMAN ||
            sort == AT_COMPOSITE_BOWMAN || sort == AT_SLINGER ||
            sort == AT_CHARIOT_ARCHER;
 }
 
+// 近战兵种(短手、贴身肉搏)：用于判断敌是否会"冲过来贴身打我们"。
+// 拉扯(kiting)时对近战敌要更早后撤、后撤更远——它们射程极短但会持续追击贴身。
 static inline bool sortIsMelee(int sort) {
     return sort == AT_CLUBMAN || sort == AT_SCOUT || sort == AT_SWORDSMAN ||
            sort == AT_IMPROVED || sort == AT_CAVALRY || sort == AT_HOPLITE ||
            sort == AT_CHARIOT || sort == AT_BROADSWORDSMAN;
 }
 
+// 各远程兵种最大攻击射程(格)：投石车10 / 复合弓7 / 战车弓7 / 弓5 / 投石兵4。
+// ★ 2026-09-21 已对 config.json 回代核验（技能 §0：任何"代码常量==外部配置"的断言必须抓真值）：
+//   DIS_STONE_THROWER=10、DIS_COMPOSITE_BOWMAN=7、DIS_CHARIOT_ARCHER=7、DIS_BOWMAN=5、DIS_SLINGER=4 —— 全部一致。
+// 用于反攻拉扯(kiting)：把敌方保持在最远射程边缘无伤输出。
 static inline double sortMaxRangedRange(int sort, double BL) {
     switch (sort) {
         case AT_STONE_THROWER:   return 10.0 * BL;
@@ -53,12 +65,21 @@ static inline double sortMaxRangedRange(int sort, double BL) {
     }
 }
 
+// ★★★★★ 2026-09-21 用户需求「复合弓兵不要拉扯战车弓兵和投石车（攻击距离比它们小）」★★★★★
+//   拉扯(kiting)的收益前提是【我方射程严格大于对方】：把敌保持在最远射程边缘，自己挨不到打。
+//   射程相等或更短时，逼近到自身射程边缘必然同时进入对方射程 ⇒ 挨打却没有输出优势，纯亏（撤了打不着、不撤就被打）。
+//   故"射程不占优"的敌单位【不进拉扯目标候选】。
+//   真值（config.json）：复合弓 7 vs 战车弓 7（相等）、vs 投石车 10（更长）⇒ 两者皆不拉扯。
+//   ⚠ 近战 / 村民 / 祭司等无射程单位（sortIsRanged=false）永远可拉扯；本判据只对远程敌生效。
+//   ⚠ 同一判据对所有远程兵种生效（复合弓7/战车弓7/弓兵5/投石兵4 vs 投石车10 全部不占优）
+//     —— 避免"改了复合弓、弓兵照样去拉投石车"的同源漏改（铁律 21/26）。
 static inline bool sortHasKiteRangeAdvantage(int selfSort, int enemySort, double BL) {
     if (enemySort < 0 || !sortIsRanged(enemySort)) return true;
     return sortMaxRangedRange(selfSort, BL) > sortMaxRangedRange(enemySort, BL);
 }
 
 
+// 距离²（只在"比大小"时用，省一次 sqrt）。凡与内联 (a-b)*(a-b)+(c-d)*(c-d) 等价的点一律改用它。
 namespace {
 inline double dist2(double x1, double y1, double x2, double y2) {
     const double dx = x1 - x2;
@@ -146,7 +167,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 故只【复合弓兵 AT_COMPOSITE_BOWMAN】恢复打塔；战车弓/弓兵/投石兵射程仍<塔，保持不打塔。判据见 canHitTower。
 // ★ 2026-09-21 用户需求「复合弓兵不要拉扯战车弓兵和投石车（攻击距离比它们小）」： 拉扯的收益前提 = 我方射程【严格大于】对方；射程相等/更短时，逼近到自身射程边缘必然同时进入对方射程 ⇒ 纯亏。
 // 真值(config.json 已回代)：复合弓 DIS=7 ｜ 战车弓 DIS=7(相等) ｜ 投石车 DIS=10(更长) ⇒ 二者不进"拉扯目标"候选。
-// 实现：manageCounterAttack 的拉扯目标选取改用 kiteRangeAdvantage 过滤（findKiteTarget 取代 findNearestEnemyNoStone），
+// 实现：manageCounterAttack 的拉扯目标选取改用 sortHasKiteRangeAdvantage 过滤（findKiteTarget 取代 findNearestEnemyNoStone），
 // 原「投石车兜底」段删除；判据对【所有】远程兵种生效（避免同源漏改）。投石车仍留给祭司感化 / 我方投石车压制。
 // 观测：拉扯日志 [KIT-R]/[KIT-S] 新增 tSort=（目标兵种）；验收判据 = tSort 永不出现 8(投石车)/12(战车弓)。
 // ⚠ 2026-09-21 注释纠错（**仅注释，值未动**）：原注释写"与 config.json DIS_ARROWTOWER 一致"，真值为 **7**，与 8.0 **不一致**。
@@ -420,7 +441,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // ★★★ 2026-09-23 OJ(Linux/gcc13) SIGSEGV 自救：快照深拷贝改由"写侧线程"（主线程）执行 ★★★
 // --------------------------------------------------------------------------------------------
 // 现象：OJ 上 AI 线程在 `info = getInfo()` 处 SIGSEGV。backtrace 关键三帧：
-//   UsrAI::processData (UsrAI.cpp:359) → tagInfo::operator= (GlobalVariate.cpp:1017)
+//   UsrAI::processData (UsrAI.cpp:359 —— 该行号属 OJ 编译的那一版；本文件重构后行号已不对应) → tagInfo::operator= (GlobalVariate.cpp:1017)
 //   → vector<tagBuilding>::operator= (源 vector len=6 / cap=6) → __memcpy_avx → SIGSEGV
 // --------------------------------------------------------------------------------------------
 // 根因（本机引擎源码已逐行核对）：游戏状态是"主线程写、AI 线程读"的双缓冲发布机制
@@ -846,6 +867,9 @@ void UsrAI::managePriest() {
     // ★ 2026-09-15 去重（铁律 21/26）：远程兵种判定 + "该敌对我的威胁半径"原先在
     // 【感化目标选择】/【威胁扫描 chkThreat】/【逃跑 priestFlee 的威胁收集】三处各写一遍，   改一处漏一处即口径分叉。此处收口为两个 lambda。
     // ⚠ 威胁半径口径：远程(弓/战车弓/复合弓/投石兵/投石车)≈12 格；近战≈2.5 格（贴身）。
+    // ⚠ 口径提示：本集合 = 文件头 sortIsRanged(s) 【再排除投石车 AT_STONE_THROWER】——
+    //   投石车在此单独判（威胁半径同为 12 格，见下一行）。两处形状相同属历史遗留，
+    //   若要收口请统一走 sortIsRanged()（铁律 21/26），改一处别忘了另一处。
     auto isRangedSort = [&](int s) -> bool {
         return s == AT_BOWMAN || s == AT_CHARIOT_ARCHER ||
                s == AT_COMPOSITE_BOWMAN || s == AT_SLINGER;
@@ -1260,7 +1284,7 @@ void UsrAI::managePriest() {
         }
 // ==== 以下均为"无法感化"(冷却中/视野内无目标)时才轮到的保命/待命逻辑 ==== 2) ★ 强制撤退闸：仅【残血 pBR≤0.25】才无条件逃命。
 // ⚠ 不可加 `nearestE <= 3*BL ||` 之类的 OR：贴脸时血量往往还高，加 OR 会抢先 fled → 压制下方两档治疗 → 观感"祭司不满血就不治友军"。正常贴脸由下方"威胁射程+2"的 flee 闸（第4步）接管。
-// ★ 治档铁律：治疗只能用 `HumanAction(priestSN, allySN)`（Core.cpp:1091-1096 判定祭司对同阵营人类走"治疗"） ；目标 SN 绝不能是祭司自身；HumanBuild/Upgrade 都不是入口。
+// ★ 治档铁律：治疗只能用 `HumanAction(priestSN, allySN)`（Core.cpp:1117-1121 判定祭司对同阵营人类走"治疗"） ；目标 SN 绝不能是祭司自身；HumanBuild/Upgrade 都不是入口。
         if (pBR <= 0.25) {
             double feDR = 0, feUR = 0; locateNearest(feDR, feUR);
             priestMode = 1; priestFlee(feDR, feUR); return;
@@ -2248,6 +2272,8 @@ void UsrAI::manageBuildings() {
 }
 
 // 每帧维护三件事：①重置资源分配去重表(供下游分配函数计数) ②动态农场目标 ③祭司探路状态机   ⚠ 本函数【不做】村民分配——旧分配逻辑已全部移除，分配统一由 assignIdleSimple() 负责。
+// 经济段入口（由 manageEconomy 调用）：每帧清计数 → 重算农场目标 → 跑祭司探路。
+// ★ 2026-09-23 重构：主体已拆成下面两个函数，本函数只做"清计数 + 转发"。
 void UsrAI::assignIdleFarmers() {
     frameFoodTargets.clear();  // ★ 每帧重置：防同帧多农民分配到同一目标
     frameBushCount.clear();    // ★ 每帧重置浆果每丛分配计数
@@ -2258,6 +2284,9 @@ void UsrAI::assignIdleFarmers() {
     managePriestScout();
 }
 
+// 每帧重算 farmTarget（目标农场数）。2026-09-23 从 manageEconomy 抽出，逻辑未改。
+// 判据顺序（自上而下，命中即返回）：① 基地附近(≤30 格)仍有浆果 ⇒ 0；② 没市场 ⇒ 0（农场是市场下游）；
+//   ③ 前 5 分钟(帧<7500)且野生食物>300 ⇒ 0；④ 否则食物紧张(野生<300 或肉<200) ⇒ MAX_FARMS，否则 0。
 void UsrAI::updateFarmTarget() {
     // ---- 动态计算农场目标 ----
     int bushFood = 0, huntFood = 0, nearBushFood = 0;
@@ -2294,6 +2323,11 @@ void UsrAI::updateFarmTarget() {
 
 }
 
+// 祭司探路：8 方向放射状前进 + 回 TC 交替。2026-09-23 从 manageEconomy 抽出，逻辑未改。
+// 门禁：非战时(!isWar) 且 未进入反攻 且 scoutPhase < 16。
+//   ⚠ 战时由 processData 直接把 scoutPhase 推到 20（结束探路）—— 否则 managePriest 因 scoutPhase>=20 恒不运行，
+//     表现为"敌人贴脸祭司也一动不动"。
+// 结束条件：探完全部 8 个外向方向(scoutDirsDone>=8) 或 战时强推，置 scoutPhase = 20，交还 managePriest 接管保命/感化。
 void UsrAI::managePriestScout() {
     // ====== 祭司探路：8方向放射状，祭司视野远，覆盖更广 ======
     bool isWar = (state >= DEFENSE_WAVE1 && state <= DEFENSE_WAVE3);
@@ -2669,6 +2703,10 @@ void UsrAI::managePriestScout() {
     }
 }
 
+// 统计各类资源的在职村民数（出参：金/木/石/食）。2026-09-23 从 assignIdleSimple 抽出，逻辑未改。
+// ⚠ 每个村民至多贡献 1：优先级 =【工作目标(WorkObjectSN)】>【手持资源(ResourceSort)】；
+//   两者语义不同，绝不可相加（旧写法两条并列 if ⇒ 同一人被数两次、采金计数虚高约 2 倍）。
+// 调用的判据必须与本处口径一致，改一处别忘了另一处（铁律 21/26）。
 void UsrAI::countFarmerWorkKinds(int &goldWorkers, int &woodWorkers, int &stoneWorkers, int &foodWorkers) const {
     goldWorkers = woodWorkers = stoneWorkers = foodWorkers = 0;
     // ★★★ 2026-09-17 修「采金人数偏少」：本计数块【每个村民只数一次】★★★ ⚠ 陷阱：`ResourceSort` = 人物【手持】资源种类；`WorkObjectSN` = 【工作目标】—— 语义不同，绝不可相加/互换。
@@ -3593,6 +3631,9 @@ void UsrAI::manageTechUpgrade() {
 }
 
 // 军事管理（训练 + 箭塔防御 + 护祭司 + 自动作战）
+// 军事训练的 A 段：训练链。2026-09-23 从 manageMilitary 抽出，逻辑未改；由 manageMilitary 每帧调用。
+// 入参 isWarTime = (state ∈ [DEFENSE_WAVE1, DEFENSE_WAVE3])。
+// 只负责"发训练令"；箭塔指挥 / 军队搜敌 / 回基地待命仍留在 manageMilitary 的 B~D 段。
 void UsrAI::trainMilitaryUnits(bool isWarTime) {
     bool postBronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
     int humanPop = info.farmers.size() + info.armies.size();
@@ -3838,6 +3879,7 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
     }
 }
 
+// 军事管理（每帧调用）：A=训练（已抽到 trainMilitaryUnits）→ B=箭塔指挥 → C/D=军队搜敌与回基地待命。
 void UsrAI::manageMilitary() {
     bool isWarTime = (state >= DEFENSE_WAVE1 && state <= DEFENSE_WAVE3);
     double BL = (double)BLOCKSIDELENGTH;
@@ -3846,7 +3888,7 @@ void UsrAI::manageMilitary() {
 
     // ====== B. 箭塔防御：所有波次手动指挥箭塔攻击进入射程的敌人 ======
     // ★ 引擎箭塔攻击必须用 HumanAction(箭塔SN, 目标SN)，不能用 BuildingAction——后者第二参是 "动作编号"而非目标 SN。★ 箭塔的 tagBuilding.Project 被引擎改写为"当前攻击目标 SN"
-    // (Core.cpp:582 getObjectSN)：空闲=-1、攻击中=目标SN，故"已在攻击"判据是 Project != -1。
+    // (Core.cpp:603 getObjectSN)：空闲=-1、攻击中=目标SN，故"已在攻击"判据是 Project != -1。
     if (isWarTime) {
         for (auto &tower : info.buildings) {
             if (tower.Type != BUILDING_ARROWTOWER || tower.Percent < 100) continue;
@@ -3982,7 +4024,7 @@ void UsrAI::manageMilitary() {
                 if (guardCmds >= PRIEST_GUARD_MAX_CMDS) break;
                 if (lionHunterSN.count(a.SN)) continue;   // ★ 正在猎狮，别把指令覆盖掉
                 if (a.NowState == HUMAN_STATE_WORKING) continue;
-                // 已接令/正在攻击该目标(引擎 Core.cpp:433 会把 WorkObjectSN 设为目标SN)→不重发， 否则每帧重复 HumanAction 会不断打断攻击动作→兵原地横跳、输出为零。
+                // 已接令/正在攻击该目标(引擎 Core.cpp:459 会把 WorkObjectSN 设为目标SN)→不重发， 否则每帧重复 HumanAction 会不断打断攻击动作→兵原地横跳、输出为零。
                 if (a.WorkObjectSN == guardSN) continue;
                 // 预警级不打断正在战斗的兵；紧急级(敌已锁祭司/贴到8格内)一律召回
                 if (a.NowState == HUMAN_STATE_ATTACKING && !urgent) continue;
@@ -4189,10 +4231,13 @@ void UsrAI::manageCarriedResources() {
 }
 
 void UsrAI::counterFarmerAttack(double BL, double targetDR, double targetUR) {
-    // ====== 1.4 ★ 农民总攻（27 分钟后全部农民投入进攻，2026-09-19 用户需求）====== 刻意放在【1.5 祭司护驾】之前：护驾紧急时本函数会 return 停止推进，但"农民已出发"不该被撤回。
-    // ① 目标选取：敌方 TC(真正的"基地") > 最近的【非箭塔、非武器厂】敌建筑 > 无目标则不动。 ⚠ 不含武器厂：拆了就没了 exam 胜因（与 ARMY_IGNORE_SIEGE_WORKSHOP 同源语义）。
-    // ⚠ 不含箭塔：农民血量/射程撑不住塔火力，且箭塔已由下方军队段单独处理。 ② 幂等 + 节流：仅当 WorkObjectSN != 目标 且距上次下发 >= GAP 帧才发令 —— 重发会 reset 引擎的攻击关系、打断动作。
-    // ③ 与经济竞争：本函数在 manageEconomy 之后跑 ⇒ 天然覆盖同帧经济派工令；跨帧也不会被打回 （农民进入攻击关系后 NowState ≠ IDLE，而 assignIdleSimple 只筛空闲农民）。
+    // ====== 反攻前置：★ 农民总攻（27 分钟后全部农民投入进攻，2026-09-19 用户需求）======
+    // 调用位置：manageCounterAttack() 中排在 counterPriestGuard() 【之前】 —— 护驾紧急时后者会直接 return 停止推进，
+    //   但"农民已出发"不该被撤回，故必须先发农民令。
+    // ① 目标选取四级（逐条见下方注释）：敌方 TC > 最近软目标(非箭塔/非武器厂) > 最近箭塔 > 记忆方位行军。
+    //   ⚠ 一律不含武器厂：拆了就没了 exam 胜因（与 ARMY_IGNORE_SIEGE_WORKSHOP 同源语义）。
+    //   ⚠ 箭塔【必须】留在候选里：本图敌方没有 TC，其基地结构只有箭塔 + 武器厂；把箭塔也排除则目标恒为 -1、整段静默失效。
+    //     （旧注释曾写"不含箭塔：农民撑不住塔火力"—— 该口径在 fa 批被实测推翻，代码从未按它实现，此处已更正。）
     if (COUNTER_FARMER_ATTACK && frame >= COUNTER_FARMER_ATTACK_FRAME) {
         static std::map<int, int> farmerAtkFrame;   // 农民 SN → 上次下发帧（节流）
 // ★ 目标选取三级 + 兜底行军（2026-09-19 fa 批修正）：① 敌方 TC（"基地"本体）；② 最近的【软目标】敌建筑（非箭塔/非武器厂）；
@@ -4245,8 +4290,11 @@ void UsrAI::counterFarmerAttack(double BL, double targetDR, double targetUR) {
 }
 
 bool UsrAI::counterPriestGuard(double BL) {
-    // ====== 1.5 祭司护驾（★优先于反攻推进：祭司死=立刻失败） ====== manageMilitary 的护驾令会被本函数的推进令【同帧覆盖】(UsrAI.cpp 124/127-129 每帧先跑
-    // manageMilitary、反攻期再追加本函数)，故反攻期必须在此再判一次，紧急时直接 return 停止推进。
+    // ====== 反攻段：★ 祭司护驾（优先于一切推进 —— 祭司死=立刻失败）======
+    // 为什么反攻期必须再判一次：processData 每帧【先】跑 manageMilitary()（UsrAI.cpp:633），反攻期【再】追加
+    //   manageCounterAttack()（UsrAI.cpp:637）⇒ 本函数后跑，会覆盖 manageMilitary 刚下发的护驾令（跨帧"后跑者覆盖先跑者"）。
+    // 触发条件：敌人已锁祭司(WorkObjectSN==priestSN) 或 敌 ≤ PRIEST_GUARD_URGENT 格。
+    // 返回：true = 本帧已把全军转为回防祭司，调用方【必须立刻 return】，不再下发任何推进/感化令；false = 无事可做，继续推进。
     {
         double pDR = 0, pUR = 0; bool pAlive = false;
         for (auto &a : info.armies) if (a.Sort == AT_PRIEST) { pDR = a.DR; pUR = a.UR; pAlive = true; break; }
@@ -4277,6 +4325,12 @@ bool UsrAI::counterPriestGuard(double BL) {
     return false;
 }
 
+// ★ 2026-09-15 去重（铁律 21/26）：按 SN 在【敌军队 → 敌农民 → 敌建筑】中定位坐标。
+//   原代码在 3 处（拉扯粘滞目标 / 投石车粘滞目标 / 投石车威胁点）各抄一份同样的三层循环，语义完全一致。
+//   命中敌军队时顺带回填 pMelee（= sortIsMelee，供拉扯对近战敌更早撤）；三类都没有则返回 false。
+//   ⚠ SN 全图唯一 ⇒ 多查一类（建筑）不会改变任何原有分支的结果。
+// ★ 2026-09-21 追加回填 pSort（命中兵种；村民/建筑 = -1）——供"射程占优"判据与 [KIT-*] 日志用，不改任何原有分支。
+//   pMelee / pSort 均为可选出参（默认 nullptr）⇒ 只想取坐标的调用点不必构造哑变量。
 bool UsrAI::lookupEnemySN(int sn, double &x, double &y, bool *pMelee, int *pSort) const {
     double BL = (double)BLOCKSIDELENGTH;
     for (auto &e : info.enemy_armies)
@@ -4288,6 +4342,11 @@ bool UsrAI::lookupEnemySN(int sn, double &x, double &y, bool *pMelee, int *pSort
     return false;
 }
 
+// ★ 2026-09-21 拉扯专用选敌：只在"射程占优"（sortHasKiteRangeAdvantage）的敌人里取最近者。
+//   与 findNearestEnemyNoStone 的差别【只有】这一条过滤 —— 两级兜底语义（军队优先、无军队才退村民）严格保持原样；
+//   投石车本来就被该函数排除（留给祭司感化），此处不再单独兜底（原"投石车兜底"段已删，见相位机注释）。
+// 出参：osort = 命中目标兵种（村民/未知 = -1）；skipSort = 被"射程不占优"跳过的最近敌方兵种（无 = -1，仅用于日志观测）。
+// 返回：目标 SN；射程内既无"占优"敌、也无敌村民时返回 -1。
 int UsrAI::findKiteTarget(int selfSort, double dr, double ur, double range, int &osort, int &skipSort) const {
     double BL = (double)BLOCKSIDELENGTH;
     int bestSN = -1; double bestD = range * range; osort = -1; skipSort = -1;
@@ -4309,6 +4368,11 @@ int UsrAI::findKiteTarget(int selfSort, double dr, double ur, double range, int 
     return bestSN;
 }
 
+// 可走判定 = 非海(OCEAN) 且在 forestGrid 之外。
+//   forestGrid 由调用方预建（树±2格 / 石矿·金矿±1格），是 O(1) 查询的可走位图。
+// ★ 2026-09-08（7e 第4条）：HumanMove 现可穿越未探索区 ⇒ UNKNOWN 不再拒；只有坐标本身不可达才卡住。
+//   林/矿在引擎里是放在 GRASS 格上的资源对象 ⇒ "已探索"≠"可走"，故必须查 forestGrid，只看 theMap 不够。
+// ⚠ 入参 (x,y) 为细节坐标（像素），非块坐标；越界返回 false。
 bool UsrAI::isPassableAt(double x, double y, const std::vector<std::vector<char>>& forestGrid) const {
     double BL = (double)BLOCKSIDELENGTH;
     if (!info.theMap) return false;
@@ -4327,7 +4391,7 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
     for (auto &a : info.armies) if (a.Sort == AT_PRIEST) priest = &a;
     tagBuilding* siege = nullptr;
     if (enemySiegeSN != -1) siege = findEnemyBuilding(BUILDING_SIEGE);
-    // ====== 3. 祭司推进/转化武器厂 ====== managePriest 已先处理祭司保命/治疗/感化；这里只在祭司 IDLE/WALKING 时接管推进/感化武器厂。
+    // ====== 祭司推进 / 转化武器厂（三处下发点：early / front / legacy）======
     // 【修 2026-09-08】原 `if (NowState != IDLE) return;` 太严——祭司跟军时 WALKING 每帧触发 return ⇒ 整段 100% 走不到 ⇒ 祭司长期滞留后方、感化武器厂永不触发。改为 WALKING 也允许进入。
     if (priest) {
         if (priestCounterCooldown > 0) priestCounterCooldown--;   // ★ 反攻推进专用节流（与 priestMoveCooldown 解耦）
@@ -4560,6 +4624,9 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
     }
 }
 
+// 把落点吸附到最近可走格：以 1~4 格半径由内向外逐环扫描，命中即改写 (x,y) 并返回；扫完仍不可走则原样保留。
+// 用途：敌建筑的块坐标可能压在资源堆或海格上，HumanMove 直达会被引擎静默拒绝（全军原地不动）。
+// 一次性静态修正，不引入步进/绕路（用户 2026-09-15 要求）。
 void UsrAI::snapWalkable(double &x, double &y, const std::vector<std::vector<char>>& forestGrid) const {
     if (isPassableAt(x, y, forestGrid)) return;
     double BL = (double)BLOCKSIDELENGTH;
@@ -4574,7 +4641,7 @@ void UsrAI::snapWalkable(double &x, double &y, const std::vector<std::vector<cha
 
 bool UsrAI::counterScoutAndPlan(double BL, double &targetDR, double &targetUR,
                                       const std::vector<std::vector<char>>& forestGrid) {
-    // ====== 1. 侦察阶段：寻找敌方武器厂 ======
+    // ====== 侦察 / 选址：寻找敌方武器厂 + 定出本轮反攻目标点 ======
     if (enemySiegeSN == -1) {
         auto siege = findEnemyBuilding(BUILDING_SIEGE);
         if (siege) {
@@ -4645,6 +4712,15 @@ bool UsrAI::counterScoutAndPlan(double BL, double &targetDR, double &targetUR,
     return false;
 }
 
+// 反攻段总调度（state == COUNTERATTACK 时由 processData 调用）。
+// 本函数是【编排器】：真正的逻辑分布在下面几个函数里，调用顺序即语义优先级，勿随意调换 ——
+//   ① counterScoutAndPlan()  —— 侦察/选址：定出 targetDR/UR（武器厂 > 记忆基地 > TC 对角角落）并吸附到可走格。
+//                              返回 true = 武器厂已被我方转化（本局胜利），调用方须立刻 return。
+//   ② counterFarmerAttack()  —— 农民总攻（27 分钟后）。刻意排在护驾之前（见该函数头部）。
+//   ③ counterPriestGuard()   —— 祭司护驾。返回 true = 本帧已转为回防，调用方须立刻 return。
+//   ④ 【本函数内联】         —— 集结与推进：投石车/远程优先，含拉扯相位机、攻塔、卡死重试。
+//   ⑤ counterPriestConvert() —— 祭司推进 / 转化武器厂。
+// forestGrid：开头预建的"树±2格 / 矿±1格"可走位图，只建一次，按 const 引用传给上述各段（O(1) 查）。
 void UsrAI::manageCounterAttack() {
     double BL = (double)BLOCKSIDELENGTH;
 
@@ -4664,25 +4740,10 @@ void UsrAI::manageCounterAttack() {
             }
     }
 
-
-    // 近战兵种(短手、贴身肉搏)：用于判断敌是否会"冲过来贴身打我们"。 拉扯(kiting)时对近战敌要更早后撤、后撤更远——它们射程极短但会持续追击贴身。
-
-    // 各远程兵种最大攻击射程(格)：投石车10 / 复合弓7 / 战车弓7 / 弓5 / 投石兵4。
-    // ★ 2026-09-21 已对 config.json 回代核验（技能 §0：任何"代码常量==外部配置"的断言必须抓真值）：
-    // DIS_STONE_THROWER=10、DIS_COMPOSITE_BOWMAN=7、DIS_CHARIOT_ARCHER=7、DIS_BOWMAN=5、DIS_SLINGER=4 —— 全部一致。 用于反攻拉扯(kiting)：把敌方保持在最远射程边缘无伤输出。
-
-    // ★★★★★ 2026-09-21 用户需求「复合弓兵不要拉扯战车弓兵和投石车（攻击距离比它们小）」★★★★★ 拉扯(kiting)的收益前提是【我方射程严格大于对方】：把敌保持在最远射程边缘，自己挨不到打。
-    // 射程相等或更短时，逼近到自身射程边缘必然同时进入对方射程 ⇒ 挨打却没有输出优势，纯亏 （撤了打不着、不撤就被打）。故"射程不占优"的敌单位【不进拉扯目标候选】。
-    // 真值（config.json）：复合弓 7 vs 战车弓 7（相等）、vs 投石车 10（更长）⇒ 两者皆不拉扯。 ⚠ 近战 / 村民 / 祭司等无射程单位（isRanged=false）永远可拉扯；判据只对远程敌生效。
-    // ⚠ 同一判据对所有远程兵种生效（复合弓7/战车弓7/弓兵5/投石兵4 vs 投石车10 全部不占优） —— 避免"改了复合弓、弓兵照样去拉投石车"的同源漏改（铁律 21/26）。
-
-    // ★ 2026-09-15 去重（铁律 21/26）：按 SN 在【敌军队→敌农民→敌建筑】中定位坐标。 原代码在 3 处（拉扯粘滞目标 / 投石车粘滞目标 / 投石车威胁点）各抄一份同样的三层循环，语义完全一致。
-    // 命中敌军队时顺带回填 isMelee（供拉扯对近战敌更早撤）；三类都没有则返回 false。   ⚠ SN 全图唯一 ⇒ 多查一类（建筑）不会改变任何原有分支的结果。
-    // ★ 2026-09-21 追加回填 pSort（命中兵种；村民/建筑 = -1）——供"射程占优"判据与 [KIT-*] 日志用，不改任何原有分支。
-
-    // ★ 2026-09-21 拉扯专用选敌：只在"射程占优"的敌人里取最近者。 与 findNearestEnemyNoStone 的差别【只有】这一条过滤 —— 两级兜底语义（军队优先、无军队才退村民）严格保持原样；
-    // 投石车本来就被该函数排除（留给祭司感化），此处不再单独兜底（原"投石车兜底"段已删，见下方相位机注释）。
-    // 出参 osort = 命中目标兵种（村民/未知 = -1）；skipSort = 被"射程不占优"跳过的最近敌方兵种（无 = -1，仅用于日志观测）。
+    // ⚠ 下列说明已随定义归位（2026-09-23 重构：λ 提升为文件级/成员函数时注释未同步搬走）：
+    //   兵种分类 / 射程 / "射程占优" → 文件头 static sortIsRanged() / sortIsMelee() /
+    //   sortMaxRangedRange() / sortHasKiteRangeAdvantage()；"按 SN 三层查找" → lookupEnemySN()；
+    //   "拉扯专用选敌" → findKiteTarget()。
 
     double targetDR, targetUR;
     if (counterScoutAndPlan(BL, targetDR, targetUR, forestGrid)) return;
@@ -4695,7 +4756,7 @@ void UsrAI::manageCounterAttack() {
     counterFarmerAttack(BL, targetDR, targetUR);
     if (counterPriestGuard(BL)) return;
 
-    // ====== 2. 集结与推进（投石车/远程优先，逐步走已探索区域） ======
+    // ====== 本函数内联：集结与推进（投石车/远程优先，逐步走已探索区域）======
     int marchCmds = 0;
     int armyCount = 0;
     for (auto &a : info.armies) if (a.Sort != AT_PRIEST) armyCount++;  // 非祭司军队总数(近战集结门槛用)
@@ -5300,7 +5361,6 @@ void UsrAI::manageCounterAttack() {
 
     counterPriestConvert(BL, targetDR, targetUR, rallyCtrDR, rallyCtrUR, forestGrid);
 
-    // ====== 4. 后方支援：继续造兵补充伤亡 ====== (已在manageMilitary中持续进行)
 }
 
 // 失败检查
@@ -5577,6 +5637,9 @@ tagResource* UsrAI::findBestWoodTree(double dr, double ur) {
     return best;
 }
 
+// 在【敌军队 → 敌农民】中找最近者；bestD2 传入当前最优距离²并在命中时被更新
+//   （便于与"建筑候选"混在同一池里比较）。skipStone=true 时跳过敌方投石车（留给祭司感化）。
+// 返回 SN，无命中 -1。2026-09-23 由 findNearestEnemySN / findCatapultTarget 去重抽出。
 int UsrAI::findNearestEnemyUnit(double dr, double ur, double &bestD2, bool skipStone) {
     int bestSN = -1;
     for (const auto &e : info.enemy_armies) {
@@ -5681,6 +5744,7 @@ int UsrAI::countAllMilitary() {
     return cnt;
 }
 
+// 统计 WorkObjectSN == sn 的村民数（引擎"工作目标"口径，不含手持资源）。2026-09-23 由 6 处重复循环去重抽出。
 int UsrAI::countFarmersOnTarget(int sn) {
     int n = 0;
     for (auto &f : info.farmers)
@@ -6443,6 +6507,10 @@ bool UsrAI::gazelleDropoffReady(tagResource* r) {
 bool UsrAI::tryAssignFood(tagFarmer* f) {
     if (!f) return false;
 
+    // ★ 食物已达停采水位 ⇒ 不派新食物工。与 assignIdleSimple 的同名门禁同口径，改一处必须同改另一处（铁律 21/26）。
+    //   本函数目前只有一个调用点：assignIdleSimple 的 reassignToDeficit()（资源过剩转岗）——
+    //   在那里返回 false 的效果 ="别转食物"，控制流自然落到下一档伐木，与该调用点意图一致。
+    //   ⚠ 若将来给 tryAssignFood 增加"常规派工"用途的调用点，必须重新评估此闸该不该留在这里。
     const bool postBronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
     const bool foodStop = (info.Meat >= (postBronze ? FOOD_CAP_STOP : FOOD_CAP_STOP_PREBRONZE));
     if (foodStop) return false;

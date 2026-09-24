@@ -131,7 +131,7 @@ private:
 
     // 建造追踪
     std::set<int> triedBuildPositions;
-    std::set<int> waveBlockers;
+    std::set<int> waveBlockers;    // ⚠【已成死字段，待删】原"波次期阻断村民派遣"逻辑随 manageFirstWaveDefense 一并撤销，2026-09-23 起 .cpp 零引用
     std::map<int,int> buildingFarmerType;
     std::map<int,int> builderIdleFrame; // 建造者空闲且不匹配任何在建建筑的起始帧（累计空闲时间，重派不重置）
     std::map<int,int> buildRedispatchFrame; // 建造者空闲时重新下发建造指令的节流帧（每60帧一次）
@@ -194,8 +194,8 @@ private:
     int rallyDR, rallyUR;      // 反攻集结点
     bool towerTechResearched;  // 箭塔科技已研究
     int towerCount;            // 已建箭塔数量
-    int scoutFarmerSN;         // 探路村民SN
-    int scoutPhase;            // 0-7: 4方向+回TC交替
+    int scoutFarmerSN;         // ⚠【已成死字段，待删】探路已改由祭司承担（见 scoutPhase），2026-09-23 起 .cpp 零引用
+    int scoutPhase;            // 探路阶段：<16=探路中（本阶段驱动祭司）；>=20=已结束（战时 processData 强推 20，交还 managePriest）
     int scoutCooldown;         // 探路移动冷却
     int scoutDirsDone;         // 已完成的外向探索次数（探完8方向=8 才结束探路）
     int scoutWalkTimer;        // 走路计时（超时=目标不可达）
@@ -227,16 +227,17 @@ private:
     //   实测单局重复日志 577~1349 条、且同档位多单位落点完全重合。此处记录上次下发的落点与帧号。
     std::map<int,double> armyHoldGoalDR, armyHoldGoalUR;  // 上次下发的待命落点（判"是否同一目标"）
     std::map<int,int> armyHoldCmdFrame;                   // 上次下发待命指令的帧号（重发节流窗口）
-    // ★ 村民撤退TC旁的绕路状态（与军队同理：TC建筑中心不可达→改环上可达空地，防刷屏卡死）★
-    std::map<int,int> farmerReturnTry;    // 村民SN → 螺旋重试计数
-    std::map<int,double> farmerIssueDR, farmerIssueUR; // 上次下发撤退指令位置（卡死检测）
-    std::map<int,int> farmerIssueFrame;   // 上次下发撤退指令帧号
+    // ⚠【下列 4 个字段已成死字段，待删】"村民撤退到 TC 旁"机制已撤销（村民不再因见敌而撤退），
+    //   2026-09-23 起 .cpp 零引用；保留仅为避免一次性大改，评审时可整块删除。
+    std::map<int,int> farmerReturnTry;    // ⚠ 死字段：村民SN → 螺旋重试计数
+    std::map<int,double> farmerIssueDR, farmerIssueUR; // ⚠ 死字段：上次下发撤退指令位置
+    std::map<int,int> farmerIssueFrame;   // ⚠ 死字段：上次下发撤退指令帧号
     // ★ 反攻推进(manageCounterAttack)的寻路卡死检测 ★
     // ⚠ 必须独立一套，绝不可复用上面的 armyIssue*：
     //   processData 中 manageMilitary() 每帧都跑(反攻期也一样)，若共用 map，同帧内后者会覆盖前者，
     //   导致 "frame - issueFrame" 永远很小 → 卡死判定永不触发 → 单位永久卡死。
     std::map<int,int> marchStuckTry;      // 单位SN → 卡死重试档位(逐档换方向，绕出死角)
-    std::map<int,double> marchIssueDR, marchIssueUR; // 上次记录的位置（判定是否真的有位移）
+    std::map<int,double> marchIssueDR, marchIssueUR; // ⚠ 死字段：原"绝对位移"判据用，已被 marchIssueDist 取代
     // ★ 2026-09-07：单位SN → 上次记录的"距推进目标(targetDR/targetUR)的距离"。
     //   卡死判据已由此字段接管（取代"绝对位移"判据）——
     //   只有【距目标真的变近】才算有效推进，原地来回抖动不再刷新计时。
