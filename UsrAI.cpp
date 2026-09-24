@@ -3343,69 +3343,13 @@ void UsrAI::manageTechUpgrade() {
 
     bool done = false;
     bool postBronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
-
-    // ★ 2026-09-20 精简：谷仓箭塔科技链收口 —— 同一判据原先在 3 处（preW3 / milUnlocked 前 / TIER2）各写一遍， 逐字等价 ⇒ 抽为 lambda，调用点保持原位置 + 原守卫。findBuilding 为纯查找（只读循环），
-    // 故 TIER2 那处把 `info.Meat >= 50` 提到外层与放在内层无行为差异，一并收口。
-    auto tryArrowTowerTech = [&]() {
-        if (!done && !towerTechResearched) {
-            auto g = findBuilding(BUILDING_GRANARY);
-            if (g && g->Project == ACT_NULL && info.Meat >= 50) {
-                BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
-                towerTechResearched = true; done = true;
-            }
-        }
-    };
-    auto tryBronzeTowerUpgrade = [&]() {
-        if (!DISABLE_TOWER_UPGRADE && !done && !bronzeTowerUpgraded && towerTechResearched) {
-            auto g = findBuilding(BUILDING_GRANARY);
-            if (g && g->Project == ACT_NULL && info.Meat >= 120 && info.Stone >= 50) {
-                BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWE_UPGRADE);
-                bronzeTowerUpgraded = true; done = true;
-            }
-        }
-    };
-
-    // ★ 原 preW1（第一波前只许阔剑科技）门槛已移除：复合弓科技现在「能解锁就解锁」，不再受波次阶段限制。
-    // ★ 开局即研究箭塔科技（不等铜器/第3波/军事解锁）：有谷仓+50食物就研究，解锁箭塔建造 ★
-    if (!towerTechResearched) {
-        auto g = findBuilding(BUILDING_GRANARY);
-        if (g && g->Project == BUILDING_GRANARY_ARROWTOWER) {
-            towerTechResearched = true;  // 引擎已在研究中（已扣资源）
-        } else if (g && g->Project == ACT_NULL && info.Meat >= 50) {
-            BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
-            towerTechResearched = true;
-            techCooldown = 25;
-            return;
-        }
-    }
-
-    // ★★★ 铜器前：除箭塔科技外禁止其他科技！每一粒食物都留给800升级费 ★★★
-    if (!postBronze) return;
-
-    // ★ 从游戏状态同步布尔值（检查建筑是否真在研究中，已扣资源）★ 不使用乐观标记！必须确认科技已经"付款"正在执行
-    if (!broadswordResearched) {
-        auto ac = findBuildingIncludingUnderConstruction(BUILDING_ARMYCAMP);
-        if (ac && ac->Project == BUILDING_ARMYCAMP_UPGRADE_BROADSWORD) {
-            broadswordResearched = true;  // 真的在研究了！
-        } else if (broadswordQueued && ac && ac->Project == ACT_NULL) {
-            // 已排队 → 建筑空闲 → 科技已完成
-            broadswordResearched = true;
-        }
-    }
-    if (!compositeBowResearched) {
-        auto rng = findBuildingIncludingUnderConstruction(BUILDING_RANGE);
-        if (rng && rng->Project == BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) {
-            compositeBowResearched = true;
-        } else if (compositeBowQueued && rng && rng->Project == ACT_NULL) {
-            compositeBowResearched = true;
-        }
-    }
-
+    // ★ 2026-09-24 用户需求：铜器前也第一时间研究木材加工 —— 只要市场就绪、食物≥120、木≥75 就直接研究，
+    //   不再等 postBronze；代价是会提前消耗 120 食物/75 木，800 食物升铜节奏可能略受影响。
     // ★★★ 2026-09-12 用户要求：【伐木科技 = 解锁类科技最优先】★★★ 市场·木材加工（120食物+75木材 → 伐木+2 / 远程攻击距离+1）。原位置在 TIER3 末尾，且被两道锁压住：
     // ① `frame < WAVE3_TIME`(21000帧=14min) 前置锁 ② `milUnlocked`(军事解锁) 锁   ⇒ 最坏要 14 分钟以后、且军事科技全部研究完才轮得到它。
-    // 现将判定块整体上移到【铜器后第一个被检查的科技】位置，越过上述两锁，成为全场最高优先科技。   原 TIER3 处的判定块已删除（避免重复研究）。
-    // ★ 保留未破的闸门：函数首 techCooldown 节流 / FOOD_PAUSE_TECH_TRAIN(<60食物) / `if (!postBronze) return;`
-    // —— 800 食物升级费仍受保护（铜器前一粒食物都不许被科技吃掉）。   ★ 硬依赖：必须先有【市场】建筑且 Project==ACT_NULL。
+    // 该块现在位于所有科技检查之前，Tool/Bronze 两个阶段都会尝试。
+    // 仍然保留：函数首 techCooldown 节流 / FOOD_PAUSE_TECH_TRAIN / 市场空闲与成本闸。
+    // 硬依赖：必须先有【市场】建筑且 Project==ACT_NULL。
     // ★ 与复合弓(P0)的食物/木材竞争：见宏 WOOD_TECH_ABSOLUTE_FIRST。
     if (!DISABLE_MARKET_WOOD_TECH && !done && !marketWoodUpgraded) {
         auto mw = findBuilding(BUILDING_MARKET);
@@ -3469,6 +3413,64 @@ void UsrAI::manageTechUpgrade() {
             compositeBowQueued = true;
             done = true;
             DebugText(QString("!! TECH CompositeBow f=%1 meat=%2 wood=%3").arg(frame).arg((int)info.Meat).arg((int)info.Wood));
+        }
+    }
+
+
+    // ★ 2026-09-20 精简：谷仓箭塔科技链收口 —— 同一判据原先在 3 处（preW3 / milUnlocked 前 / TIER2）各写一遍， 逐字等价 ⇒ 抽为 lambda，调用点保持原位置 + 原守卫。findBuilding 为纯查找（只读循环），
+    // 故 TIER2 那处把 `info.Meat >= 50` 提到外层与放在内层无行为差异，一并收口。
+    auto tryArrowTowerTech = [&]() {
+        if (!done && !towerTechResearched) {
+            auto g = findBuilding(BUILDING_GRANARY);
+            if (g && g->Project == ACT_NULL && info.Meat >= 50) {
+                BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
+                towerTechResearched = true; done = true;
+            }
+        }
+    };
+    auto tryBronzeTowerUpgrade = [&]() {
+        if (!DISABLE_TOWER_UPGRADE && !done && !bronzeTowerUpgraded && towerTechResearched) {
+            auto g = findBuilding(BUILDING_GRANARY);
+            if (g && g->Project == ACT_NULL && info.Meat >= 120 && info.Stone >= 50) {
+                BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWE_UPGRADE);
+                bronzeTowerUpgraded = true; done = true;
+            }
+        }
+    };
+
+    // ★ 原 preW1（第一波前只许阔剑科技）门槛已移除：复合弓科技现在「能解锁就解锁」，不再受波次阶段限制。
+    // ★ 开局即研究箭塔科技（不等铜器/第3波/军事解锁）：有谷仓+50食物就研究，解锁箭塔建造 ★
+    if (!done && !towerTechResearched) {
+        auto g = findBuilding(BUILDING_GRANARY);
+        if (g && g->Project == BUILDING_GRANARY_ARROWTOWER) {
+            towerTechResearched = true;  // 引擎已在研究中（已扣资源）
+        } else if (g && g->Project == ACT_NULL && info.Meat >= 50) {
+            BuildingAction(g->SN, BUILDING_GRANARY_ARROWTOWER);
+            towerTechResearched = true;
+            techCooldown = 25;
+            return;
+        }
+    }
+
+    // ★★★ 铜器前：除箭塔科技外禁止其他科技！每一粒食物都留给800升级费 ★★★
+    if (!postBronze) return;
+
+    // ★ 从游戏状态同步布尔值（检查建筑是否真在研究中，已扣资源）★ 不使用乐观标记！必须确认科技已经"付款"正在执行
+    if (!broadswordResearched) {
+        auto ac = findBuildingIncludingUnderConstruction(BUILDING_ARMYCAMP);
+        if (ac && ac->Project == BUILDING_ARMYCAMP_UPGRADE_BROADSWORD) {
+            broadswordResearched = true;  // 真的在研究了！
+        } else if (broadswordQueued && ac && ac->Project == ACT_NULL) {
+            // 已排队 → 建筑空闲 → 科技已完成
+            broadswordResearched = true;
+        }
+    }
+    if (!compositeBowResearched) {
+        auto rng = findBuildingIncludingUnderConstruction(BUILDING_RANGE);
+        if (rng && rng->Project == BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) {
+            compositeBowResearched = true;
+        } else if (compositeBowQueued && rng && rng->Project == ACT_NULL) {
+            compositeBowResearched = true;
         }
     }
 
