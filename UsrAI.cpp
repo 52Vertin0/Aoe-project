@@ -89,7 +89,12 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 }  // namespace
 
 // 波次时间（帧）- 来自任务文档
-#define WAVE1_TIME 6000
+// ★ 2026-09-24 实测：三波实际发动帧恒为 6001/13501/21001（与 AI 常量无关）⇒ 6000/13500/21000 才是"对齐实测"值。
+// ⚠ WAVE1_TIME 一词两义：①「波次是否已开始」判据（EARLY_ECONOMY 状态切换 / wave1Started / postW1 分段）要求 6000；
+//   ②「战备提前量」判据（TOOL_AGE_ARMY_TARGET 等）旧值 5000 更优 —— 5000 = 敌实攻前 1000 帧就切进战时状态。
+//   本行 = 5000，为 2026-09-24 实验臂 w1：检验"提前 1000 帧战备"的胜率价值。若成立，应拆为
+//   WAVE1_PULSE(=6000，波次判据) 与 WAVE1_PREP(=5000，提前量) 两个常量，而非二选一。
+#define WAVE1_TIME 5000
 #define WAVE2_TIME 13500
 #define WAVE3_TIME 21000
 
