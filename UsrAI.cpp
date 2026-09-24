@@ -240,27 +240,16 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define BUILD_GAP 1              // 建筑间距：候选建筑footprint外扩1格内不得有其他建筑(含敌我)，避免建筑成墙堵死路
 #define MELEE_OVERFLOW_FOOD 150      // 后期/反攻"爆近战"食物溢出阈值：食物≥此值才大规模造近战兵(棍棒/方阵)
 // ★★★ 2026-09-22 拉扯距离重标定：「撤得开」与「打得到」的平衡 ★★★
-// （用户需求：反攻时，应对远程有时复合弓兵拉扯远了会打不到，做好平衡）
-// 实测基线（12 局 gsk / 10919 个撤退窗口，探针 kite_range_probe.py）——
-//   ① 旧退出阈值 = R + BREATH = 7+4 = 11 格、旧撤退落点 = R×1.9 = 13.3 格，而自身射程 R = 7 格
-//      ⇒ 90.3% 的撤退窗口 dK > R（撤出自身射程）⇒ 撤完还得走 4~6.3 格才能重新开火；
-//   ② 同一 SN 的撤退窗口间隔中位 = **60 帧**，恰好压住旧攻击保护期 60 帧 ⇒ 保护期卡在临界值上：
-//      窗口后 ≤15 帧内拿到同 SN 攻击令的仅 2.1%、≤30 帧 4.0%、≤60 帧 37.8%（同批 10919 窗口）。
-//      逐帧例：vf_gsk_1 SN=91396 在 f=33737~34553（816 帧）里撤退令 14 条、攻击令 0 条、移动令 14 条。
-// 平衡口径：撤退距离改由【威胁半径】决定，并以【自身射程】为硬上限 ⇒ 撤完仍在射程内，切回 SHOOT 立刻能打。
-//   威胁半径：远程敌 = 其最大射程；近战/村民 = 0（贴脸威胁由下方 0.5R 无条件撤退兜底）
-//   ⇒ RET_D = clamp(威胁半径 + SAFE_MARGIN, MIN_KEEP, R)，落点 KIT_LAND = min(RET_D + SLACK, R) ≤ R
-//     ⇒ 不变量【撤完即在自身射程内】按构造成立（与 R 无关）：实测「落点 > 自身射程」占比 100.0% → **0.0%**。
-// ⚠ 已知副作用（有意保留）：T_IN = max(0.5R, RET_D − HYST)。
-//   · 对【近战/村民】靶 RET_D = MIN_KEEP = 5.0 ⇒ T_IN = max(3.5, 3.0) = 3.5 = 0.5R ⇒ 上方「敌近提前撤(dK ≤ T_IN)」
-//     与「贴脸无条件撤(dK < 0.5R)」退化成同一条 ⇒ 拉扯频率大降（撤退窗口 10919 → 1410，−87%）、
-//     单位更多时间停在 SHOOT 段（[KIT-S] 采样 234 → 1944、射程内占比 22.6% → 55.7%）。这是效果来源，**非 bug**。
-//   · 对【远程】靶 RET_D = 威胁射程 + SAFE_MARGIN > 0.5R ⇒ T_IN = RET_D − HYST > 0.5R ⇒ 提前撤那条仍生效
-//     （敌弓兵射程 5 ⇒ RET_D = 7.0、T_IN = 5.0；落点 7.0 = 自身射程，卡在边界 ⇒ 想要双侧余量就把
-//      KITING_SAFE_MARGIN 2.0 → 1.0：RET_D 7.0→6.0、落点 →6.5，对方射程外 1.5 格、自身射程内 0.5 格）。
-//   ⚠ **本图(map3.njust) 敌方全是近战 + 塔：12 局 1410 个撤退窗口 100% 是近战靶（thr=0.0）**
-//     ⇒ 远程那条分支只能**解析推导、无法在本图实测**；要看实测需换含敌方弓兵/投石兵的关卡或评测机地图。
-//   要"更早撤"：把 KITING_MIN_KEEP 从 5.0 抬起（T_OUT=RET_D 抬高 ⇒ T_IN 抬高），勿改 0.5R 兜底线。
+// 实测基线（12 局 gsk / 10919 撤退窗口，探针 kite_range_probe.py）：旧退出阈值 R+BREATH = 7+4 = 11 格、落点 R×1.9 = 13.3 格，
+//   而自身射程 R = 7 ⇒ **90.3% 的撤退窗口撤出自身射程**（撤完还得走 4~6.3 格才能开火）；窗口间隔中位 60 帧恰好压住旧的
+//   60 帧攻击保护期（窗口后 ≤60 帧才拿到同 SN 攻击令的仅 37.8%）⇒ 这就是"拉扯远了打不到"的来源。
+// 平衡口径：撤退距离改由【威胁半径】决定、以【自身射程】为硬上限 ⇒ RET_D = clamp(威胁半径 + SAFE_MARGIN, MIN_KEEP, R)，
+//   落点 KIT_LAND = min(RET_D + SLACK, R) ≤ R ⇒ 不变量「撤完即在自身射程内」按构造成立：实测「落点 > 自身射程」100.0% → 0.0%。
+//   （威胁半径：远程敌 = 其最大射程；近战/村民 = 0，由下方 0.5R 无条件撤退兜底）
+// ⚠ 已知副作用（**有意保留，非 bug**）：T_IN = max(0.5R, RET_D − HYST)。对近战靶 RET_D = MIN_KEEP = 5.0 ⇒ T_IN = 0.5R ⇒
+//   「敌近提前撤」与「贴脸无条件撤」退化成同一条 ⇒ 拉扯频率大降（窗口 10919→1410，−87%）、停在 SHOOT 段变多（射程内占比 22.6%→55.7%）。
+// ⚠ 本图(map3.njust) 敌方全近战 + 塔：1410 个窗口 100% 是近战靶 ⇒ **远程分支只能解析推导、本图无法实测**（需换含敌弓兵/投石兵的关卡）。
+//   调参：要"更早撤"抬 KITING_MIN_KEEP（T_OUT/T_IN 一起抬），勿改 0.5R 兜底线；要双侧余量把 SAFE_MARGIN 2.0→1.0。
 #define KITING_SAFE_MARGIN   2.0   // 脱离威胁射程后的安全余量(格)
 #define KITING_MIN_KEEP      5.0   // 撤退后至少保持的距离(格)：防贴脸，同时不越过自身射程
 #define KITING_HYST          2.0   // 迟滞带宽度(格)：T_IN = T_OUT − 本值，必须为正否则"一撤就被打回"
@@ -444,31 +433,17 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // ============================================================================================
 // ★★★ 2026-09-23 OJ(Linux/gcc13) SIGSEGV 自救：快照深拷贝改由"写侧线程"（主线程）执行 ★★★
 // --------------------------------------------------------------------------------------------
-// 现象：OJ 上 AI 线程在 `info = getInfo()` 处 SIGSEGV。backtrace 关键三帧：
-//   UsrAI::processData (UsrAI.cpp:359 —— 该行号属 OJ 编译的那一版；本文件重构后行号已不对应) → tagInfo::operator= (GlobalVariate.cpp:1017)
-//   → vector<tagBuilding>::operator= (源 vector len=6 / cap=6) → __memcpy_avx → SIGSEGV
-// --------------------------------------------------------------------------------------------
-// 根因（本机引擎源码已逐行核对）：游戏状态是"主线程写、AI 线程读"的双缓冲发布机制
-//   · 写侧：Core::infoShare()（Core.cpp:678）→ currentBuff[i].clear() + updateByPlayer() 内
-//           push_back（Core.cpp:480/506/622）→ tagUsrGame.update()（GlobalVariate.cpp:1115）
-//   · 读侧：AI 线程 UsrAI::processData() → tagUsrGame.getInfo()（GlobalVariate.cpp:1155）深拷贝
-//   引擎里唯一的跨线程互斥是 tagGame::Locker，但它保护不住这条路径：
-//     ① tagGame::update() 的 QMutexLocker 被注释掉（GlobalVariate.cpp:1117 "现在改成严格的非帧同步"）；
-//     ② getInfo() 的锁只覆盖"引擎自己那一层拷贝"，调用点（processData）的深拷贝在锁外；
-//        若引擎 getInfo() 直接回传内部缓冲引用，则调用点拷贝完全无锁 ⇒ 与 clear()/push_back()
-//        释放/重分配同一块内存竞争 ⇒ memcpy 读到已 munmap 的页 ⇒ SIGSEGV（len=cap 恰为拷贝产物特征）。
-//   · UsrAI 侧碰不到那把锁：Info/Locker 是 tagGame 私有成员；改用公开的 tryLock()+getInfo()
-//     会因 Locker 是非递归 QMutex 而"同线程二次加锁"自锁死（实测整局冻在 frame 1）。
-//   ⇒ 结论：站内无法靠"加锁"自救。引擎侧根治需评测机的 GlobalVariate.cpp（锁在 update() 内恢复）。
-// --------------------------------------------------------------------------------------------
+// 现象：OJ 上 AI 线程在 `info = getInfo()` 处 SIGSEGV（backtrace 行号属 OJ 那一版，与本文件重构后不对应）。
+// 根因（本机引擎源码逐行核对）：双缓冲"主线程写、AI 线程读"，唯一互斥 tagGame::Locker 保护不住这条路径 ——
+//   ① tagGame::update() 的 QMutexLocker 被注释掉（GlobalVariate.cpp:1117）；② getInfo() 的锁只覆盖引擎自己那层拷贝，
+//   调用点（processData）的深拷贝在锁外 ⇒ 与写侧 clear()/push_back() 的释放/重分配竞争 ⇒ memcpy 读到已释放页。
+//   引擎侧根治 = 恢复 update() 内的锁（待评测机版本）。UsrAI 侧碰不到 Locker（tagGame 私有成员），
+//   改用 tryLock()+getInfo() 会因非递归 QMutex "同线程二次加锁"自锁死（实测整局冻在 frame 1）⇒ 站内靠加锁自救不可行。
 // 本修法：不改引擎、不碰锁，只换"深拷贝发生在哪个线程"——
-//   UsrAI 对象由主线程创建（MainWidget.cpp:1540 `UsrAi = new UsrAI();`）⇒ 其 QObject 归属线程
-//   就是主线程（= 写侧线程）⇒ postEvent 给它的自定义事件由主线程事件循环派发。
-//   AI 线程不再直读引擎缓冲，而是：postEvent(this) → 主线程在 event() 里执行 getInfo()
-//   （此刻主线程不在 infoShare 内，读写同线程 ⇒ 天然串行）→ 唤醒 AI 线程取走副本。
-//   这样"读缓冲"与"写缓冲"永远在同一线程，竞争从根上消失，且与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
-//   兜底：主线程事件回环若异常（连续 5 帧拿不到快照）退回旧的直读路径 —— 宁可保留原崩溃概率，
-//         也不让 AI 彻底停摆；单帧超时 1 秒，绝不死等（AI 线程持有 AI::mutex，长阻塞会拖住在跑的帧同步）。
+//   UsrAI 由主线程创建（MainWidget.cpp:1540 `UsrAi = new UsrAI();`）⇒ postEvent 给它的事件由主线程派发；
+//   AI 线程 postEvent(this) → 主线程在 event() 里 getInfo()（此刻不在 infoShare 内 ⇒ 读写同线程、天然串行）→ 唤醒 AI 取走副本
+//   ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
+// 兜底：连续 5 帧拿不到快照则退回旧直读路径（宁可保留原崩溃概率，也不让 AI 停摆）；单帧超时 1 秒，绝不死等（AI 线程持有 AI::mutex）。
 // ============================================================================================
 bool UsrAI::refreshSnapshot(tagInfo& dst) {
     SnapState& st = snapState(this);
@@ -3388,14 +3363,14 @@ void UsrAI::manageTechUpgrade() {
 
 
     // ==================================================================
-    // ★★★ 2026-09-13 用户要求：【复合弓科技与护甲科技同一解锁窗口，不再互相阻塞】★★★ 用户观察：「复合弓兵科技解锁得太慢」—— 实测 8 局发令帧中位 ≈ 19000 帧(12.7 分)，最晚 24759(16.5 分，
-    // 已过 WAVE3=21000 反攻线) ⇒ 反攻期前半段靶场只能产【普通弓兵】(射程 5、无科技)，正是体感来源。   ★ 根因（两道顺序锁把复合弓压在伐木科技之后）：
-    // ① 本块原在 `if (!done && ...)` 门控内、且排在【伐木科技块之后】—— 伐木块本帧发令就 done=true， 本块当帧被跳过；而两者都要木/肉，在同一资源池里【串行排队】。
-    // ② 更致命的是**木材供给**：12 座农场从 f≈13500 连续建造，实测把木材长期压在 2~112 （k1: f=16380 wood=15 / f=20070 wood=2 / f=20970 wood=2），而复合弓科技要求 wood≥100 ⇒ 木闸成为
-    // 真实瓶颈（食物早已 208→621 远超 180）⇒ 本块从 f=13500 起每 30 帧空转，一直等到 f=24759 才发令。
-    // ★ 修复：**解锁类科技（复合弓 / 护甲链）不看 `done`，各发各的** —— 分属不同建筑（靶场 / 仓库）， `done` 只用于 techCooldown 节流，对"解锁类"没有必要串行。保留的闸门：`!postBronze` 铜器前置 /
-    // 靶场自身 Project 忙闲 / 资源成本 / 函数首的 techCooldown 与 FOOD_PAUSE_TECH_TRAIN。
-    // ★ 与伐木科技的关系**不变**：伐木仍在其块内、仍是"铜器后第一个被检查"的科技；同帧两者都可下单时伐木先执行。
+    // ★★★ 2026-09-13 用户要求：【复合弓科技与护甲科技同一解锁窗口，不再互相阻塞】★★★
+    // 体感来源：实测 8 局发令帧中位 ≈ 19000(12.7 分)、最晚 24759，已过 WAVE3=21000 反攻线 ⇒ 反攻期前半段只能产【普通弓兵】(射程 5、无科技)。
+    // 根因二：① 本块原排在伐木块之后且受 `done` 串行（伐木本帧发令 ⇒ 本块当帧跳过）；② **木材供给才是真瓶颈** —— 12 座农场从 f≈13500 连建把木材长期压在 2~112
+    //   （k1: f=16380 wood=15 / f=20970 wood=2），而复合弓要 wood≥100（食物早已 208→621 远超 180）⇒ 从 f=13500 每 30 帧空转到 f=24759 才发令。
+    // ★ 修复：**解锁类科技（复合弓 / 护甲链）不看 `done`，各发各的** —— 分属不同建筑（靶场/仓库），`done` 只用于 techCooldown 节流。
+    // ⚠⚠ 09-24 块前移后**闸门已变**：本块与伐木块现在都位于下方 `if (!postBronze) return;` **之前** ⇒ **铜器前就会尝试研究**
+    //   （代价：提前吃掉 180 食/100 木，可能拖慢 800 食物升铜；对应 09-24 用户需求"尽早研究"）。现存闸门仅：靶场 Project 忙闲 / 成本 / 函数首 techCooldown 与 FOOD_PAUSE_TECH_TRAIN。
+    //   （塔科技 09-24 另加回 `!done &&`，仍串行；护甲链仍在 postBronze 之后。）
     // ==================================================================
     // ★ 引擎真实成本（Development.cpp:739-740）：只需「铜器时代 + 木材 + 食物」，**不需要黄金**，
     // 且引擎层无阔剑前置 ⇒ 旧代码的 info.Gold>=40 是伪门槛，黄金不足时复合弓永远研究不了。 --- Range: 复合弓科技（解锁类：不被 done 阻塞）---
@@ -3703,7 +3678,7 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
             // 优先级3"爆近战"不检查 trained 会照样产棍棒/骑兵；优先级4 骑兵吃掉 80 黄金   = 4 个复合弓的黄金 → 黄金长期 <20 → 复合弓判据失败 → 退化成停产。
             if (counterAtk) {
                 // ① 复合弓兵（主 DPS）：遍历所有空闲靶场并行产，产量随靶场数(MAX_RANGES)线性提升。 真实扣费 = 食物 + 黄金(20)，不扣石头(Development.cpp:744-745，引擎已修正)。
-                // 黄金不足不退化产普通弓（把黄金攒给复合弓）；仅当科技未研究出才用普通弓兜底，避免靶场空转。
+                // ★ 2026-09-24 用户要求：靶场只产复合弓兵，不产普通弓箭手；黄金不足或科技未出时宁可空转。
                 for (auto &b : info.buildings) {
                     if (b.Type != BUILDING_RANGE || b.Project != ACT_NULL) continue;
                     // ★ 15 分钟前完全停产（2026-09-06 用户要求）：见 COMPOSITE_BOW_MIN_FRAME
@@ -3712,11 +3687,6 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
                         info.Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
                         info.Gold >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD) {
                         BuildingAction(b.SN, BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN);
-                        trained = true;
-                    } else if (!compositeBowResearched &&
-                               info.Meat >= BUILDING_RANGE_CREATE_BOWMAN_FOOD &&
-                               info.Wood >= BUILDING_RANGE_CREATE_BOWMAN_WOOD) {
-                        BuildingAction(b.SN, BUILDING_RANGE_CREATE_BOWMAN);
                         trained = true;
                     }
                 }
@@ -3771,11 +3741,6 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
                         info.Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
                         info.Gold >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD) {
                         BuildingAction(b.SN, BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN);
-                        trained = true;
-                    } else if (info.Meat >= BUILDING_RANGE_CREATE_BOWMAN_FOOD &&
-                               info.Wood >= BUILDING_RANGE_CREATE_BOWMAN_WOOD) {
-                        // ★ 兜底：复合弓未解锁/石头不足 → 出普通弓箭手，保证「反攻能产弓就产弓」
-                        BuildingAction(b.SN, BUILDING_RANGE_CREATE_BOWMAN);
                         trained = true;
                     }
                 }
