@@ -964,7 +964,6 @@ void UsrAI::managePriest() {
         return true;
     };
 
-    int convPick = -1;   // ★ 2026-09-24 可打印判据(铁律53)：本帧 findConvertTarget 命中的档位 0=方阵兵/1=近战/2=远程军队/3=投石车/4=村民兜底；-1=无目标或本帧未调用
     auto findConvertTarget = [&](double dr, double ur, double range) -> int {
 // ★ 转化优先级（2026-09-12 用户连续需求）：① 方阵兵(AT_HOPLITE，转来即反骑主力) → ② 其余近战(贴身 2.5 格，威胁祭司性命)
 // → ③ 远程军队(削输出) → ④ 投石车(慢，不直接威胁祭司) → 兜底：最近敌方村民。   ⚠ 前四档的循环体完全相同（"同型里选血量最高者，同血取近者"），原先各写一份共 ~50 行；
@@ -992,14 +991,10 @@ void UsrAI::managePriest() {
             return bSN;
         };
         int t;
-        if ((t = pickByBlood(0)) >= 0) { convPick = 0; return t; }   // 0) 方阵兵最高优先
-        if ((t = pickByBlood(1)) >= 0) { convPick = 1; return t; }   // 1) 其余近战（保命）
-        // ★ 2026-09-24 P0：反攻期禁用「远程军队」档。  根因：祭司感化距离 DIS_PRIEST=12 格 > 敌远程兵射程约 7 格
-        // ⇒ 够得到它时祭司必然已进入它的射程，"起手即入网"。12 局实测：8/8 负局祭司最后一条感化令都指向远程兵
-        // (战车弓兵×6/战车×1/阔剑兵×1)，起手后 54~535 帧内被打死；3/3 胜局最后目标均为攻城武器厂(信号零交叉)。
-        // 反攻期祭司须随军推进、远离基地掩体，此档为纯亏损。近战档(威胁半径 2.5 格)与投石车档(射程约 10 格 < 12)不经此路，故保留。
-        if (!inCounter && (t = pickByBlood(2)) >= 0) { convPick = 2; return t; }   // 2) 远程军队（仅非反攻期）
-        if ((t = pickByBlood(3)) >= 0) { convPick = 3; return t; }   // 3) 投石车降为第四
+        if ((t = pickByBlood(0)) >= 0) return t;   // 0) 方阵兵最高优先
+        if ((t = pickByBlood(1)) >= 0) return t;   // 1) 其余近战（保命）
+        if ((t = pickByBlood(2)) >= 0) return t;   // 2) 远程军队
+        if ((t = pickByBlood(3)) >= 0) return t;   // 3) 投石车降为第四
         // 兜底：无敌方军队时，最近敌方村民（保留原行为）
         int bestVilSN = -1; double bestVilDist = 1e12;
         for (auto &e : info.enemy_farmers) {
@@ -1007,7 +1002,6 @@ void UsrAI::managePriest() {
             if (d > range) continue;
             if (d < bestVilDist) { bestVilDist = d; bestVilSN = e.SN; }
         }
-        if (bestVilSN >= 0) convPick = 4;
         return bestVilSN;
     };
 
@@ -1281,7 +1275,7 @@ void UsrAI::managePriest() {
                 priestConvSN = convSN; priestConvFrame = frame;
                 priestMoveCooldown = 150;
                 if (frame % 50 == 0)
-                    DebugText(QString("Priest CONVERT(defense) SN=%1 pick=%2").arg(convSN).arg(convPick));
+                    DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
                 return;
             } else {
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
@@ -3013,13 +3007,15 @@ void UsrAI::assignIdleSimple() {
 
         // ★ 兜底：前面所有食物来源(BUSH/GAZELLE/ELEPHANT/FARM)都不可用→伐木，绝不空闲。
         // 不受 woodTarget 上限约束：食物耗尽时即便已有 ≥woodTarget 个伐木工，也把多余空闲村民派去伐木，   避免村民站在原地空耗（用户需求：村民没有可选食物采集的目标时伐木）。
-        // ★ 兜底：前面食物来源都不可用 → 优先黄金(5:3配比)，其次伐木(受woodStop门禁，≥250不强行伐)
+        // ★ 兜底：前面食物来源都不可用 → 优先黄金(5:3配比)，其次伐木。
+        // ⚠ 兜底伐木不受 woodStop 限制：木闸只负责"有其它出口时不主动补采"，
+        //   不能反过来让四类出口全关时村民原地 IDLE（见 aoe3_idle_deadzone_20260921.html 方案 A）。
         auto goldRes = findNearestResource(RESOURCE_GOLD, f.DR, f.UR);
         if (goldRes && goldWorkers < goldTarget) {
             HumanAction(f.SN, goldRes->SN); goldWorkers++;
         } else {
             auto tree = findBestWoodTree(f.DR, f.UR);
-            if (tree && !woodStop) {
+            if (tree) {
                 HumanAction(f.SN, tree->SN);
                 woodWorkers++;
             }
