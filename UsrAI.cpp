@@ -10,16 +10,29 @@ ins UsrIns;
 // ★★★ 2026-09-23 OJ 崩溃自救：主线程代取快照所依赖的 QtCore 头（不引用任何引擎新增符号）★★★
 #include <QCoreApplication>   // QCoreApplication::postEvent（跨线程投递到主线程事件循环）
 #include <QEvent>
+#include <memory>             // std::unique_ptr（三缓冲槽位句柄）
 
 namespace {
+// ★★★ 2026-09-24 二次加固：三缓冲 + 临界区只做 O(1) 所有权交换 ★★★
+// 旧版（09-23）两侧都在临界区内做整份 tagInfo 深拷贝（主线程 `st.buf = fresh`、AI 线程 `dst = st.buf`，
+//   8 个容器 + 地形指针，几十 KB）⇒ 主线程持锁时间 = 一次全量拷贝，AI 线程 `cond.wait` 的返回被拖后；
+//   OJ 是 NOWPLAYER=2（两个 AI 线程争同一套交付路径）⇒ 更容易逼近 1 秒超时 ⇒ 旧版还有"超时 5 次就退回
+//   AI 线程直读 getInfo()"的兜底，而那条兜底**正是 SIGSEGV 的源头**（本机单 AI 795 局 fallback=0，从未暴露）。
+// 现版：三个槽位轮换，临界区只剩 O(1) 的指针/所有权交换 ——
+//   spare = 主线程专用（**锁外**填充；此刻主线程不在 infoShare 内 ⇒ 与写侧天然同线程串行）
+//   front = 交接位（锁内 `std::swap(spare, front)`）
+//   read  = AI 线程专用（锁内与 front 交换，随后 `swapTagInfo(dst, *read)` 把容器所有权交给 dst）
+//   ⇒ AI 持 read、主线程持 spare、front 是交接位：任一时刻没有任何一块 buffer 被两边同时访问，
+//     且深拷贝次数从 2 次降到 1 次（只剩主线程侧 getInfo() 那一次，且在锁外）。
+// ⚠ 兜底直读已于 09-24 删除：拿不到快照就**跳过本帧**（AI 变钝但不崩），绝不回退到跨线程直读。
 struct SnapState {
-    tagInfo buf;
+    std::shared_ptr<tagInfo> published; // 已完成的不可变快照
     QMutex mutex;
     QWaitCondition cond;
     bool ready = false;
     int failStreak = 0;
     int mainCount = 0;
-    int fallbackCount = 0;
+    int fallbackCount = 0;   // 兜底直读已于 09-24 删除 ⇒ 此计数恒 0（保留作诊断哨兵）
     int skipCount = 0;
 };
 std::map<const UsrAI*, SnapState> g_snapStates;
@@ -28,6 +41,7 @@ SnapState& snapState(const UsrAI* self) {
     std::lock_guard<std::mutex> lock(g_snapStatesMutex);
     return g_snapStates[self];
 }
+
 }  // namespace
 
 // ★★★ 兵种分类 / 射程判据（2026-09-23 重构：由 manageCounterAttack 内的局部 λ 提升为文件级 static）★★★
@@ -438,31 +452,32 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //   UsrAI 由主线程创建（MainWidget.cpp:1540 `UsrAi = new UsrAI();`）⇒ postEvent 给它的事件由主线程派发；
 //   AI 线程 postEvent(this) → 主线程在 event() 里 getInfo()（此刻不在 infoShare 内 ⇒ 读写同线程、天然串行）→ 唤醒 AI 取走副本
 //   ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
-// 兜底：连续 5 帧拿不到快照则退回旧直读路径（宁可保留原崩溃概率，也不让 AI 停摆）；单帧超时 1 秒，绝不死等（AI 线程持有 AI::mutex）。
+// ★ 2026-09-24 修正：**已删除**"连续 5 帧失联就退回 AI 线程直读 getInfo()"的兜底 —— 那条兜底=原崩溃路径本身
+//   （OJ backtrace 正是崩在 refreshSnapshot 内的 tagInfo 深拷贝；本机单 AI 795 局 fallback=0 故从未暴露）。
+//   现在失联只**跳过本帧**（AI 变钝但不崩）；单帧超时 1 秒，绝不死等（AI 线程持有 AI::mutex）。
 // ============================================================================================
 bool UsrAI::refreshSnapshot(tagInfo& dst) {
     SnapState& st = snapState(this);
-    {
-        QMutexLocker lk(&st.mutex);
-        st.ready = false;
-    }
+    QMutexLocker stateLock(&st.mutex);
+    st.ready = false;
+    stateLock.unlock();
 
     // 请主线程代取（UsrAI 归属主线程 ⇒ 事件由主线程事件循环处理，QEvent::User+731 为本类专用）
     QCoreApplication::postEvent(this, new QEvent(QEvent::Type(kSnapEventType)));
 
     bool ok = false;
+    std::shared_ptr<tagInfo> snapshot;
     {
         QMutexLocker lk(&st.mutex);
         if (!st.ready) {
             st.cond.wait(&st.mutex, 1000);   // 1 秒上限：绝不死等
         }
         ok = st.ready;
-        if (ok) {
-            swapTagInfo(dst, st.buf);         // 只交换容器所有权，避免 AI 线程再次 memcpy
-        }
+        if (ok) snapshot = st.published;
     }
 
     if (ok) {
+        dst = *snapshot;                      // 源快照在 shared_ptr 生命周期内保持不可变
         st.failStreak = 0;
         return true;
     }
@@ -476,11 +491,11 @@ bool UsrAI::refreshSnapshot(tagInfo& dst) {
 // 主线程执行：真正的快照获取。此时主线程不在 infoShare() 内 ⇒ 与写侧天然串行，无需任何锁配合。
 bool UsrAI::event(QEvent* e) {
     if (e && e->type() == QEvent::Type(kSnapEventType)) {
-        tagInfo fresh = tagUsrGame.getInfo();
+        std::shared_ptr<tagInfo> fresh(new tagInfo(tagUsrGame.getInfo()));
         SnapState& st = snapState(this);
         {
             QMutexLocker lk(&st.mutex);
-            st.buf = fresh;
+            st.published = fresh;
             st.ready = true;
             st.mainCount++;
             st.cond.wakeAll();
