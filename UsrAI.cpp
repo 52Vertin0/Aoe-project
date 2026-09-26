@@ -242,6 +242,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 2026-09-13 保祭司：反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
+#define PRIEST_COUNTER_LOCK_FLEE 1  // 2026-09-27 保祭司：反攻期「被敌锁定即后撤」的锁定敌数阈值(1=只要有 1 个敌以祭司为目标就撤，不等掉血/不等贴身)
 // ★★★ 2026-09-14 感化武器厂的【施法静默期】(帧) ★★★ 铁证：成功案例 lc3 只发 1 次感化令 → 340 帧后收编成功；失败案例 lk6 发 2155 次(每帧重发) → 持续 2150 帧从未收编。
 // 机制：`HumanAction(祭司, 建筑)` 是"设置转换目标"，重发 = 引擎每帧被重设目标打断、施法进度永远重置。   ⇒ 发令后必须进入静默期，让引擎把整段施法做完（实测需 ~340~440 帧）。
 #define PRIEST_SIEGE_CONVERT_LOCKOUT 400
@@ -1028,17 +1029,21 @@ void UsrAI::managePriest() {
     // ★ 祭司引导中(WORKING=感化/治疗引导、ATTACKING)→绝不下发新命令打断引导。
     // 感化是"随机时段"的引导过程，期间 ConvertCooldown 仍为0；若此时重发   HumanAction/移动命令，引导会被打断重来→永远转不完(本次bug"一直设置转换目标却没感化")。
     // 例外：残血(≤0.25)强制打断逃命；被多人锁定/近敌过多时提前到 0.60 打断(祭司死=立刻失败，保命高于感化)。
+    // ★ 2026-09-27 上提（铁律 21/26 同语义只写一遍）：「锁定祭司的敌数 lockers」+「12 格内近敌数 near12」。
+    //   权威判据与护驾一致 = 敌 WorkObjectSN == priestSN（见 L3755 priestAttackerSN 扫描，同容器 info.enemy_armies）。
+    //   两处复用：① 下方 !canAct 的动态打断阈值；② 反攻期「被锁定即后撤」新闸（须在感化分支之前）。
+    int lockers = 0, near12 = 0;
+    for (auto &e : info.enemy_armies) {
+        if (e.Blood <= 0) continue;
+        double d = calDistance(pDR, pUR, e.DR, e.UR);
+        if (e.WorkObjectSN == priestSN) lockers++;
+        if (d <= 12.0 * BL) near12++;
+    }
+
     if (!canAct) {
         double pBRx = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;   // 必须 (double)：int32 整除会截断成 0/1
         // ★ 动态后撤阈值：安全时 0.25；被集火 / 近敌过多时提前到 0.60。
         //   转化/攻击期间 canAct=false，旧逻辑只等 25% 才逃，实战中常被远程集火打死。
-        int lockers = 0, near12 = 0;
-        for (auto &e : info.enemy_armies) {
-            if (e.Blood <= 0) continue;
-            double d = calDistance(pDR, pUR, e.DR, e.UR);
-            if (e.WorkObjectSN == priestSN) lockers++;
-            if (d <= 12.0 * BL) near12++;
-        }
         const bool danger = (lockers >= 2) || (near12 >= 4);
         const double abortHp = danger ? 0.60 : 0.25;
         if (pBRx > abortHp) return;
@@ -1105,6 +1110,19 @@ void UsrAI::managePriest() {
             for (auto &e : info.enemy_armies) if (e.SN == convSN) { convDR = e.DR; convUR = e.UR; break; }
             if (convDR == 0 && convUR == 0)
                 for (auto &e : info.enemy_farmers) if (e.SN == convSN) { convDR = e.DR; convUR = e.UR; break; }
+        }
+        // ★★ 2026-09-27 新闸（用户）：反攻期祭司被敌锁定(WorkObjectSN==priestSN) → 立即后撤，优先于感化推进。
+        //   ⚠ 必须置于感化分支【之前】：感化是无条件最高优先且两子分支均 return、并在感化分支内把 priestMode 复位为 0
+        //     ⇒ 只要存在可感化目标就永远走不到下方 flee 逻辑 ⇒ 放后面就是死码（前置条件+下游接力陷阱）。
+        //   与已证伪的「前出闸 A/A'」的区别：本闸是【撤】(priestFlee 主动脱离威胁)，不是【停待】；且只在真被锁定时触发，非全天候。
+        if (inCounter && lockers >= PRIEST_COUNTER_LOCK_FLEE) {
+            double feDR = 0, feUR = 0; locateNearest(feDR, feUR);
+            priestMode = 1;
+            priestFlee(feDR, feUR);
+            if (frame % 50 == 0)
+                DebugText(QString("[PRIEST LOCK-FLEE f=%1] 反攻期被%2敌锁定→后撤(优先于感化) hp=%3 放弃感化目标=%4")
+                          .arg(frame).arg(lockers).arg(pBR, 0, 'f', 2).arg(convSN));
+            return;
         }
         if (convSN >= 0) {
             // ★ 节流闸(本次bug根因)：感化引导期间 ConvertCooldown 仍为0，若无此闸会每帧
