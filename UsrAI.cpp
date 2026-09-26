@@ -283,6 +283,20 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // ★ MIN_ARMY 2026-09-07 由 20 下调到 12（用户实测驱动）：反攻态已由 updateState 在「三波全清 / frame>27000 强制」时进入，
 // 此时敌方主力已被消灭，再等 20 人无意义；而实测军队长期停在 12 人左右（复合弓 15 分钟前停产 + 战损）⇒ readyToAttack 恒 false
 // ⇒ ① kiting 整段被跳过（"反攻时不会后撤"）② 全军被反复 HumanMove 回 TC 同一点。   ⚠ 改小=更早推进更零散；改大=更保守但等更久（24 分钟强制兜底仍在）。
+// ★★★ 2026-09-26 用户需求「反攻时所有士兵尽量走在一起不要分散」：行军抱团闸（manageCounterAttack）★★★
+// 现象：推进落点对【所有】单位相同（targetDR/UR），但各兵种速度差极大（骑兵/方阵兵快、投石车极慢）
+//   ⇒ 队伍被拉成长龙、先头几个单独撞进敌阵被集火；与"未决局打满 45000 帧时 Mil 只剩 2~3"同源。
+// 修法 = **只拉【领跑者】**，不动落后者 / 探路先锋 / 投石车 —— 落后者朝前推进本来就是在跟上队伍，改它只会拖慢全军。
+//   判据（四条全成立才拉）：① 距【主力质心】> COUNTER_COHESION_R；② 比质心更靠近推进目标 ≥ LEAD（确属冲在前面，不是侧翼）；
+//   ③ 距推进目标仍 > COUNTER_COHESION_R（快到基地了就别拉回，白扔行程）；④ 30 格内无敌塔（贴塔是 09-20 方案 B 的交战意图，优先于抱团）。
+//   动作 = 推进落点改为【质心 + 按 SN 散开的环点】⇒ 领跑者回缩等队伍；散开是必须的 —— 全部落到质心同一点会互相挤占、
+//   寻路反复失败（2026-09-07 已踩：全军 HumanMove 到同一 rallyCtr ⇒ 原地抖动）。
+// ⚠ 质心【排除】祭司 / 投石车 / 探路先锋：它们天然离群，计入会把质心拖偏 ⇒ 全军去等投石车（严重拖慢）。
+// ⚠ 拉回命令同样走 issueMarch ⇒ marchGoal* 一起重锚，卡死判据以"本轮实际下发点"为参照，不会误判卡死（铁律 9）。
+#define COUNTER_COHESION_R      10.0  // 领跑者距质心超过此值(格) ⇒ 拉回。≈ 复合弓射程 7 格 + 支援余量
+#define COUNTER_COHESION_LEAD    3.0  // "领跑"判据：比质心更靠近推进目标 ≥ 此值(格)才算冲在前面（防误伤侧翼/落后者）
+#define COUNTER_COHESION_RING    2.0  // 拉回落点环绕质心的最小半径(格)：+ (SN%4)*0.8 ⇒ 2.0~4.4 格，不同 SN 不挤同一点
+
 #define COUNTER_ATTACK_MIN_ARMY 12   // ★ 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
                                         // ★ 2026-09-14 用户要求「提早反攻的时机 2 分钟」⇒ COUNTER_ATTACK_FORCE_TIME 36000→33000。
@@ -4748,6 +4762,34 @@ void UsrAI::manageCounterAttack() {
     int marchCmds = 0;
     int armyCount = 0;
     for (auto &a : info.armies) if (a.Sort != AT_PRIEST) armyCount++;  // 非祭司军队总数(近战集结门槛用)
+    // ★ 2026-09-26 抱团：主力质心。★ 排除三类离群者（否则质心被拖偏 ⇒ 全军去等投石车 / 追先锋）：
+    //   祭司(由 counterPriestConvert 单独调度)、投石车(SPEED 极慢，天然殿后)、探路先锋(未探明敌基时故意前插)。
+    double cohDR = 0.0, cohUR = 0.0;
+    int cohN = 0;
+    for (auto &a : info.armies) {
+        if (a.Sort == AT_PRIEST || a.Sort == AT_STONE_THROWER) continue;
+        if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) && !enemyBaseScouted && enemySiegeSN == -1) continue;
+        cohDR += a.DR; cohUR += a.UR; cohN++;
+    }
+    const bool cohReady = (cohN >= 3);                 // 人太少 ⇒ 质心无意义（1~2 人本就无法"抱团"）
+    if (cohN > 0) { cohDR /= cohN; cohUR /= cohN; }
+    // ★ 只读诊断：每 300 帧打印【施加抱团闸之前】的原始分散度 ⇒ 即使闸生效，也能读出"若不拉回会有多散"（铁律 53）。
+    // ⚠ static：本函数每帧调用一次，非 static 会退化成单帧快照（2026-09-20 已踩一次）。
+    static std::map<int,int> cohLastLogFrame;
+    static long long cohPullCnt = 0, cohChanceCnt = 0;
+    if (frame % 300 == 0 && cohN >= 2) {
+        double mxD = 0.0, sumD = 0.0; int nD = 0;
+        for (auto &a : info.armies) {
+            if (a.Sort == AT_PRIEST || a.Sort == AT_STONE_THROWER) continue;
+            double d = calDistance(a.DR, a.UR, cohDR, cohUR);
+            if (d > mxD) mxD = d;
+            sumD += d; nD++;
+        }
+        DebugText(QString("[COH f=%1] 主力=%2 质心=(%3,%4) 最大距质心=%5 平均距质心=%6 | 拉回累计=%7 机会累计=%8 状态=%9")
+                  .arg(frame).arg(cohN).arg(cohDR / BL, 0, 'f', 1).arg(cohUR / BL, 0, 'f', 1)
+                  .arg(mxD / BL, 0, 'f', 1).arg(nD ? (sumD / nD) / BL : 0.0, 0, 'f', 1)
+                  .arg(cohPullCnt).arg(cohChanceCnt).arg((int)state));
+    }
     // ★ 全体反攻门槛：所有军事单位(非祭司，含远程/近战/投石车)≥COUNTER_ATTACK_MIN_ARMY 才一起反攻； 或到 COUNTER_ATTACK_FORCE_TIME(24分钟) 强制一起进攻——避免人数不足时零散冲出被敌方集火。
     bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY) || (frame >= COUNTER_ATTACK_FORCE_TIME);
     // 集结中心：未达门槛时全军回己方 TC 附近集结待命(形成密集兵力，来敌也能抱团防守)
@@ -4766,10 +4808,13 @@ void UsrAI::manageCounterAttack() {
     // ⚠ 只改【落点】，绝不发攻击令 ⇒ 不碰 kiting 双状态机/接敌带/攻击令节流的任何状态。   落点方向取自【我方集结 TC → 塔】而非"单位当前位置 → 塔"：前者跨帧稳定，后者会随单位移动
     // 每帧微调落点 ⇒ 30 帧节流窗口内反复重锚 marchGoal*，把卡死判据搅乱（铁律 9：同源量同源取）。
     auto issueMarch = [&](double fx, double fy, int sn, int sort, int stuckTry, bool canReissue,
-                          int biasTowerSN = -1) {
+                          int biasTowerSN = -1, double biasCenDR = -1.0, double biasCenUR = -1.0) {
         (void)sort;
         if (!canReissue) return;                 // 未到节流窗口：本帧静默，不重复下发
         double mx = targetDR, my = targetUR;
+        // ★ 2026-09-26 抱团落点（尾参，默认 -1 ⇒ 既有全部调用点行为逐字不变）。
+        // 位置在塔偏置【之后】⇒ 塔偏置优先（30 格内有塔 = 交战意图，优先于抱团；调用方也只在无塔时传本参）。
+        if (biasCenDR >= 0.0) { mx = biasCenDR; my = biasCenUR; }
         // —— Tier-2 落点偏置：塔外侧 standoff 环（塔在 12 格内时不会走到这里，Tier-1 已 return）——
         if (biasTowerSN >= 0) {
             for (auto &b : info.enemy_buildings) {
@@ -5166,6 +5211,42 @@ void UsrAI::manageCounterAttack() {
                     continue;
                 }
                 // 射程外 / 无敌 / SHOOT 但脱战:落入下方常规推进段
+            }
+
+// ===== ★ 2026-09-26 行军抱团闸：只拉【领跑者】，不许队伍被速度差拉成长龙 =====
+// ⚠ 位置约束（与 kiting 段同源）：必须在下方 `NowState != IDLE → continue` 闸【之前】——
+//   领跑者恒为 WALKING(正在赶路)，放到闸之后会被整段跳过 ⇒ 闸永不生效。
+// ⚠ 只拉领跑者：落后者朝前推进本来就是在跟上队伍，改它只会拖慢全军；先锋/投石车已在质心计算里排除。
+            if (readyToAttack && cohReady && marchCmds < 8) {
+                ++cohChanceCnt;                                   // 机会 = 反攻期 × 主力单位 × 帧（只读分母）
+                const double d2cen = calDistance(a.DR, a.UR, cohDR, cohUR);
+                const double dU2T  = calDistance(a.DR, a.UR, targetDR, targetUR);
+                const double dC2T  = calDistance(cohDR, cohUR, targetDR, targetUR);
+                // 判据④：30 格内有敌塔 ⇒ 不拉（贴塔是 09-20 方案 B 的交战意图，优先于抱团）。
+                const bool nearTower = (findNearestEnemyTower(a.DR, a.UR, TOWER_APPROACH_RANGE * BL) >= 0);
+                if (canReissue && !nearTower &&
+                    d2cen > COUNTER_COHESION_R * BL &&              // ① 离主力质心太远
+                    dU2T < dC2T - COUNTER_COHESION_LEAD * BL &&     // ② 确属冲在质心【前面】(不是侧翼/落后)
+                    dU2T > COUNTER_COHESION_R * BL) {               // ③ 离推进目标还远(快到基地了别拉回，白扔行程)
+                    double ux = a.DR - cohDR, uy = a.UR - cohUR;
+                    double baseAng = (std::sqrt(ux*ux + uy*uy) > 1e-6) ? std::atan2(uy, ux) : 0.0;
+                    double ang = baseAng + ((a.SN % 13) - 6) * 0.09;               // 13 类角度散开（同 2026-09-17）
+                    double ringR = (COUNTER_COHESION_RING + (double)(a.SN % 4) * 0.8) * BL;
+                    double gx = cohDR + std::cos(ang) * ringR, gy = cohUR + std::sin(ang) * ringR;
+                    gx = max(0.0, min((double)MAP_L * BL, gx));
+                    gy = max(0.0, min((double)MAP_U * BL, gy));
+                    snapWalkable(gx, gy, forestGrid);                              // 落点可能压海/林/矿
+                    issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue, -1, gx, gy);
+                    ++cohPullCnt;
+                    if (frame - (cohLastLogFrame.count(a.SN) ? cohLastLogFrame[a.SN] : -99999) >= 300) {
+                        cohLastLogFrame[a.SN] = frame;
+                        DebugText(QString("[COH-PULL f=%1] SN=%2 距质心=%3格>%4 领跑%5格 ⇒ 落点改质心环(%6,%7)")
+                                  .arg(frame).arg(a.SN).arg(d2cen / BL, 0, 'f', 1).arg(COUNTER_COHESION_R, 0, 'f', 0)
+                                  .arg((dC2T - dU2T) / BL, 0, 'f', 1).arg(gx / BL, 0, 'f', 1).arg(gy / BL, 0, 'f', 1));
+                    }
+                    marchCmds++;
+                    continue;
+                }
             }
 
             // ★ 2026-09-14：投石车豁免此闸。原实现下投石车开火即进 ATTACKING(≠IDLE)，整段 standoff/后撤 被 continue 跳过 ⇒ 只会站桩挨打、永不拉扯（弓兵相位机在闸之前才有拉扯）。豁免后由下方投石车块
