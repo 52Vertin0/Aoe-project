@@ -289,13 +289,18 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 修法 = **只拉【领跑者】**，不动落后者 / 探路先锋 / 投石车 —— 落后者朝前推进本来就是在跟上队伍，改它只会拖慢全军。
 //   判据（四条全成立才拉）：① 距【主力质心】> COUNTER_COHESION_R；② 比质心更靠近推进目标 ≥ LEAD（确属冲在前面，不是侧翼）；
 //   ③ 距推进目标仍 > COUNTER_COHESION_R（快到基地了就别拉回，白扔行程）；④ 30 格内无敌塔（贴塔是 09-20 方案 B 的交战意图，优先于抱团）。
-//   动作 = 推进落点改为【质心 + 按 SN 散开的环点】⇒ 领跑者回缩等队伍；散开是必须的 —— 全部落到质心同一点会互相挤占、
+//   动作 = 推进落点改为【质心 + 前进方向 × COUNTER_COHESION_HOLD + SN 扇形散开】⇒ 领跑者被钉在队伍前方、随质心一起前进；
+//   散开是必须的 —— 全部落到同一点会互相挤占、
 //   寻路反复失败（2026-09-07 已踩：全军 HumanMove 到同一 rallyCtr ⇒ 原地抖动）。
 // ⚠ 质心【排除】祭司 / 投石车 / 探路先锋：它们天然离群，计入会把质心拖偏 ⇒ 全军去等投石车（严重拖慢）。
 // ⚠ 拉回命令同样走 issueMarch ⇒ marchGoal* 一起重锚，卡死判据以"本轮实际下发点"为参照，不会误判卡死（铁律 9）。
-#define COUNTER_COHESION_R      10.0  // 领跑者距质心超过此值(格) ⇒ 拉回。≈ 复合弓射程 7 格 + 支援余量
+#define COUNTER_COHESION_R      10.0  // 领跑者距质心超过此值(格) ⇒ 收编进队形。≈ 复合弓射程 7 格 + 支援余量
 #define COUNTER_COHESION_LEAD    3.0  // "领跑"判据：比质心更靠近推进目标 ≥ 此值(格)才算冲在前面（防误伤侧翼/落后者）
-#define COUNTER_COHESION_RING    2.0  // 拉回落点环绕质心的最小半径(格)：+ (SN%4)*0.8 ⇒ 2.0~4.4 格，不同 SN 不挤同一点
+// ⚠⚠ 落点必须是【质心 + 前进方向 × HOLD】，绝不能是"质心本身"（2026-09-26 第一版踩坑，已实测证伪）：
+//   拽回质心 = 让领跑者掉头后退 ⇒ 它变成落后者 ⇒ 下一轮又冲到前面 ⇒ 拉锯。
+//   实测（b1 闸关闭 3 局 vs c1 拽回质心 24 局）：最大距质心中位 20.6 → 34.4 格，**越抱越散**。
+//   正确语义 = "队形保持"：把领跑者钉在【队伍前方 HOLD 格】，随质心一起前进 ⇒ 队伍不再被速度差拉长，且不会掉头。
+#define COUNTER_COHESION_HOLD   12.0  // 队形：领跑者保持在质心【前方】多少格 ⇒ + (SN%4)*0.8 ⇒ 12.0~14.4 格
 
 #define COUNTER_ATTACK_MIN_ARMY 12   // ★ 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
@@ -4776,19 +4781,51 @@ void UsrAI::manageCounterAttack() {
     // ★ 只读诊断：每 300 帧打印【施加抱团闸之前】的原始分散度 ⇒ 即使闸生效，也能读出"若不拉回会有多散"（铁律 53）。
     // ⚠ static：本函数每帧调用一次，非 static 会退化成单帧快照（2026-09-20 已踩一次）。
     static std::map<int,int> cohLastLogFrame;
-    static long long cohPullCnt = 0, cohChanceCnt = 0;
+    // ★ 拦截计数（铁律 53：判据的每个输入量都必须可打印）——"没拉回"必须能分清是哪一个条件挡下的，否则调参只能靠猜。
+    static long long cohPullCnt = 0, cohChanceCnt = 0, cohInTeam = 0;
+    static long long cohSkipThrottle = 0, cohSkipTower = 0, cohSkipNotLead = 0, cohSkipNearTgt = 0;
     if (frame % 300 == 0 && cohN >= 2) {
         double mxD = 0.0, sumD = 0.0; int nD = 0;
+        // ★ 2026-09-26 离群者身份诊断：记录距质心最远的 3 个单位（SN / 兵种 / 状态 / 是否在猎狮 / 距离）。
+        //   目的 = 查清"最大距质心 30~70 格"到底是谁撑大的 —— 若主力已 67% 在 10 格内，
+        //   那"分散"就只是少数离群者，抱团闸（只约束领跑者）天然改不动它（铁律 53：判据输入必须可打印）。
+        int    farSN[3]    = {-1, -1, -1};
+        double farD[3]     = {0.0, 0.0, 0.0};
+        int    farSort[3]  = {-1, -1, -1};
+        int    farState[3] = {-1, -1, -1};
+        int    farLion[3]  = {0, 0, 0};
         for (auto &a : info.armies) {
             if (a.Sort == AT_PRIEST || a.Sort == AT_STONE_THROWER) continue;
             double d = calDistance(a.DR, a.UR, cohDR, cohUR);
             if (d > mxD) mxD = d;
             sumD += d; nD++;
+            for (int k = 0; k < 3; ++k) {
+                if (d <= farD[k]) continue;
+                for (int j = 2; j > k; --j) {
+                    farSN[j] = farSN[j-1]; farD[j] = farD[j-1];
+                    farSort[j] = farSort[j-1]; farState[j] = farState[j-1]; farLion[j] = farLion[j-1];
+                }
+                farSN[k] = a.SN; farD[k] = d; farSort[k] = a.Sort;
+                farState[k] = (int)a.NowState; farLion[k] = lionHunterSN.count(a.SN) ? 1 : 0;
+                break;
+            }
         }
-        DebugText(QString("[COH f=%1] 主力=%2 质心=(%3,%4) 最大距质心=%5 平均距质心=%6 | 拉回累计=%7 机会累计=%8 状态=%9")
+        QString farTxt;   // SN 段提示：911xx = 感化来的原敌方单位；91300+ = 我方自造
+        for (int k = 0; k < 3; ++k)
+            if (farSN[k] >= 0)
+                farTxt += QString(" [%1%2 兵%3 态%4 狮%5 %6格]").arg(farSN[k])
+                          .arg(farSN[k] < 91300 ? "感化" : "自造")
+                          .arg(farSort[k]).arg(farState[k]).arg(farLion[k])
+                          .arg(farD[k] / BL, 0, 'f', 1);
+        DebugText(QString("[COH f=%1] 主力=%2 质心=(%3,%4) 最大距质心=%5 平均距质心=%6 | 机会=%7 队形内=%8 拉回=%9"
+                          " | 拦:节流%10 塔%11 非领跑%12 近目标%13 | 状态=%14")
                   .arg(frame).arg(cohN).arg(cohDR / BL, 0, 'f', 1).arg(cohUR / BL, 0, 'f', 1)
                   .arg(mxD / BL, 0, 'f', 1).arg(nD ? (sumD / nD) / BL : 0.0, 0, 'f', 1)
-                  .arg(cohPullCnt).arg(cohChanceCnt).arg((int)state));
+                  .arg(cohChanceCnt).arg(cohInTeam).arg(cohPullCnt)
+                  .arg(cohSkipThrottle).arg(cohSkipTower).arg(cohSkipNotLead).arg(cohSkipNearTgt)
+                  .arg((int)state));
+        if (!farTxt.isEmpty())
+            DebugText(QString("[COH-FAR f=%1] 最远三者:%2").arg(frame).arg(farTxt));
     }
     // ★ 全体反攻门槛：所有军事单位(非祭司，含远程/近战/投石车)≥COUNTER_ATTACK_MIN_ARMY 才一起反攻； 或到 COUNTER_ATTACK_FORCE_TIME(24分钟) 强制一起进攻——避免人数不足时零散冲出被敌方集火。
     bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY) || (frame >= COUNTER_ATTACK_FORCE_TIME);
@@ -5222,17 +5259,27 @@ void UsrAI::manageCounterAttack() {
                 const double d2cen = calDistance(a.DR, a.UR, cohDR, cohUR);
                 const double dU2T  = calDistance(a.DR, a.UR, targetDR, targetUR);
                 const double dC2T  = calDistance(cohDR, cohUR, targetDR, targetUR);
-                // 判据④：30 格内有敌塔 ⇒ 不拉（贴塔是 09-20 方案 B 的交战意图，优先于抱团）。
-                const bool nearTower = (findNearestEnemyTower(a.DR, a.UR, TOWER_APPROACH_RANGE * BL) >= 0);
-                if (canReissue && !nearTower &&
-                    d2cen > COUNTER_COHESION_R * BL &&              // ① 离主力质心太远
-                    dU2T < dC2T - COUNTER_COHESION_LEAD * BL &&     // ② 确属冲在质心【前面】(不是侧翼/落后)
-                    dU2T > COUNTER_COHESION_R * BL) {               // ③ 离推进目标还远(快到基地了别拉回，白扔行程)
-                    double ux = a.DR - cohDR, uy = a.UR - cohUR;
-                    double baseAng = (std::sqrt(ux*ux + uy*uy) > 1e-6) ? std::atan2(uy, ux) : 0.0;
-                    double ang = baseAng + ((a.SN % 13) - 6) * 0.09;               // 13 类角度散开（同 2026-09-17）
-                    double ringR = (COUNTER_COHESION_RING + (double)(a.SN % 4) * 0.8) * BL;
-                    double gx = cohDR + std::cos(ang) * ringR, gy = cohUR + std::sin(ang) * ringR;
+                // 判据④：已进入【塔射程】(TOWER_TARGET_RANGE=12 格) ⇒ 不收编（贴塔属交战意图，优先于抱团）。
+                // ⚠ 2026-09-26 实测修正：初版用 TOWER_APPROACH_RANGE(30 格) ⇒ 拦截 38%（最大单一拦截项，
+                //   d1 批 3 局：机会 20.2 万中 塔拦 7.7 万 / 节流 3.5 万 / 非领跑 3.5 万 / 拉回仅 162）
+                //   ⇒ 反攻推进路径上敌塔密集，30 格口径让闸几乎空转。收紧到 12 格 = 只在真进入塔射程时让位。
+                const bool nearTower = (findNearestEnemyTower(a.DR, a.UR, TOWER_TARGET_RANGE * BL) >= 0);
+                // ★ 拦截计数：按判据顺序逐条统计"被谁挡下"（顺序即优先级，与下方 if 完全一致）。
+                if (!canReissue)                                        ++cohSkipThrottle;
+                else if (nearTower)                                     ++cohSkipTower;
+                else if (d2cen <= COUNTER_COHESION_R * BL)              ++cohInTeam;      // 已在队形内 = 正常态，非拦截
+                else if (dU2T >= dC2T - COUNTER_COHESION_LEAD * BL)     ++cohSkipNotLead; // 落后/侧翼：朝前推进本就在跟上
+                else if (dU2T <= COUNTER_COHESION_R * BL)               ++cohSkipNearTgt; // 快到目标了
+                else {
+                    // ① 离主力质心太远 ② 确属冲在质心【前面】 ③ 离推进目标还远 —— 三条全中 ⇒ 收编进队形
+                    // ★ 队形保持（不是拽回质心）：落点 = 质心 + 【前进方向(质心→推进目标)】× HOLD + SN 扇形散开。
+                    //   方向取自"质心→目标"而非"质心→单位" ⇒ 跨帧稳定（铁律 9：同源量同源取，否则落点每帧微调会搅乱卡死判据）。
+                    double tx = targetDR - cohDR, ty = targetUR - cohUR;
+                    double tl = std::sqrt(tx*tx + ty*ty);
+                    double baseAng = (tl > 1e-6) ? std::atan2(ty / tl, tx / tl) : 0.0;
+                    double ang = baseAng + ((a.SN % 13) - 6) * 0.09;               // 13 类角度扇形散开（同 2026-09-17）
+                    double holdR = (COUNTER_COHESION_HOLD + (double)(a.SN % 4) * 0.8) * BL;
+                    double gx = cohDR + std::cos(ang) * holdR, gy = cohUR + std::sin(ang) * holdR;
                     gx = max(0.0, min((double)MAP_L * BL, gx));
                     gy = max(0.0, min((double)MAP_U * BL, gy));
                     snapWalkable(gx, gy, forestGrid);                              // 落点可能压海/林/矿
@@ -5240,7 +5287,7 @@ void UsrAI::manageCounterAttack() {
                     ++cohPullCnt;
                     if (frame - (cohLastLogFrame.count(a.SN) ? cohLastLogFrame[a.SN] : -99999) >= 300) {
                         cohLastLogFrame[a.SN] = frame;
-                        DebugText(QString("[COH-PULL f=%1] SN=%2 距质心=%3格>%4 领跑%5格 ⇒ 落点改质心环(%6,%7)")
+                        DebugText(QString("[COH-PULL f=%1] SN=%2 距质心=%3格>%4 领跑%5格 ⇒ 落点改队形位(%6,%7)")
                                   .arg(frame).arg(a.SN).arg(d2cen / BL, 0, 'f', 1).arg(COUNTER_COHESION_R, 0, 'f', 0)
                                   .arg((dC2T - dU2T) / BL, 0, 'f', 1).arg(gx / BL, 0, 'f', 1).arg(gy / BL, 0, 'f', 1));
                     }
