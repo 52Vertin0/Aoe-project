@@ -692,18 +692,7 @@ void UsrAI::managePriest() {
     double tcDR = (center->BlockDR + 1) * BL;
     double tcUR = (center->BlockUR + 1) * BL;
     bool canAct = (priest->NowState == HUMAN_STATE_IDLE || priest->NowState == HUMAN_STATE_WALKING);
-    bool inCounter = (state == COUNTERATTACK);   // ★ 反攻期：祭司须跟随大军推进，不被后方/远程威胁吸在基地
-
-    // ★ 2026-09-26 方案A'：祭司主动前出感化的前提 = 反攻期(inCounter，大军跟随) 或 祭司 PRIEST_GUARD_RECALL(30) 格内有≥2个我方军事单位(护驾召回半径内有贴身护卫)。
-    //   ⚠ 根因修正(09-26晚间)：旧方案A用"全局 army>=3"实测无效——所有死亡局全局 army 都≥3，但兵都在前线、距祭司>30格，
-    //     [PRIEST GUARD] cmds=0 无兵可护 ⇒ 集火死。故判据从"全局有多少兵"改为"祭司身边(召回半径内)有没有兵"。
-    //   nearGuard = 距祭司 PRIEST_GUARD_RECALL 格内的我方军事单位数(不含祭司)；与护驾召回半径一致 ⇒ 前出时护驾系统确实能调兵来护。
-    int nearGuard = 0;
-    for (auto &a : info.armies) {
-        if (a.SN == priestSN) continue;
-        if (calDistance(a.DR, a.UR, pDR, pUR) <= PRIEST_GUARD_RECALL * BL) nearGuard++;
-    }
-    bool canPriestAdvanceConvert = inCounter || (nearGuard >= 2);
+    bool inCounter = (state == COUNTERATTACK);   // ★ 反攻期：祭司须跟随大军推进
 
     if (priestMoveCooldown > 0) priestMoveCooldown--;
 
@@ -1136,14 +1125,6 @@ void UsrAI::managePriest() {
                     DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
                 return;
             } else {
-                // ★ 方案A'(09-26晚间)：非反攻期且祭司 30 格内无≥2护卫兵 ⇒ 禁主动前出感化，只待命，等敌自行进入 12 格再原地转(被动保命)。
-                //   不调用 priestApproachMove，避免把祭司带入敌群被多敌集火；cdist<=12 的直接感化分支(上方)保留=贴身转走攻击者。
-                if (!canPriestAdvanceConvert) {
-                    if (frame % 50 == 0)
-                        DebugText(QString("[PRIEST-NOADV f=%1] 祭司30格内护卫=%2(<2) 禁前出感化 目标%3距%4格 待命")
-                                  .arg(frame).arg(nearGuard).arg(convSN).arg(cdist / BL, 0, 'f', 1));
-                    return;
-                }
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
                 priestApproachMove(convDR, convUR, stopDist); return;
             }
