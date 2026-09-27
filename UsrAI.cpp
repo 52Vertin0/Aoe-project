@@ -175,7 +175,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // ★ 不训练棍棒兵【后期】（2026-09-03 用户要求）：棍棒兵改为由箭塔替代防守，省下食物/人口转向箭塔+复合弓。
 // ⚠ 此开关只管【后期三处】：工具时代填线块(3019) / 优先级2.5 廉价填线(3163) / 优先级3 食物溢出爆近战(3181)。 前期过渡用的棍棒兵由下面 ENABLE_EARLY_CLUBMAN 独立控制，两者互不干扰。
 #define DISABLE_CLUBMAN_TRAIN true
-// ★ 前期棍棒兵过渡：复合弓 15 分钟前停产(COMPOSITE_BOW_MIN_FRAME) + DISABLE_CLUBMAN_TRAIN 关了兵营 ⇒ 前 15 分钟零自产兵力 （只能靠 2 座箭塔 + 祭司感化扛三波，W2 前仅 2 个棍棒兵 → 曾致祭司被杀）。
 // 棍棒兵 50 食物、无石头/黄金依赖 ⇒ 不吃复合弓的黄金，是空窗期唯一可行的填线兵。★ 起始 4 分钟（更早会拖慢村民与 800 食升铜器）。
 #define ENABLE_EARLY_CLUBMAN true
 #define EARLY_CLUBMAN_START_FRAME 6000   // 4 分钟 × 1500 帧/分钟 = 6000 帧
@@ -189,7 +188,12 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define BUILDER_HARD_TIMEOUT 1800 // ★ 2026-09-13 建造者硬超时(帧,72秒)：从下达建造令起算，
                                   // 无论处于何种状态(WALKING 走不到 / 被改派 / 反复卡顿)，   只要该地基仍未完工且本人不在施工 → 判作废(拉黑+释放)，
                                   // 让 manageBuildings 另择新址重建。修"地基永久卡 0% 无人施工"。
-#define PENDING_BUILD_TIMEOUT 300 // 建造指令结果迟迟不回的超时(帧)：超时则清掉占位，防止永久虚占名额
+#define PENDING_BUILD_TIMEOUT 300
+// 2026-09-26: build-position blacklist entries expire instead of being globally cleared.
+// Prevents repeated HumanBuild at the same occupied position after another failed build
+// clears the whole triedBuildPositions set.
+#define BUILD_POS_BLACKLIST_FRAMES 1800
+ // 建造指令结果迟迟不回的超时(帧)：超时则清掉占位，防止永久虚占名额
 #define BUILD_GAP 1              // 建筑间距：候选建筑footprint外扩1格内不得有其他建筑(含敌我)，避免建筑成墙堵死路
 #define MELEE_OVERFLOW_FOOD 150      // 后期/反攻"爆近战"食物溢出阈值：食物≥此值才大规模造近战兵(棍棒/方阵)
 // 拉扯落点不超过自身射程；远程威胁按敌方射程计算，近战由 0.5R 兜底。
@@ -208,13 +212,19 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // ★ 反攻期兵种编制（2026-09-02 用户要求）：反攻**只训练 复合弓兵(主) + 方阵兵(副)**，不训练其他兵种。
 // 原因：旧逻辑里骑兵(70食+80金)与棍棒兵(50食)会抢占复合弓兵(40食+20金)的资源与人口，   骑兵单次吃掉 4 个复合弓兵的黄金 → 复合弓兵判据长期不过 → 退化成普通弓兵/停产。
 #define DISABLE_CAVALRY_TRAIN true  // 全局不训练骑兵【主力】(骑兵/战车等)：性价比低且严重挤占复合弓兵黄金
-// ★ 远程兵最早训练时间 COMPOSITE_BOW_MIN_FRAME（2026-09-06 用户要求「15min 前先不训练复合弓兵，避免被打死」）：
 // 早期弓兵会被打死、白费食物 + 20 黄金 ⇒ 资源全留给村民/铜器升级/复合弓科技。用户已选【完全停产】（连普通弓兜底也停）。
 // 注意：只停产【造兵】，不影响靶场建造与科技研究 —— 靶场闲置反而更利于科技判据(Project==ACT_NULL)。
-#define COMPOSITE_BOW_MIN_FRAME 22500   // 15 分钟 × 1500 帧/分钟 = 22500 帧
+#define EARLY_CLUBMAN_END_FRAME 22500   // 15 分钟 × 1500 帧/分钟 = 22500 帧
 // ★ 探路先锋（2026-09-03 用户改需求）：不再造侦察骑兵，改派【感化的战车弓兵(优先,SPEED 4.07)或投石车(视野13)】
 // 去探路。未探明敌基地时，这些单位快速奔袭敌基地方向 → 探到 enemy_buildings → 点亮 enemyBaseScouted → 大部队直接全图寻路直达，省去逐格摸索。故侦察骑兵训练开关设 false。
 #define ENABLE_SCOUT_RECON false
+// ★★★ 2026-09-27 探路期【敌情闸】：探路途中祭司附近(≤此格)出现敌军 ⇒ 立即结束探路，交还 managePriest 逃/感化。
+//   根因(map2 实测 z202/z203)：结束探路的唯一触发是"开战/反攻"，而开战由时间闸 frame>=WAVE1_TIME(5000) 决定
+//   ⇒ 敌人在 5000 帧前截住探路中的祭司时，managePriestScout(走路途中不检测敌军) 与 managePriest(scoutPhase<20
+//   整段 return) 两头都不管，祭司在纯探路态挨打不动(死亡帧 3788/4165，全文件 0 条 `Priest st=`)。
+//   把"按时钟打开保命"改为"按敌情打开保命"——不新增任何对祭司行为的限制。口径与 managePriestScout 内
+//   「发现敌军→回TC」的 enemyDist 一致(12 格)，见铁律 21/26(同语义只写一遍)。
+#define SCOUT_BREAK_ENEMY_DIST 12.0
 // 人数不足时由强制反攻时间兜底；降低门槛会更早推进、提高门槛则更保守。
 #define COUNTER_ATTACK_MIN_ARMY 12   // ★ 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
@@ -438,20 +448,40 @@ void UsrAI::processData() {
         return;
     }
 
-    // ---- 每帧更新祭司SN（防止祭司被重新编号） ----
+    // ---- 每帧更新祭司SN（防止祭司被重新编号）+ 记录其坐标（探路期敌情闸用，铁律 53：判据输入必须可打印） ----
+    double priestPosDR = 0.0, priestPosUR = 0.0;
+    bool priestPosOk = false;
     {
         bool found = false;
         for (auto &a : info.armies) {
-            if (a.Sort == AT_PRIEST) { priestSN = a.SN; found = true; break; }
+            if (a.Sort == AT_PRIEST) {
+                priestSN = a.SN;
+                priestPosDR = a.DR; priestPosUR = a.UR;
+                found = true; priestPosOk = true; break;
+            }
         }
         if (!found) priestSN = -1;
     }
 
     // ★ 战/反攻期间强制结束探路：探路模块只在 !isWar && state != COUNTERATTACK 时驱动祭司， 而 managePriest 又要求 scoutPhase>=20 才运行 → 开战时若探路未完，祭司两头都不管，
     // 被敌人贴脸也一动不动（表现为"敌人来了祭司也不跑"）。开战即结束探路，交还祭司管理保命。
+    // ★★★ 2026-09-27 第二个触发（探路期敌情闸）：结束探路不再只由"开战/反攻"决定 —— 祭司附近出现敌军也立即结束。
+    //   原唯一触发依赖 updateState 内的时间闸(5000帧)，敌人在 5000 帧前截住探路祭司时保命逻辑整段未开(见 SCOUT_BREAK_ENEMY_DIST 注释)。
     {
         bool isWarNow = (state >= DEFENSE_WAVE1 && state <= DEFENSE_WAVE3);
-        if ((isWarNow || state == COUNTERATTACK) && scoutPhase < 20) {
+        bool scoutBreakByEnemy = false;
+        if (scoutPhase < 20 && !isWarNow && state != COUNTERATTACK && priestPosOk) {
+            for (auto &e : info.enemy_armies) {
+                if (e.Blood <= 0) continue;
+                if (calDistance(priestPosDR, priestPosUR, e.DR, e.UR) <= SCOUT_BREAK_ENEMY_DIST * (double)BLOCKSIDELENGTH) {
+                    scoutBreakByEnemy = true; break;
+                }
+            }
+        }
+        if ((isWarNow || state == COUNTERATTACK || scoutBreakByEnemy) && scoutPhase < 20) {
+            if (scoutBreakByEnemy)
+                DebugText(QString("[SCOUT-BREAK f=%1] 探路期祭司附近发现敌军(≤%2格)→结束探路,交还 managePriest 保命")
+                          .arg(frame).arg(SCOUT_BREAK_ENEMY_DIST, 0, 'f', 0));
             scoutPhase = 20;
             scoutReturnTry = 0;
             scoutWalkTimer = 0;
@@ -1129,7 +1159,7 @@ void UsrAI::managePriest() {
             bool closeQuarters = false;
             for (auto &e : info.enemy_armies)
                 if (calDistance(pDR, pUR, e.DR, e.UR) < 4.0 * BL) { closeQuarters = true; break; }
-            if (priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0 && pBR > 0.25 && !closeQuarters) {
+            if (!inCounter && priest->NowState == HUMAN_STATE_IDLE && priestMoveCooldown <= 0 && pBR > 0.25 && !closeQuarters) {
                 double allyDR = 0, allyUR = 0, worstRatio = 1.0;
                 int needAlly = pickHealTarget(0.8, false, allyDR, allyUR, worstRatio);
                 if (needAlly >= 0) {
@@ -1165,7 +1195,7 @@ void UsrAI::managePriest() {
             if (calDistance(pDR, pUR, a.DR, a.UR) > 25.0 * BL) continue;
             woundedNear = true; break;
         }
-        bool healOverFlee = (pBR > 0.25 && !meleeAdj && woundedNear);
+        bool healOverFlee = (!inCounter && pBR > 0.25 && !meleeAdj && woundedNear);
         bool fleeLag = false;
         for (auto &e : info.enemy_armies)
             if (calDistance(pDR, pUR, e.DR, e.UR) < 4.0 * BL) { fleeLag = true; break; }
@@ -1200,7 +1230,8 @@ void UsrAI::managePriest() {
         // ★ 闲时治疗友军：位于感化/逃跑之后、回 TC 等其它逻辑之前。本分支只治疗友军。
         // ★ 祭司本职＝治友军：不设自身血量门槛，只要 25 格内有受伤友军(<90%) 即治；     被撤退闸打断成 WALKING 的祭司也能立即改向（否则交火中永远卡在"走-逃"循环、治不到）。
         // ★ 治疗铁律：必须用 `HumanAction(priestSN, allySN)`（见下文治档铁律），换成 HumanBuild/Upgrade 等任何其它动作都不触发治疗。真正保命由 canAct 闸(pBR≤0.25 强制逃命) 与"近战贴身/濒死才逃"兜底。
-        if ((priest->NowState == HUMAN_STATE_IDLE || priest->NowState == HUMAN_STATE_WALKING)
+        if (!inCounter &&
+            (priest->NowState == HUMAN_STATE_IDLE || priest->NowState == HUMAN_STATE_WALKING)
             && priestMoveCooldown <= 0) {
             double bestAllyDR = 0, bestAllyUR = 0, worstRatio = 1.0;
             int bestAlly = pickHealTarget(0.9, true, bestAllyDR, bestAllyUR, worstRatio);
@@ -2261,7 +2292,7 @@ void UsrAI::managePriestScout() {
 
                 double beastDist = 12 * BL, beastX = scout->DR, beastY = scout->UR;
                 bool beastNearby = false;
-                double enemyDist = 12 * BL;
+                double enemyDist = SCOUT_BREAK_ENEMY_DIST * BL;   // 与 processData 探路期敌情闸同口径（铁律 21/26）
                 bool enemyNearby = false;
 
                 // 野兽
@@ -3471,9 +3502,8 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
         bool trained = false;
 
 // ★ 前期棍棒兵过渡：放在训练链最前 —— 4~15 分钟空窗期这是唯一自产兵力途径
-// （复合弓被 COMPOSITE_BOW_MIN_FRAME 停产、工具时代填线被 DISABLE_CLUBMAN_TRAIN 关掉）。   只统计【存活】棍棒兵 → 战损自动补造，不会因一次团灭永久断兵。
         if (ENABLE_EARLY_CLUBMAN && !trained &&
-            frame >= EARLY_CLUBMAN_START_FRAME && frame < COMPOSITE_BOW_MIN_FRAME) {
+            frame >= EARLY_CLUBMAN_START_FRAME && frame < EARLY_CLUBMAN_END_FRAME) {
             int nClubNow = 0;
             for (auto &a : info.armies) if (a.Sort == AT_CLUBMAN) nClubNow++;
             if (nClubNow < EARLY_CLUBMAN_TARGET) {
@@ -3515,8 +3545,6 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
                 // ★ 2026-09-24 用户要求：靶场只产复合弓兵，不产普通弓箭手；黄金不足或科技未出时宁可空转。
                 for (auto &b : info.buildings) {
                     if (b.Type != BUILDING_RANGE || b.Project != ACT_NULL) continue;
-                    // ★ 15 分钟前完全停产（2026-09-06 用户要求）：见 COMPOSITE_BOW_MIN_FRAME
-                    if (frame < COMPOSITE_BOW_MIN_FRAME) continue;
                     if (compositeBowResearched &&
                         info.Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
                         info.Gold >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD) {
@@ -3569,8 +3597,7 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
             // ★ 2026-09-24 用户需求：**删掉"未研究出复合弓时造普通弓兵"的兜底分支** ⇒ 现在**只产复合弓兵**；
             //   复合弓未就绪/黄金不足时靶场闲置，trained 仍 false → 下方转产其他兵种，不浪费产能（旧注释"普通弓兜底"已失实）。
             //   真实扣费 = 食物 + 黄金(20)，不扣石头。
-            // ★ 15 分钟前完全停产（2026-09-06 用户要求）：见 COMPOSITE_BOW_MIN_FRAME
-            if (lateGame && !trained && frame >= COMPOSITE_BOW_MIN_FRAME) {
+            if (lateGame && !trained) {
                 for (auto &b : info.buildings) {
                     if (b.Type != BUILDING_RANGE || b.Project != ACT_NULL) continue;
                     if (compositeBowResearched &&
@@ -3583,8 +3610,7 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
             }
 
             // 优先级1：复合弓兵（远程DPS，PPT重点）——判据为 info.Gold（引擎真实扣费：食物+黄金）
-            // ★ 15 分钟前完全停产（2026-09-06 用户要求）：见 COMPOSITE_BOW_MIN_FRAME
-            if (!trained && compositeBowResearched && frame >= COMPOSITE_BOW_MIN_FRAME) {
+            if (!trained && compositeBowResearched) {
                 auto r = findBuilding(BUILDING_RANGE);
                 if (r && r->Project == ACT_NULL &&
                     info.Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
@@ -4695,7 +4721,8 @@ void UsrAI::manageCounterAttack() {
         issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue, tier2SN);   // 无建筑/已在打→继续推进
     };
 
-    for (int pass = 0; pass < 2 && marchCmds < 8; ++pass) {
+    const int maxMarchCmds = readyToAttack ? 8 : (armyCount + 4);
+    for (int pass = 0; pass < 2 && marchCmds < maxMarchCmds; ++pass) {
         for (auto &a : info.armies) {
             if (a.Sort == AT_PRIEST) { priest = &a; continue; }
 
@@ -5002,7 +5029,7 @@ void UsrAI::manageCounterAttack() {
             bool ranged = sortIsRanged(a.Sort);
             if (pass == 0 && !ranged) continue;   // 第一遍：投石车+远程
             if (pass == 1 && ranged) continue;    // 第二遍：近战殿后/补位
-            if (marchCmds >= 8) break;
+            if (marchCmds >= maxMarchCmds) break;
 
             // ★ 未达全体反攻门槛：全军回 TC 附近集结待命，不推进不接战（含远程/投石车，避免零散冲出被集火）。
             // ★ 2026-09-07 修：原实现让【所有】单位 HumanMove 到同一个 rallyCtr(TC 中心)点——实测复合弓 91456/91457/91458、方阵兵 91052、投石车 91077 全部到同一坐标 (751.319,2754.84)，互相挤占、
@@ -5672,6 +5699,37 @@ bool UsrAI::isSiteReachable(int blockDR, int blockUR, int size) {
 
 // 建筑选址：偏向 TC→地图中心方向、离 TC 更远，避免挤在 TC 边角堵路。   minR/maxR = 距 TC 的最小/最大环半径(单位:block)；在 [minR,maxR] 范围内收集所有空闲点，
 // 按 score = 朝向中心方向的对齐度*100 + 距TC超出minR的距离 选最优——方向优先、其次更远。
+namespace {
+std::mutex g_buildPosMutex;
+std::map<const UsrAI*, std::map<int,int>> g_buildPosFrame;
+
+bool buildPosBlocked(const UsrAI* self, std::set<int>& tried, int key, int frame) {
+    std::lock_guard<std::mutex> lock(g_buildPosMutex);
+    auto &m = g_buildPosFrame[self];
+    auto it = m.find(key);
+    if (!tried.count(key)) {
+        if (it != m.end()) m.erase(it);
+        return false;
+    }
+    if (it == m.end()) {
+        tried.erase(key);
+        return false;
+    }
+    if (frame - it->second > BUILD_POS_BLACKLIST_FRAMES) {
+        tried.erase(key);
+        m.erase(it);
+        return false;
+    }
+    return true;
+}
+
+void markBuildPos(const UsrAI* self, std::set<int>& tried, int key, int frame) {
+    std::lock_guard<std::mutex> lock(g_buildPosMutex);
+    tried.insert(key);
+    g_buildPosFrame[self][key] = frame;
+}
+}
+
 bool UsrAI::findBuildSiteTowardCenter(int &x, int &y, int size, int minR, int maxR) {
     auto center = findBuilding(BUILDING_CENTER);
     if (!center) return false;
@@ -5692,7 +5750,7 @@ bool UsrAI::findBuildSiteTowardCenter(int &x, int &y, int size, int minR, int ma
                 int nx = cx + dx, ny = cy + dy;
                 if (nx < 0 || ny < 0 || nx >= MAP_L || ny >= MAP_U) continue;
                 int key = nx * 1000 + ny;
-                if (triedBuildPositions.count(key)) continue;
+                if (buildPosBlocked(this, triedBuildPositions, key, frame)) continue;
                 if (!isPositionFree(nx, ny, size)) continue;
                 // 候选点方向对齐度(与中心方向点积, ∈[-1,1])；正对中心方向得分最高
                 double len = std::sqrt((double)(dx * dx + dy * dy));
@@ -5720,7 +5778,7 @@ bool UsrAI::findBuildSite(int &x, int &y, int size, bool avoidFarmAdjacent) {
                 if (std::abs(dx) != r && std::abs(dy) != r) continue;
                 int nx = cx + dx, ny = cy + dy;
                 int key = nx * 1000 + ny;
-                if (triedBuildPositions.count(key)) continue;
+                if (buildPosBlocked(this, triedBuildPositions, key, frame)) continue;
                 if (!isPositionFree(nx, ny, size)) continue;
                 // ★ 2026-09-15：农场兜底选址时守住"农场之间至少隔 1 格"（isFarmAdjacent 的刻意设计）
                 if (avoidFarmAdjacent && isFarmAdjacent(nx, ny)) continue;
@@ -5731,10 +5789,6 @@ bool UsrAI::findBuildSite(int &x, int &y, int size, bool avoidFarmAdjacent) {
     }
 
     // 清空黑名单重试
-    if (!triedBuildPositions.empty()) {
-        triedBuildPositions.clear();
-        DebugText("Cleared build blacklist, retrying...");
-    }
     return false;
 }
 
@@ -5772,7 +5826,7 @@ bool UsrAI::findDefenseBuildSite(int &x, int &y, int size) {
                 if (nx < 0 || ny < 0 || nx >= MAP_L - size || ny >= MAP_U - size) continue;
                 int key = nx * 1000 + ny;
                 ++triedCount;
-                if (triedBuildPositions.count(key)) { ++blockedCount; continue; }
+                if (buildPosBlocked(this, triedBuildPositions, key, frame)) { ++blockedCount; continue; }
                 if (!isPositionFree(nx, ny, size)) { ++blockedCount; continue; }
 
                 double len = std::sqrt((double)(dx * dx + dy * dy));
@@ -5785,11 +5839,9 @@ bool UsrAI::findDefenseBuildSite(int &x, int &y, int size) {
     }
     if (bestX < 0) {
         // ★ 失败前清空 triedBuildPositions，让外层 tryBuild 的默认 findBuildSite 兜底不受旧 ban 卡住
-        int oldBlacklistSize = (int)triedBuildPositions.size();
-        if (oldBlacklistSize > 0) triedBuildPositions.clear();
         if (frame % 50 == 0) {   // 节流避免刷屏
             DebugText(QString("TowerSite FAIL (no free site in r=4~12) tried=%1 blocked=%2 blacklist_cleared=%3 existingTowers=%4")
-                .arg(triedCount).arg(blockedCount).arg(oldBlacklistSize).arg((int)existingTowers.size()));
+                .arg(triedCount).arg(blockedCount).arg(0).arg((int)existingTowers.size()));
         }
         return false;
     }
@@ -5862,7 +5914,7 @@ bool UsrAI::findGranarySite(int &x, int &y) {
     for (int d = 0; d < 4; d++) {
         int nx = bestBX + offsets[d][0] * 3;
         int ny = bestBY + offsets[d][1] * 3;
-        if (triedBuildPositions.count(nx * 1000 + ny)) continue;
+        if (buildPosBlocked(this, triedBuildPositions, nx * 1000 + ny, frame)) continue;
         if (isPositionFree(nx, ny, 3)) {
             x = nx; y = ny;
             return true;
@@ -5875,7 +5927,7 @@ bool UsrAI::findGranarySite(int &x, int &y) {
                 if (std::abs(dx) != r && std::abs(dy) != r) continue;
                 int nx = bestBX + dx, ny = bestBY + dy;
                 if (nx < 0 || ny < 0) continue;
-                if (triedBuildPositions.count(nx * 1000 + ny)) continue;
+                if (buildPosBlocked(this, triedBuildPositions, nx * 1000 + ny, frame)) continue;
                 if (isPositionFree(nx, ny, 3)) {
                     x = nx; y = ny;
                     return true;
@@ -6000,7 +6052,7 @@ bool UsrAI::findFarmSiteBest(int &x, int &y) {
     // ★ 2026-09-19：base = 评分基准锚点索引（0 = TC；>=1 = 对应的谷仓）。     两段各自【段内】公平比较，段间不比较 ⇒ 第 1 段（TC 环）永远优先。
     auto consider = [&](int nx, int ny, bool useBlack, int base) {
         if (nx < 0 || ny < 0) return;
-        if (useBlack && triedBuildPositions.count(nx * 1000 + ny)) return;
+        if (useBlack && buildPosBlocked(this, triedBuildPositions, nx * 1000 + ny, frame)) return;
         if (!isPositionFree(nx, ny, 3)) return;
         if (isFarmAdjacent(nx, ny)) return;
         double fcx = nx + 1.0, fcy = ny + 1.0;
@@ -6165,7 +6217,7 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
 
     // 记录尝试过的位置，防止反复在同一位置建造失败
     int key = x * 1000 + y;
-    triedBuildPositions.insert(key);
+    markBuildPos(this, triedBuildPositions, key, frame);
 
     buildCooldown = 5;   // 5帧冷却（单位碰撞检测已防止重复失败）
     // ★ 2026-09-13 建造下令观测：记录每次 HumanBuild 的类型/村位/坐标， 用于对照"地基何时放下 / 何时完工"，定位长期卡住的地基。
