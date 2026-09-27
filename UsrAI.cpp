@@ -222,10 +222,11 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // ★★★ 2026-09-27 探路半径（用户需求）：100 → 40 格，让祭司【压根不接触】敌主力，而不是"接触后再逃"。
 //   根因(map2 实测)：祭司探路 100 格直奔敌区，在距 TC 56 格处撞上敌 10 个单位；而祭司速度仅 ~0.5 格/秒
 //   vs 敌方 ~1.76 格/秒(3.5 倍) ⇒ 一旦接触，撤/折返/逃全部无效(n1 批 12 局全败、9 局早死 3007~3477)。
-//   缩短半径后祭司最远只到 TC 外 40 格，与 map2 敌主力(~56 格)留 16 格余量。
-//   ⚠ 代价：地图探索覆盖缩小，map3 上"发现敌基地"时机可能变晚 ⇒ 需一并回归验证。
+//   40 格战绩：map2 胜率 0%(0/15)→50%(6/12) p=0.0031、祭司死亡 15/15→2/12、早死 11/15→0/12；map3 回归 p=0.72 无显著退化。
+//   ⚠ 残留：map2 未决 4/12(3 局 ADV=0，疑"目标未探明") ⇒ 本轮试放宽到 50 格，看能否在保住"早死=0"的前提下减少未决。
+//   ⚠ 风险：map2 敌主力实测在距 TC ~56 格处，50 格余量仅 6 格(40 格时是 16 格)，可能重新出现接触。
 //   ⚠ 曾试过"遇敌即结束探路"(n1)：有害，见 processData 强推块注释。
-#define SCOUT_MAX_DIST 40.0
+#define SCOUT_MAX_DIST 50.0
 // 人数不足时由强制反攻时间兜底；降低门槛会更早推进、提高门槛则更保守。
 #define COUNTER_ATTACK_MIN_ARMY 12   // ★ 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
@@ -1333,6 +1334,19 @@ void UsrAI::managePriest() {
 
 // 经济管理（农民生产 + 建筑 + 分配 + 科技）
 void UsrAI::manageEconomy() {
+
+    typedef std::chrono::steady_clock EcoClock;
+    static double ecoSum[5] = {0.0};
+    static double ecoMax[5] = {0.0};
+    static int ecoSamples = 0;
+    auto ecoNow = []() { return EcoClock::now(); };
+    auto ecoAdd = [](int idx, EcoClock::time_point a, EcoClock::time_point b) {
+        double ms = std::chrono::duration<double, std::milli>(b - a).count();
+        ecoSum[idx] += ms;
+        if (ms > ecoMax[idx]) ecoMax[idx] = ms;
+    };
+#define ECO_PROF_STAGE(idx, call) do { auto _eco_t0 = ecoNow(); call; ecoAdd(idx, _eco_t0, ecoNow()); } while (0)
+    auto ecoT0 = ecoNow();
     // 1. 村民生产：有50食物就造人，冲到目标数量    ★ 铜器升级条件已满足时优先升级：暂停造村民，把TC和食物留给升级指令
     auto center = findBuilding(BUILDING_CENTER);
     //   ★ 2026-09-13：新增两条 —— ①前置建筑就绪才"攒升级费"（否则食物够也升不了，     白停产、空转）；②UPGRADING 重试期同样停产，避免新村民吃掉 800 升级费。
@@ -1397,18 +1411,46 @@ void UsrAI::manageEconomy() {
     }
 
     // 2. 建造管理
-    manageBuildings();
+    ecoAdd(0, ecoT0, ecoNow());
+    ECO_PROF_STAGE(1, manageBuildings());
 
     // 3. 分配空闲村民
-    assignIdleFarmers();
-    assignIdleSimple();
+    ECO_PROF_STAGE(2, assignIdleFarmers());
+    ECO_PROF_STAGE(3, assignIdleSimple());
 
     // 4. 科技升级
-    manageTechUpgrade();
+    ECO_PROF_STAGE(4, manageTechUpgrade());
+
+    ++ecoSamples;
+    if (ecoSamples >= PROF_SAMPLE_FRAMES) {
+        const double n = (double)ecoSamples;
+        DebugText(QString("[PROF-ECO f=%1 n=%2] setup=%3/%4 build=%5/%6 farmers=%7/%8 assign=%9/%10 tech=%11/%12")
+                  .arg(frame).arg(ecoSamples)
+                  .arg(ecoSum[0]/n, 0, 'f', 3).arg(ecoMax[0], 0, 'f', 3)
+                  .arg(ecoSum[1]/n, 0, 'f', 3).arg(ecoMax[1], 0, 'f', 3)
+                  .arg(ecoSum[2]/n, 0, 'f', 3).arg(ecoMax[2], 0, 'f', 3)
+                  .arg(ecoSum[3]/n, 0, 'f', 3).arg(ecoMax[3], 0, 'f', 3)
+                  .arg(ecoSum[4]/n, 0, 'f', 3).arg(ecoMax[4], 0, 'f', 3));
+        for (int i = 0; i < 5; ++i) { ecoSum[i] = 0.0; ecoMax[i] = 0.0; }
+        ecoSamples = 0;
+    }
+#undef ECO_PROF_STAGE
 }
 
 // 建造管理（PPT顺序：房屋→谷仓→市场→兵营→靶场→马厩→箭塔→学院）
 void UsrAI::manageBuildings() {
+
+    typedef std::chrono::steady_clock BuildClock;
+    static double bSum[5] = {0.0};
+    static double bMax[5] = {0.0};
+    static int bSamples = 0;
+    auto bNow = []() { return BuildClock::now(); };
+    auto bAdd = [](int idx, BuildClock::time_point a, BuildClock::time_point b) {
+        double ms = std::chrono::duration<double, std::milli>(b - a).count();
+        bSum[idx] += ms;
+        if (ms > bMax[idx]) bMax[idx] = ms;
+    };
+    auto bT0 = bNow();
     releasedBuilders.clear();
 
     auto isCriticalBuildType = [](int t) {
@@ -1697,6 +1739,9 @@ void UsrAI::manageBuildings() {
 // ★ 2026-09-24 用户需求「存放狩猎瞪羚物资的仓库要尽早建」：删掉 `storageNearGazelleBuilt == 0` 外层闸。
 //   旧闸在剧本预置仓库(11097)存在时当帧就被 `existingStocks > 0` 置 1 ⇒ 本块直接不可达，近场仓库只能等 postW2 第二仓库块。
 //   现在 11 分钟窗口内、有房屋、木≥BUILD_STOCK_WOOD 就允许本块运行；建不建仍由 `clusterCovered` 逐簇判断，已有近场仓库的簇不会重复建。
+    bAdd(0, bT0, bNow());
+    auto bT1 = bNow();
+
     if (!builtThisFrame && frame < GAZELLE_STOCK_WINDOW_END &&
         houseCount >= GAZELLE_STOCK_MIN_HOUSES && info.Wood >= BUILD_STOCK_WOOD) {
         const double gBL = (double)BLOCKSIDELENGTH;
@@ -1816,6 +1861,8 @@ void UsrAI::manageBuildings() {
     }
 
     // ====== 第一波前：房屋→兵营（工具时代就能建），不建其他 ======
+    bAdd(1, bT1, bNow());
+    auto bT2 = bNow();
     if (preW1) {
         // 人口余量≤POP_HEADROOM_BUILD(=人口上限-2)时补房屋
         tryBuildHouse();
@@ -1826,6 +1873,8 @@ void UsrAI::manageBuildings() {
     }
 
     // ====== 第一波后~第二波前：铜器启动即优先军事（工具时代就能建兵营） ======
+    bAdd(2, bT2, bNow());
+    auto bT3 = bNow();
     if (postW1) {
         bool rushMilitary = (upgradeStarted && frame < 16500 && !wave2Defeated);  // 升级已启动即可建兵营
 
@@ -1879,6 +1928,8 @@ void UsrAI::manageBuildings() {
     }
 
     // ====== 第二波后：正常军事建筑 ======
+    bAdd(3, bT3, bNow());
+    auto bT4 = bNow();
     if (postW2) {
         // 房屋：人口余量≤POP_HEADROOM_BUILD(=人口上限-2)时优先补，不军事建筑木材预留挤掉， 否则人口将满时村民/军队会卡住无法训练。
         tryBuildHouse();
@@ -2158,6 +2209,21 @@ void UsrAI::manageBuildings() {
             DebugText(QString("[FARM-TECHWAIT f=%1] 农场等木材加工科技 wood=%2 meat=%3 farms=%4/%5 mkt=%6").arg(frame).arg((int)info.Wood).arg((int)info.Meat)
                       .arg(countFarmsForCap()).arg(farmTarget).arg(countBuildings(BUILDING_MARKET)));
         }
+    }
+    bAdd(4, bT4, bNow());
+
+    ++bSamples;
+    if (bSamples >= PROF_SAMPLE_FRAMES) {
+        const double n = (double)bSamples;
+        DebugText(QString("[PROF-BUILD f=%1 n=%2] cleanup=%3/%4 gazelle=%5/%6 preW1=%7/%8 postW1=%9/%10 postW2=%11/%12")
+                  .arg(frame).arg(bSamples)
+                  .arg(bSum[0]/n, 0, 'f', 3).arg(bMax[0], 0, 'f', 3)
+                  .arg(bSum[1]/n, 0, 'f', 3).arg(bMax[1], 0, 'f', 3)
+                  .arg(bSum[2]/n, 0, 'f', 3).arg(bMax[2], 0, 'f', 3)
+                  .arg(bSum[3]/n, 0, 'f', 3).arg(bMax[3], 0, 'f', 3)
+                  .arg(bSum[4]/n, 0, 'f', 3).arg(bMax[4], 0, 'f', 3));
+        for (int i = 0; i < 5; ++i) { bSum[i] = 0.0; bMax[i] = 0.0; }
+        bSamples = 0;
     }
 }
 
@@ -2701,7 +2767,21 @@ void UsrAI::assignIdleSimple() {
             builtGranaries.push_back({(b.BlockDR + 1.0) * BL, (b.BlockUR + 1.0) * BL});
 
     int goldWorkers = 0, woodWorkers = 0, stoneWorkers = 0, foodWorkers = 0;
+    static double statSum = 0.0, statMax = 0.0;
+    static int statSamples = 0;
+    auto _statT0 = std::chrono::steady_clock::now();
     countFarmerWorkKinds(goldWorkers, woodWorkers, stoneWorkers, foodWorkers);
+    double _statMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - _statT0).count();
+    statSum += _statMs;
+    if (_statMs > statMax) statMax = _statMs;
+    if (++statSamples >= PROF_SAMPLE_FRAMES) {
+        DebugText(QString("[PROF-STAT f=%1 n=%2 count=%3/%4")
+                  .arg(frame).arg(statSamples)
+                  .arg(statSum / statSamples, 0, 'f', 3)
+                  .arg(statMax, 0, 'f', 3));
+        statSum = 0.0; statMax = 0.0; statSamples = 0;
+    }
 
     // ★ 资源停采门禁（2026-09-01）：存量达上限即停止派/补采该资源，人力转向其他资源
     const bool woodStop  = (info.Wood >= (frame >= WAVE3_TIME ? WOOD_CAP_STOP_LATE : WOOD_CAP_STOP));
