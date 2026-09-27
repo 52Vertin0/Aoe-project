@@ -102,6 +102,19 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 修复：当【敌方已无军事威胁】(敌方军队 + 敌方箭塔均为 0) 时解除安全距离约束，允许前出感化。
 #define PRIEST_CONVERT_SIEGE_WHEN_CLEAR true
 #define PRIEST_CONVERT_SIEGE_RANGE 12.0  // 引擎感化射程口径（DIS_PRIEST=12），须 ≤ 此值才能感化
+// ★★★ 2026-09-27 祭司推进脱困（n610 铁证）★★★ 反攻末期祭司 ADVANCE 时距武器厂记忆点恒 12.4 格、连续 4500 帧
+//   零位移（`[LC-DBG] dS=12.4` 45 条全同），只差 0.4 格进不了 12 格射程；同时 27 个兵被反复推向【同一坐标】
+//   (3262,914.681)（4500 帧内 3133 次）⇒ 祭司被这支"永远在路上"的队伍裹住（`nearAlly=0.4BL`）⇒ 物理卡死。
+//   ⚠ 该卡死 = 必未决：exam 胜因唯一 = 祭司感化武器厂（`ARMY_IGNORE_SIEGE_WORKSHOP`+L239 注释明令军队/农民不得碰它），
+//     且感化射程 12 是引擎硬口径不可放宽 ⇒ 祭司一卡死，胜负被彻底封死。
+//   修：两段脱困阶梯（A 侧移绕开堵点 → B 挪开贴脸友军清障），铁律 9 = 脱困动作绝不算进展。
+#define PRIEST_ADV_STUCK_FRAMES 120   // 连续 N 帧"未真正逼近 >0.5 格" ⇒ 判卡死（≈4.8 秒@25fps，比 issueMarch 的 90 更保守）
+#define PRIEST_ADV_RESET_BL     6.0   // 距武器厂【反而远出】此格数 ⇒ 场景已变，基准重锚（否则撤退期会误判卡死）
+#define PRIEST_ADV_SIDESTEP     4.0   // A 档侧移距离(格)：沿接近方向垂直挪开堵点
+#define PRIEST_ADV_ESCAPE_CD    60    // 脱困动作后的冷却帧（防每帧重发同一点）
+#define PRIEST_ADV_CLEAR_R      2.0   // B 档清障半径(格)：只有贴到这个距离内的友军才算"堵路的"
+#define PRIEST_ADV_CLEAR_PUSH   6.0   // B 档清障推离距离(格)：沿侧向推开，不朝我方/敌方纵向推（避免又排成一列）
+#define PRIEST_ADV_CLEAR_MAX    3     // B 档单次最多挪走的友军数（保命：留其余护卫）
 // ★ 打猎瞪羚选取范围（2026-09-04 用户要求"扩大一些"）：30→50 格，覆盖远距未建仓库的瞪羚群。 仓库覆盖判断（1547/1705 nearStock）也用此常量同步，避免猎人跑出去 50 格打、仓库仍卡 30 格内。
 #define GAZELLE_HUNT_RANGE  50
 // ★★★ 2026-09-12 用户需求：「在村民开始狩猎瞪羚前尽量先建仓库，仓库可以比其他建筑先建」★★★ 参考录像 build order：抵达猎场 01:35 → 就地建仓库 → 02:05 落成 → 之后才是市场/兵营/靶场。
@@ -4503,6 +4516,20 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             const double sMemDR = (rallyDR + 1.0) * BL;
             const double sMemUR = (rallyUR + 1.0) * BL;
             double dSiege = calDistance(priest->DR, priest->UR, sMemDR, sMemUR);
+            // ★★★ 2026-09-27 推进进展判据（脱困阶梯的输入）★★★
+            // ⚠ 铁律 9：只有【真正逼近武器厂 > 0.5 格】才算进展 ⇒ 脱困动作（侧移/清障）【不得充数为进展】，
+            //   否则基准会被自救动作自己带着走 ⇒ 脱困档永远升不上去 ⇒ 退让活锁（同 issueMarch 的病根）。
+            if (dSiege > priestAdvBest + PRIEST_ADV_RESET_BL * BL) {
+                priestAdvBest = dSiege;          // 反而远出很多 ⇒ 场景已变（后撤/换目标），基准重锚
+                priestAdvBestFrame = frame; priestEscapeStage = 0;
+            } else if (dSiege < priestAdvBest - 0.5 * BL) {
+                priestAdvBest = dSiege;          // 真进展
+                priestAdvBestFrame = frame; priestEscapeStage = 0;   // 档位归零：回到正常推进
+            } else if (dSiege < priestAdvBest) {
+                priestAdvBest = dSiege;          // 缓慢变近：更新基准但【不】重置计时（慢速蠕动不算进展）
+            }
+            if (priestEscapeCd > 0) priestEscapeCd--;
+            const bool priestAdvStuck = (frame - priestAdvBestFrame > PRIEST_ADV_STUCK_FRAMES);
             if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
                 // 已在感化射程内 → 直接感化武器厂
                 HumanAction(priestSN, enemySiegeSN);
@@ -4514,21 +4541,73 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                           .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2).arg((nearT1 > 1e8) ? -1.0 : nearT1 / BL, 0, 'f', 1).arg(towerN1));
             } else if (priestCounterCooldown <= 0) {
                 // 在射程外 → 主动朝武器厂【记忆坐标】推进
+                // ★★★ 2026-09-27：若判卡死则改走【两段脱困阶梯】——A 侧移绕开堵点 ⇄ B 挪开贴脸友军清障（交替）。
                 double ux2 = (sMemDR - priest->DR), uy2 = (sMemUR - priest->UR);
                 double ul2 = std::sqrt(ux2 * ux2 + uy2 * uy2) + 1e-6;
                 ux2 /= ul2; uy2 /= ul2;
-                double stopD = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;   // 停在感化射程内 1 格处
-                double tx = sMemDR - ux2 * stopD;
-                double ty = sMemUR - uy2 * stopD;
+                const double sx = -uy2, sy = ux2;    // 接近方向的侧向单位向量（逆时针 90°）
+                double tx, ty;
+                bool escaping = false;
+                if (priestAdvStuck && priestEscapeCd <= 0) {
+                    if (priestEscapeStage == 0) priestEscapeStage = 1;
+                    if (priestEscapeStage == 1) {
+                        // ---- A 档：侧移 PRIEST_ADV_SIDESTEP 格绕开堵点；左右交替，避免总撞同一边 ----
+                        tx = priest->DR + sx * priestEscapeSide * PRIEST_ADV_SIDESTEP * BL;
+                        ty = priest->UR + sy * priestEscapeSide * PRIEST_ADV_SIDESTEP * BL;
+                        priestEscapeSide = -priestEscapeSide;
+                        priestEscapeStage = 2;                       // 下次仍卡 ⇒ 换成清障档
+                        DebugText(QString("[PRIEST-ESCAPE A f=%1] d=%2 侧移%3格 →(%4,%5)").arg(frame).arg(dSiege / BL, 0, 'f', 1)
+                                  .arg(PRIEST_ADV_SIDESTEP, 0, 'f', 0).arg(tx / BL, 0, 'f', 0).arg(ty / BL, 0, 'f', 0));
+                    } else {
+                        // ---- B 档：把【贴到 PRIEST_ADV_CLEAR_R 格内】的友军沿侧向推开 PRIEST_ADV_CLEAR_PUSH 格（清障）----
+                        // ⚠ 保命前提：只有祭司周边【确实无活敌】才清障，否则把护卫推开 = 把祭司送给近敌（祭司死=立刻失败，铁律优先）。
+                        double nearEnemy = 1e9;
+                        for (auto &e : info.enemy_armies) {
+                            if (e.Blood <= 0) continue;
+                            double dE = calDistance(priest->DR, priest->UR, e.DR, e.UR);
+                            if (dE < nearEnemy) nearEnemy = dE;
+                        }
+                        int moved = 0;
+                        if (nearEnemy > PRIEST_GUARD_ALERT * BL) {
+                            for (auto &a : info.armies) {
+                                if (a.SN == priestSN) continue;
+                                if (moved >= PRIEST_ADV_CLEAR_MAX) break;
+                                if (calDistance(a.DR, a.UR, priest->DR, priest->UR) > PRIEST_ADV_CLEAR_R * BL) continue;
+                                double cx = a.DR + sx * PRIEST_ADV_CLEAR_PUSH * BL;
+                                double cy = a.UR + sy * PRIEST_ADV_CLEAR_PUSH * BL;
+                                cx = max(0.0, min((double)MAP_L * BL, cx));
+                                cy = max(0.0, min((double)MAP_U * BL, cy));
+                                if (!isPassableAt(cx, cy, forestGrid)) { cx = a.DR; cy = a.UR; }   // 推不动就原地：绝不制造新的卡死点
+                                HumanMove(a.SN, cx, cy);
+                                moved++;
+                            }
+                        }
+                        tx = priest->DR + sx * priestEscapeSide * PRIEST_ADV_SIDESTEP * BL;
+                        ty = priest->UR + sy * priestEscapeSide * PRIEST_ADV_SIDESTEP * BL;
+                        priestEscapeSide = -priestEscapeSide;
+                        priestEscapeStage = 1;                       // 与 A 档交替（A⇄B），两手段轮着试
+                        DebugText(QString("[PRIEST-ESCAPE B f=%1] d=%2 清障 moved=%3 近敌=%4 侧移%5格").arg(frame).arg(dSiege / BL, 0, 'f', 1)
+                                  .arg(moved).arg((nearEnemy > 1e8) ? -1.0 : nearEnemy / BL, 0, 'f', 1).arg(PRIEST_ADV_SIDESTEP, 0, 'f', 0));
+                    }
+                    escaping = true;
+                    priestAdvBestFrame = frame;      // 只重置"卡死计时"，【不】动 priestAdvBest（铁律 9：脱困不算进展）
+                    priestEscapeCd = PRIEST_ADV_ESCAPE_CD;
+                } else {
+                    double stopD = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;   // 停在感化射程内 1 格处
+                    tx = sMemDR - ux2 * stopD;
+                    ty = sMemUR - uy2 * stopD;
+                }
                 tx = max(0.0, min((double)MAP_L * BL, tx));
                 ty = max(0.0, min((double)MAP_U * BL, ty));
                 if (isPassableAt(tx, ty, forestGrid)) {
                     HumanMove(priestSN, tx, ty);
                     priestCounterCooldown = 30; priestMoveCooldown = 30;
-                    double nearT2 = 1e9; int towerN2 = 0;
-                    scanTowerThreat(nearT2, towerN2);
-                    DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared").arg(frame).arg(dSiege / BL, 0, 'f', 1)
-                              .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2));
+                    if (!escaping) {
+                        double nearT2 = 1e9; int towerN2 = 0;
+                        scanTowerThreat(nearT2, towerN2);
+                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared").arg(frame).arg(dSiege / BL, 0, 'f', 1)
+                                  .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2));
+                    }
                 }
             }
             return;   // 清场期：本帧祭司任务就是感化武器厂，不走下方后撤逻辑
