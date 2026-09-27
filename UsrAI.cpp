@@ -223,10 +223,10 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //   根因(map2 实测)：祭司探路 100 格直奔敌区，在距 TC 56 格处撞上敌 10 个单位；而祭司速度仅 ~0.5 格/秒
 //   vs 敌方 ~1.76 格/秒(3.5 倍) ⇒ 一旦接触，撤/折返/逃全部无效(n1 批 12 局全败、9 局早死 3007~3477)。
 //   40 格战绩：map2 胜率 0%(0/15)→50%(6/12) p=0.0031、祭司死亡 15/15→2/12、早死 11/15→0/12；map3 回归 p=0.72 无显著退化。
-//   ⚠ 残留：map2 未决 4/12(3 局 ADV=0，疑"目标未探明") ⇒ 本轮试放宽到 50 格，看能否在保住"早死=0"的前提下减少未决。
-//   ⚠ 风险：map2 敌主力实测在距 TC ~56 格处，50 格余量仅 6 格(40 格时是 16 格)，可能重新出现接触。
+//   半径扫描：40 格 = map2 50.0%(6/12) UND 4、早死 0；50 格 = 66.7%(8/12) UND 2、但 2 局死在 5361/5420 帧(1stLOCK=5200)。
+//   ⇒ 本轮取 45 格折中：距 map2 敌主力(~56 格)留 11 格余量，兼顾"不接触"与"探索够"。
 //   ⚠ 曾试过"遇敌即结束探路"(n1)：有害，见 processData 强推块注释。
-#define SCOUT_MAX_DIST 50.0
+#define SCOUT_MAX_DIST 45.0
 // 人数不足时由强制反攻时间兜底；降低门槛会更早推进、提高门槛则更保守。
 #define COUNTER_ATTACK_MIN_ARMY 12   // ★ 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
@@ -2509,7 +2509,7 @@ void UsrAI::managePriestScout() {
                     double edgeNorth = MAP_U * BL;
 
                     bool nearTarget = false;
-                    const double SCOUT_DIST = SCOUT_MAX_DIST;  // ★ 2026-09-27 由 100 缩到 40 格：避免祭司深入敌区被敌主力截杀(见常量处注释)
+                    const double SCOUT_DIST = SCOUT_MAX_DIST;  // ★ 2026-09-27 由 100 缩到 SCOUT_MAX_DIST：避免祭司深入敌区被敌主力截杀(见常量处注释)
 
                     // ★ 根据TC象限决定探索方向和顺序
                     double distWest  = baseDR / BL;
@@ -6221,6 +6221,18 @@ bool UsrAI::findFarmSiteBest(int &x, int &y) {
 
 bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX, int prefY, bool noFallback,
                      bool preferNearBuilder) {
+    static double trySum[3] = {0.0};
+    static double tryMax[3] = {0.0};
+    static int trySamples = 0;
+    auto tryNow = []() { return std::chrono::steady_clock::now(); };
+    auto tryDiff = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    auto tryAdd = [](int idx, double ms) {
+        trySum[idx] += ms;
+        if (ms > tryMax[idx]) tryMax[idx] = ms;
+    };
+    auto tryT0 = tryNow();
     if (buildCooldown > 0 && !ignoreCooldown) return false;
     // 农场硬上限：无论哪条建造路径，超过 MAX_FARMS 一律不再下发
     if (buildingType == BUILDING_FARM) {
@@ -6240,6 +6252,9 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     if (!f) f = findAnyFarmer();
     if (!f) return false;
 
+    double tryFarmerMs = tryDiff(tryT0, tryNow());
+    tryAdd(0, tryFarmerMs);
+    auto tryTSite = tryNow();
     int x, y;
     bool placed = false;
     // 指定目标（块坐标）：在目标点及其周围优先放置（用于瞪羚群中心仓库等场景）
@@ -6295,8 +6310,17 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     // 地图上还有空位就恒返回 true ⇒ 农场会落到任意远处（实测 30.3% 掉在 r=8 = 8~11.3 格）。   现在农场只在锚点紧邻环内落位；两段都无解 ⇒ 本帧不建（下一帧有空位时自然重试）。
     if (!placed && buildingType != BUILDING_FARM)
         placed = findBuildSite(x, y, size, false);
-    if (!placed) return false;
+    double trySiteMs = tryDiff(tryTSite, tryNow());
+    tryAdd(1, trySiteMs);
+    if (!placed) {
+        if (trySiteMs > 20.0)
+            DebugText(QString("[PROF-TRY-SLOW f=%1 type=%2 size=%3 farmer=%4 site=%5]")
+                      .arg(frame).arg(buildingType).arg(size)
+                      .arg(tryFarmerMs, 0, 'f', 3).arg(trySiteMs, 0, 'f', 3));
+        return false;
+    }
 
+    auto tryTIssue = tryNow();
     buildingFarmerType[f->SN] = buildingType;
     builderDispatchFrame[f->SN] = frame;   // ★ 硬超时起点（本次建造令下发帧）
     int buildInsId = HumanBuild(f->SN, buildingType, x, y);
@@ -6323,7 +6347,23 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
 
     buildCooldown = 5;   // 5帧冷却（单位碰撞检测已防止重复失败）
     // ★ 2026-09-13 建造下令观测：记录每次 HumanBuild 的类型/村位/坐标， 用于对照"地基何时放下 / 何时完工"，定位长期卡住的地基。
-    DebugText(QString("[BUILD-ISSUE f=%1] type=%2 size=%3 村民SN=%4 at=(%5,%6) wood=%7").arg(frame).arg(buildingType).arg(size).arg(f->SN).arg(x).arg(y).arg((int)info.Wood));
+    double tryIssueMs = tryDiff(tryTIssue, tryNow());
+    tryAdd(2, tryIssueMs);
+    ++trySamples;
+    if (trySamples >= PROF_SAMPLE_FRAMES) {
+        const double n = (double)trySamples;
+        DebugText(QString("[PROF-TRY f=%1 n=%2 farmer=%3/%4 site=%5/%6 issue=%7/%8")
+                  .arg(frame).arg(trySamples)
+                  .arg(trySum[0]/n, 0, 'f', 3).arg(tryMax[0], 0, 'f', 3)
+                  .arg(trySum[1]/n, 0, 'f', 3).arg(tryMax[1], 0, 'f', 3)
+                  .arg(trySum[2]/n, 0, 'f', 3).arg(tryMax[2], 0, 'f', 3));
+        for (int i = 0; i < 3; ++i) { trySum[i] = 0.0; tryMax[i] = 0.0; }
+        trySamples = 0;
+    }
+    if (trySiteMs > 20.0)
+        DebugText(QString("[PROF-TRY-SLOW f=%1 type=%2 size=%3 farmer=%4 site=%5 issue=%6]")
+                  .arg(frame).arg(buildingType).arg(size)
+                  .arg(tryFarmerMs, 0, 'f', 3).arg(trySiteMs, 0, 'f', 3).arg(tryIssueMs, 0, 'f', 3));
     return true;
 }
 
