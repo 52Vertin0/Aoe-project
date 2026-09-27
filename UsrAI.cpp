@@ -226,7 +226,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 目标三级：① 敌方 TC > ② 最近的【软目标】敌建筑 (非箭塔/非武器厂) > ③ 最近的【箭塔】（本图敌方无 TC，靠 ③ 才可达）； 全部不可见 → 行军到 enemyBaseScouted 记忆方位；仍无则不动。
 // ⚠ 绝不把武器厂当目标：exam 胜条件唯一 = 祭司感化敌方武器厂，农民拆了它 = 自毁胜因（同 ARMY_IGNORE_SIEGE_WORKSHOP）。
 // ⚠ 与 COUNTER_ATTACK_FORCE_TIME(33000/22分) 配合：22 分军队强制反攻，27 分农民跟上。 ⚠ 不排除 buildingFarmerType 里的农民（用户要求"所有"）⇒ 未完工建筑会烂尾。
-#define COUNTER_FARMER_ATTACK true
+#define COUNTER_FARMER_ATTACK false  // 2026-09-27 用户需求：取消农民总攻（不用处理打敌农民）——农民留在后方采集，不投入进攻
 #define COUNTER_FARMER_ATTACK_FRAME 40500   // 27 分钟 × 1500 帧/分钟
 #define COUNTER_FARMER_ATTACK_GAP 90        // 同一农民的重复下发节流(帧)：防幂等判据失效时刷屏，
                                             // 重发会 reset 引擎攻击关系并打断动作(铁律 14)
@@ -242,9 +242,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 2026-09-13 保祭司：反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
-// ★★★ 2026-09-27 反攻期祭司自保安全圈（格）★★★ AoE3 远程弹道不可挡(弓兵越过友军直射祭司) ⇒ 靠人堆贴身护驾无效，
-//   唯一保命自变量是【距离】：距最近【敌兵】(非目标建筑) 小于此值即强制后撤到大军后方。取 14 = 敌远程射程(≈12) + 余量 2。
-#define PRIEST_COUNTER_SAFE_D  14.0
 // ★★★ 2026-09-14 感化武器厂的【施法静默期】(帧) ★★★ 铁证：成功案例 lc3 只发 1 次感化令 → 340 帧后收编成功；失败案例 lk6 发 2155 次(每帧重发) → 持续 2150 帧从未收编。
 // 机制：`HumanAction(祭司, 建筑)` 是"设置转换目标"，重发 = 引擎每帧被重设目标打断、施法进度永远重置。   ⇒ 发令后必须进入静默期，让引擎把整段施法做完（实测需 ~340~440 帧）。
 #define PRIEST_SIEGE_CONVERT_LOCKOUT 400
@@ -4118,63 +4115,6 @@ void UsrAI::counterFarmerAttack(double BL, double targetDR, double targetUR) {
     }
 }
 
-// ====== 反攻期 · 祭司自保后撤（2026-09-27，方案1+2）======
-// 根因：manageCounterAttack 里 `if (counterPriestGuard(BL)) return;` —— 祭司一被威胁(敌≤8格/锁定)就整体返回，
-//   跳过其后 counterPriestConvert(祭司后排站位/前出武器厂) ⇒ 祭司站位逻辑被 HALT 饿死、滞留战场被打死
-//   （实测 g124：HALT 反复触发，[PRST-REAR]/ADV_SIEGE 全期 0 次）。
-// 本函数在 counterPriestGuard() 【之前】调用 ⇒ 即使 HALT 本帧 return，祭司的后撤令也已下发，不被饿死。
-// 判据：距最近【敌兵】< PRIEST_COUNTER_SAFE_D(14格) ⇒ 强制后撤到大军后方、距最近敌兵 ≥ SAFE_D+4。
-//   ⚠ 只按【敌兵】距离，不按目标建筑（旧 counterPriestConvert 只量 pDist 到敌基地 ⇒ 挡不住贴脸敌兵）。
-//   ⚠ AoE3 弹道不可挡：近身友军挡不住远程集火，唯一的保命自变量是"距离"。
-// 返回：true = 本帧已给祭司下发后撤令；false = 祭司安全 / 正在引导(不下发) ⇒ 交回原逻辑。
-bool UsrAI::counterPriestRetreat(double BL, const std::vector<std::vector<char>>& forestGrid) {
-    tagArmy* priest = nullptr;
-    for (auto &a : info.armies) if (a.Sort == AT_PRIEST) { priest = &a; break; }
-    if (!priest) return false;
-    // 正引导(感化/治疗)或攻击中：绝不下发移动打断（沿用既有状态闸；施法期保命由 PRIEST_SIEGE_ABORT 等闸兜底）。
-    if (priest->NowState != HUMAN_STATE_IDLE && priest->NowState != HUMAN_STATE_WALKING) return false;
-    const double pDR = priest->DR, pUR = priest->UR;
-
-    // 最近敌兵（含农民）及其坐标
-    double nDR = 0, nUR = 0, nD = 1e12;
-    for (auto &e : info.enemy_armies) {
-        if (e.Blood <= 0) continue;
-        double d = calDistance(pDR, pUR, e.DR, e.UR);
-        if (d < nD) { nD = d; nDR = e.DR; nUR = e.UR; }
-    }
-    for (auto &e : info.enemy_farmers) {
-        if (e.Blood <= 0) continue;
-        double d = calDistance(pDR, pUR, e.DR, e.UR);
-        if (d < nD) { nD = d; nDR = e.DR; nUR = e.UR; }
-    }
-    if (nD >= PRIEST_COUNTER_SAFE_D * BL) return false;   // 已在安全圈外 ⇒ 不干预
-
-    // 后撤方向 = 最近敌兵 → 大军重心（即"大军身后"一侧）
-    double sumDR = 0, sumUR = 0; int nArmy = 0;
-    for (auto &a : info.armies) {
-        if (a.Sort == AT_PRIEST) continue;
-        sumDR += a.DR; sumUR += a.UR; nArmy++;
-    }
-    double ux = (nArmy > 0) ? (sumDR / nArmy - nDR) : (pDR - nDR);
-    double uy = (nArmy > 0) ? (sumUR / nArmy - nUR) : (pUR - nUR);
-    double ul = std::sqrt(ux * ux + uy * uy);
-    if (ul < 1.0) { ux = pDR - nDR; uy = pUR - nUR; ul = std::sqrt(ux * ux + uy * uy) + 1e-6; }  // 大军压在敌上 → 退化为背离敌兵
-    ux /= ul; uy /= ul;
-    // 落点 = 最近敌兵 + (SAFE_D+4) 格的外侧 ⇒ 保证撤出敌射程，且位于大军背敌一侧
-    double tx = nDR + ux * (PRIEST_COUNTER_SAFE_D + 4.0) * BL;
-    double ty = nUR + uy * (PRIEST_COUNTER_SAFE_D + 4.0) * BL;
-    tx = max(0.0, min((double)MAP_L * BL, tx));
-    ty = max(0.0, min((double)MAP_U * BL, ty));
-    snapWalkable(tx, ty, forestGrid);   // 落点吸附到最近可走格（否则 HumanMove 被引擎静默拒绝）
-    HumanMove(priestSN, tx, ty);
-    priestMoveCooldown = 20;            // 与 managePriest 的移动令共用闸，避免同帧双令抖动
-    if (frame % 50 == 0)
-        DebugText(QString("[PRIEST RETREAT f=%1] 距最近敌=%2格(<%3) → 撤至(%4,%5) 敌近点=(%6,%7) army=%8")
-                  .arg(frame).arg(nD / BL, 0, 'f', 1).arg((int)PRIEST_COUNTER_SAFE_D)
-                  .arg(tx / BL, 0, 'f', 0).arg(ty / BL, 0, 'f', 0).arg(nDR / BL, 0, 'f', 0).arg(nUR / BL, 0, 'f', 0).arg(nArmy));
-    return true;
-}
-
 bool UsrAI::counterPriestGuard(double BL) {
     // ====== 反攻段：★ 祭司护驾（优先于一切推进 —— 祭司死=立刻失败）======
     // 为什么反攻期必须再判一次：processData 每帧【先】跑 manageMilitary()（UsrAI.cpp:633），反攻期【再】追加
@@ -4640,9 +4580,6 @@ void UsrAI::manageCounterAttack() {
     bool directMarch = (siege != nullptr) || enemyBaseScouted;
 
     counterFarmerAttack(BL, targetDR, targetUR);
-    // ★ 2026-09-27：祭司自保后撤必须排在 counterPriestGuard 之前 —— 否则祭司一被威胁，HALT 本帧 return，
-    //   祭司的后撤/站位令被饿死（实测 g124：[PRST-REAR]/ADV_SIEGE 全期 0 次，祭司滞留战场被打死）。
-    counterPriestRetreat(BL, forestGrid);
     if (counterPriestGuard(BL)) return;
 
     // ====== 本函数内联：集结与推进（投石车/远程优先，逐步走已探索区域）======

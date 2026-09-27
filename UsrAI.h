@@ -2,6 +2,8 @@
 #define USRAI_H
 
 #include "ai.h"
+#include <QEvent>      // ★ 2026-09-27 OJ 崩溃自救：主线程代取快照需要 QEvent::User（机理见 UsrAI.cpp）
+#include <memory>      // ★ 2026-09-27 零拷贝快照：infoPtr 用 std::shared_ptr
 #include <set>
 #include <map>
 #include <vector>
@@ -45,9 +47,17 @@ public:
               scoutIssueDR(0), scoutIssueUR(0), scoutIssueFrame(-999999),
               priestIssueDR(0), priestIssueUR(0), priestIssueFrame(-999999),
               priestNearTCTry(0), priestFleeTry(0), priestMode(0), priestFleeLastX(0), priestFleeLastY(0), priestFleeLastFrame(-999999),
-              priestConvSN(-1), priestConvFrame(-999999), priestSiegeApproach(0)
+              priestConvSN(-1), priestConvFrame(-999999), priestSiegeApproach(0),
+              priestAdvBest(1e18), priestAdvBestFrame(-999999), priestEscapeStage(0),
+              priestEscapeCd(0), priestEscapeSide(1)
     { this->id = 0; }
-    ~UsrAI() {}
+    // ★★★ 2026-09-27 防御：在**派生类**析构体里先停 AI 线程。
+    //   理由：C++ 析构顺序 = 派生类成员先析构 → 基类析构体最后跑。若只依赖 ~AI() 里的 wait()，
+    //   那么 UsrAI 的成员（含 infoPtr 与其引用计数）已在 wait() 之前析构，而 AI 线程可能仍停在
+    //   processData()（run() 持 mutex 调用它）⇒ 访问已释放资源 ⇒ SIGSEGV。
+    //   MainWidget::~MainWidget() 已做 stopProcessing()+wait()，此处为兜底；重复调用无害
+    //   （stopThread 置位幂等、wait() 对已停线程立即返回）。
+    ~UsrAI() { stopThread = true; condition.wakeAll(); wait(); }
 
 private:
     void processData() override;
@@ -65,9 +75,32 @@ private:
     bool isBlockedByResources(int blockDR, int blockUR, int size,
                               const std::vector<tagResource>& resources) const;
     int countBuildings(int type, bool includePending, bool includeDead,
-                       bool countUnderConstruction);
+bool countUnderConstruction);
 
-    int AddToIns(instruction ins) override {
+// ==================== ★★★ 2026-09-23 OJ SIGSEGV 自救：快照改由"主线程"代取 ★★★ ====================
+// 原实现是**在 AI 线程里直读引擎缓冲区**（tagUsrGame.getInfo()），与主线程 Core::infoShare() 的
+//   clear()/push_back() 释放-重分配竞争 ⇒ OJ(Linux/gcc13) 上 SIGSEGV。backtrace 关键三帧：
+//   UsrAI::processData → tagInfo::operator= (GlobalVariate.cpp) → vector<tagBuilding>::operator=
+//   (源 vector len=6 / cap=6) → __memcpy_avx_unaligned_erms → SIGSEGV。
+// 引擎侧根治 = 恢复 tagGame::update() 内被注释掉的 QMutexLocker（待评测机版本）；UsrAI 侧碰不到
+//   tagGame::Locker（私有成员），改用 tryLock()+getInfo() 会因非递归 QMutex 同线程二次加锁自锁死
+//   （实测整局冻在 frame 1）⇒ 站内靠加锁自救不可行。
+// 本修法：不改引擎、不碰锁，只换"深拷贝发生在哪个线程"——
+//   UsrAI 对象由主线程创建（MainWidget.cpp）⇒ postEvent 给它的事件由主线程事件循环派发；
+//   AI 线程 postEvent(this) → 主线程在 event() 里 getInfo()（此刻不在 infoShare 内 ⇒ 读写同线程、
+//   天然串行）→ 唤醒 AI 取走副本 ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
+// ★ 2026-09-27 恢复：该加固在 09-26 23:48「整文件回退到 g1 无闸」时被一并覆盖丢失，
+//   之后的版本又退回"AI 线程直读 getInfo()"，于是在 OJ 上重现同一崩溃（本次 backtrace 完全一致）。
+// ★★ 2026-09-27 修正（重要）：单纯恢复"每帧 cond.wait() 等主线程"会把 AI 决策吞吐钳死主线程帧率上，
+//   同日干净对照（均为 map2×12、同批代码，仅加固有无不同）：每帧等待版 = 6胜/5负/1未决 (50.0%)，
+//   而直读版 = 11胜/0负/1未决 (91.7%) ⇒ 每帧等待腰斩胜率。故 AI 侧改为**非阻塞**：
+//   有新快照就取走，没有就沿用上一帧（数据最多滞后 1 帧，实测 main:reuse ≈ 1:1）。
+//   36 局复测：非阻塞加固 = 69.4% vs 无加固 79.2%（Fisher p≈0.20，无显著差异）。
+enum { kSnapEventType = QEvent::User + 731 };
+bool refreshSnapshot();                // AI 线程：postEvent 请主线程代取快照；成功则更新 infoPtr（零拷贝）
+bool event(QEvent* e) override;       // 主线程执行：真正执行 tagUsrGame.getInfo()
+
+int AddToIns(instruction ins) override {
         UsrIns.lock.lock();
         ins.id = UsrIns.g_id;
         UsrIns.g_id++;
@@ -82,8 +115,17 @@ private:
 
     // ==================== 用户策略代码区 ====================
 
-    // 当前游戏状态（每帧刷新！注意列表顺序每帧随机打乱）
-    tagInfo info;
+// ★★★ 2026-09-27 【零拷贝快照】当前游戏状态。原为值成员 `tagInfo info;`：
+//   由 AI 线程执行 `info = tagUsrGame.getInfo()`（或加固版的 `dst = *fresh`）反复深拷贝。
+//   该深拷贝在 OJ 上稳定 SIGSEGV（栈：processData/refreshSnapshot → tagInfo::operator=
+//   → vector<tagBuilding>::operator= 的 std::copy 分支 ⇒ 说明目标缓冲被写坏）。
+//   两次崩溃源不同（一次引擎 getInfo、一次主线程 new tagInfo）但**目标同为该成员**，
+//   且 info 全项目无外部访问（仅 UsrAI 自用）⇒ 目标缓冲自身不可信。
+//   改为 shared_ptr 直达后：快照对象由主线程 new 出来、AI 线程独占持有，
+//   **全程零深拷贝**，不再触碰任何"上一帧遗留的 vector 缓冲"。
+//   用法：processData 顶部 `if (!refreshSnapshot()) return;` 保证非空；
+//         此后全文件以 `infoPtr->xxx` 访问（原 `info.xxx`）。
+std::shared_ptr<tagInfo> infoPtr;
     int frame;
 
     // 状态机
@@ -137,8 +179,8 @@ private:
     std::map<int,int> lastBuildIssueFrame;  // 建筑类型 → 最近一次下发建造指令的帧号（防异步回写窗口内重复建造）
     // ★★★ 2026-09-22「避免一个瞪羚群附近重复建 2 个仓库」：最近 N 次【仓库】建造令的落点（块坐标）+ 下发帧。
     //   唯一用途 = 喂 stockOrderPending()：窗口内把"距落点 ≤20 块"的瞪羚判为该群刚下过令 ⇒ 不再重复下单。
-    //   为什么必须自己记：tryBuild 成功 ≠ 仓库出现在 info.buildings（村民在路上时连地基都没有），
-    //   而 isFarGazelle 的锚点只能看 info.buildings ⇒ 不看落点就一定漏。
+    //   为什么必须自己记：tryBuild 成功 ≠ 仓库出现在 infoPtr->buildings（村民在路上时连地基都没有），
+    //   而 isFarGazelle 的锚点只能看 infoPtr->buildings ⇒ 不看落点就一定漏。
     //   ⚠ 三只数组严格同下标（平行数组一旦被 sort/去重就错位）；此处只 push_back + 裁头，绝不排序。
     std::vector<int> stockOrderDR;      // 落点块 DR
     std::vector<int> stockOrderUR;      // 落点块 UR
@@ -208,6 +250,15 @@ private:
     //   净位移≈0，永远够不到 12 格感化射程（ll5 f=44531~44981 实测落点每 30 帧翻转）。
     //   修：一旦成立就锁定，除非【真贴身(<=PRIEST_SIEGE_ABORT_R)】或【血量过低】才解除。
     int priestSiegeApproach;
+    // ★★★ 2026-09-27 祭司推进脱困（n610 铁证）★★★ 祭司 ADVANCE 期间 dS 恒 12.4 格达 4500 帧、只差 0.4 格
+    //   进不了 12 格感化射程；同时 27 个兵被反复推向同一集结点（3133 次同一坐标），祭司被裹住(nearAlly=0.4BL)。
+    //   ⚠ 铁律 9：脱困动作【绝不算进展】—— priestAdvBest 只在"真正逼近武器厂"时降低，
+    //     priestEscapeStage 也只有真进展才归零；否则自救会自我抵消（同 issueMarch 退让活锁的病根）。
+    double priestAdvBest;      // 到武器厂记忆点的历史最近距离（推进进展判据真源）
+    int priestAdvBestFrame;    // 最后一次"真进展"的帧号
+    int priestEscapeStage;     // 脱困档位：0=无 / 1=侧移绕开堵点 / 2=清障(挪开贴脸友军)
+    int priestEscapeCd;        // 脱困动作后的冷却帧（防每帧重发）
+    int priestEscapeSide;      // 侧移方向交替（+1/-1），避免总往同一边撞
     // ★ 军事单位回TC旁待命的绕路状态（与主城建筑中心不可达导致的刷屏卡死对应，刀斧兵/弓箭手等通用）★
     std::map<int,int> armyReturnTry;      // 单位SN → 多半径×多角度螺旋重试计数(0~23)
     std::map<int,double> armyIssueDR, armyIssueUR; // 上次下发回TC移动指令时的位置（卡死检测）
@@ -322,6 +373,7 @@ private:
     int countBuildingsExisting(int type);
     int countAllMilitary();
     bool isPositionFree(int blockDR, int blockUR, int size);
+    bool isPositionFree(int blockDR, int blockUR, int size, bool checkReachability);
     bool isSiteReachable(int blockDR, int blockUR, int size);  // 地基可达性预检：地基旁须有路可走，避免选址被建筑围死、村民永远走不到(卡死)
     // avoidFarmAdjacent=true：额外跳过与已有农场"相邻"的位置（3x3 外扩 1 格内不得有农场）。
     //   ★ 2026-09-15：农场兜底选址用 —— 旧链第一步的 findBuildSite 兜底不做此检查，
@@ -377,7 +429,6 @@ private:
     void manageCounterAttack();    // 反攻
     void counterFarmerAttack(double BL, double targetDR, double targetUR);
     bool counterPriestGuard(double BL);
-    bool counterPriestRetreat(double BL, const std::vector<std::vector<char>>& forestGrid);   // 反攻期祭司自保后撤(优先于 counterPriestGuard 的 HALT)
     void counterPriestConvert(double BL, double targetDR, double targetUR,
                               double rallyCtrDR, double rallyCtrUR,
                               const std::vector<std::vector<char>>& forestGrid);
