@@ -6220,6 +6220,7 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     static double trySum[3] = {0.0};
     static double tryMax[3] = {0.0};
     static int trySamples = 0;
+    static int tryFlushFrame = -1;
     auto tryNow = []() { return std::chrono::steady_clock::now(); };
     auto tryDiff = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
         return std::chrono::duration<double, std::milli>(b - a).count();
@@ -6229,16 +6230,21 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
         if (ms > tryMax[idx]) tryMax[idx] = ms;
     };
     auto tryFlush = [&]() {
+        if (tryFlushFrame < 0) tryFlushFrame = frame;   // 首帧对齐
         ++trySamples;
-        if (trySamples >= PROF_SAMPLE_FRAMES) {
+        // ★ 与 [PROF]/[PROF-ECO]/[PROF-BUILD] 同口径：按【帧窗口】而非调用次数 flush。
+        //   旧口径 300 次调用在一局内根本到不了(一局 tryBuild 总数常 <300) ⇒ [PROF-TRY] 一次都不打印。
+        if (frame - tryFlushFrame >= PROF_SAMPLE_FRAMES) {
             const double n = (double)trySamples;
-            DebugText(QString("[PROF-TRY f=%1 n=%2 farmer=%3/%4 site=%5/%6 issue=%7/%8")
-                      .arg(frame).arg(trySamples)
+            const int win = frame - tryFlushFrame;
+            DebugText(QString("[PROF-TRY f=%1 n=%2 win=%3 farmer=%4/%5 site=%6/%7 issue=%8/%9")
+                      .arg(frame).arg(trySamples).arg(win)
                       .arg(trySum[0]/n, 0, 'f', 3).arg(tryMax[0], 0, 'f', 3)
                       .arg(trySum[1]/n, 0, 'f', 3).arg(tryMax[1], 0, 'f', 3)
                       .arg(trySum[2]/n, 0, 'f', 3).arg(tryMax[2], 0, 'f', 3));
             for (int i = 0; i < 3; ++i) { trySum[i] = 0.0; tryMax[i] = 0.0; }
             trySamples = 0;
+            tryFlushFrame = frame;
         }
     };
     auto tryT0 = tryNow();
