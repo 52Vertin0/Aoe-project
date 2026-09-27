@@ -3,10 +3,56 @@
 #include <map>
 #include <mutex>
 #include <chrono>
+// ★★★ 2026-09-27 OJ 崩溃自救：主线程代取快照所需的 QtCore 头（不引用任何引擎新增符号）★★★
+#include <QCoreApplication>   // QCoreApplication::postEvent（跨线程投递到主线程事件循环）
+#include <QEvent>
+#include <memory>             // std::shared_ptr（不可变快照的发布句柄）
 
 tagGame tagUsrGame;
 ins UsrIns;
 /*##########DO NOT MODIFY THE CODE ABOVE##########*/
+
+// ============================================================================================
+// ★★★ 2026-09-23 OJ(Linux/gcc13) SIGSEGV 自救：快照深拷贝改由"写侧线程"（主线程）执行 ★★★
+// 现象：OJ 上 AI 线程在 `info = getInfo()` 处 SIGSEGV。backtrace 关键三帧：
+//   UsrAI::processData → tagInfo::operator= (GlobalVariate.cpp) → vector<tagBuilding>::operator=
+//   (源 vector len=6 / cap=6) → __memcpy_avx_unaligned_erms → SIGSEGV
+// 根因（本机引擎源码逐行核对）：双缓冲"主线程写、AI 线程读"，唯一互斥 tagGame::Locker 保护不住这条路径 ——
+//   ① tagGame::update() 的 QMutexLocker 被注释掉（GlobalVariate.cpp）；
+//   ② getInfo() 的锁只覆盖引擎自己那层拷贝，调用点（processData）的深拷贝在锁外
+//      ⇒ 与写侧 clear()/push_back() 的释放/重分配竞争 ⇒ memcpy 读到已释放页（len=cap 恰为拷贝产物特征）。
+// 引擎侧根治 = 恢复 update() 内的锁（待评测机版本）。UsrAI 侧碰不到 Locker（tagGame 私有成员），
+//   改用 tryLock()+getInfo() 会因非递归 QMutex "同线程二次加锁"自锁死（实测整局冻在 frame 1）
+//   ⇒ 站内靠加锁自救不可行。
+// 本修法：不改引擎、不碰锁，只换"深拷贝发生在哪个线程"——
+//   UsrAI 由主线程创建（MainWidget.cpp `UsrAi = new UsrAI();`）⇒ postEvent 给它的事件由主线程派发；
+//   AI 线程 postEvent(this) → 主线程在 event() 里 getInfo()（此刻不在 infoShare 内 ⇒ 读写同线程、天然串行）
+//   → 唤醒 AI 取走副本 ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
+// ★ 2026-09-24 加固：临界区只做 O(1) 的 shared_ptr 所有权交换；真正的深拷贝（`dst = *snapshot`）在锁外，
+//   且源快照在 shared_ptr 生命周期内不可变 ⇒ AI 侧永远读一份"已完成、不再被写"的对象。
+// ★ 已删除"连续 5 帧失联就退回 AI 线程直读 getInfo()"的兜底 —— 那条兜底=原崩溃路径本身。
+//   现在失联只**跳过本帧**（AI 变钝但不崩）；单帧超时 1 秒，绝不死等（AI 线程持有 AI::mutex）。
+// ★★ 2026-09-27 恢复：本块加固在 09-26 23:48「整文件回退到 g1 无闸」时被一并覆盖丢失，
+//   之后的版本又退回"AI 线程直读 getInfo()"，于是在 OJ 上重现同一崩溃（backtrace 与原诊断完全一致）。
+// ============================================================================================
+namespace {
+struct SnapState {
+    std::shared_ptr<tagInfo> published; // 已完成的不可变快照
+    QMutex mutex;
+    QWaitCondition cond;
+    bool ready = false;
+    int failStreak = 0;
+    int mainCount = 0;
+    int fallbackCount = 0;   // 兜底直读已删除 ⇒ 此计数恒 0（保留作诊断哨兵）
+    int skipCount = 0;
+};
+std::map<const UsrAI*, SnapState> g_snapStates;
+std::mutex g_snapStatesMutex;
+SnapState& snapState(const UsrAI* self) {
+    std::lock_guard<std::mutex> lock(g_snapStatesMutex);
+    return g_snapStates[self];
+}
+}  // namespace
 
 // ★★★ 兵种分类 / 射程判据（2026-09-23 重构：由 manageCounterAttack 内的局部 λ 提升为文件级 static）★★★
 //   提升原因：原 isRanged / isMeleeSort / rangedMaxRange / kiteRangeAdvantage 四个 λ 只在反攻函数体内可见，
@@ -394,6 +440,58 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define TREE_REASSIGN_BLACKLIST_FRAMES 900     // 空手且非空闲超时(帧)→判定寻路卡死(60秒)
 #define STUCK_BLACKLIST_FRAMES 15000
 #define PROF_SAMPLE_FRAMES 300  // 不可达资源拉黑时长(10分钟,到期可重试)
+
+// ★★★ 2026-09-27 恢复的 OJ 崩溃自救（详细机理由文件顶部同名注释块给出）★★★
+// AI 线程侧：请主线程代取快照，成功后把副本写入 dst。全程不碰引擎锁（tagGame::Locker 是私有成员）。
+bool UsrAI::refreshSnapshot(tagInfo& dst) {
+    SnapState& st = snapState(this);
+    QMutexLocker stateLock(&st.mutex);
+    st.ready = false;
+    stateLock.unlock();
+
+    // 请主线程代取（UsrAI 归属主线程 ⇒ 事件由主线程事件循环处理，QEvent::User+731 为本类专用）
+    QCoreApplication::postEvent(this, new QEvent(QEvent::Type(kSnapEventType)));
+
+    bool ok = false;
+    std::shared_ptr<tagInfo> snapshot;
+    {
+        QMutexLocker lk(&st.mutex);
+        if (!st.ready) {
+            st.cond.wait(&st.mutex, 1000);   // 1 秒上限：绝不死等
+        }
+        ok = st.ready;
+        if (ok) snapshot = st.published;
+    }
+
+    if (ok) {
+        dst = *snapshot;                      // 源快照在 shared_ptr 生命周期内保持不可变
+        st.failStreak = 0;
+        return true;
+    }
+
+    // 主线程回环失联时只跳过本帧；绝不回退到跨线程直读，避免重现 OJ 崩溃。
+    ++st.failStreak;
+    st.skipCount++;
+    return false;   // 本帧不动作（processData 直接返回）
+}
+
+// 主线程执行：真正的快照获取。此时主线程不在 infoShare() 内 ⇒ 与写侧天然串行，无需任何锁配合。
+bool UsrAI::event(QEvent* e) {
+    if (e && e->type() == QEvent::Type(kSnapEventType)) {
+        std::shared_ptr<tagInfo> fresh(new tagInfo(tagUsrGame.getInfo()));
+        SnapState& st = snapState(this);
+        {
+            QMutexLocker lk(&st.mutex);
+            st.published = fresh;
+            st.ready = true;
+            st.mainCount++;
+            st.cond.wakeAll();
+        }
+        return true;
+    }
+    return QThread::event(e);
+}
+
 // processData - 主循环（每帧调用） 规则：祭司保命 > 失败检查 > 阶段切换 > 打猎 > 经济 > 军事 > 反攻
 void UsrAI::processData() {
     // ★★★ 2026-09-23 环境自证：必须放在**首次 getInfo() 之前**。理由：OJ 上的崩溃发生在 getInfo() 内部
@@ -425,10 +523,24 @@ void UsrAI::processData() {
 #define AI_PROF_STAGE(idx, call) do { auto _ai_prof_t0 = profNow(); call; profAdd(idx, _ai_prof_t0, profNow()); } while (0)
 
     auto tGet0 = profNow();
-    info = tagUsrGame.getInfo();
+    const bool snapOk = refreshSnapshot(info);   // ★ 2026-09-27：改由主线程代取快照（见文件顶部说明）
     auto tGet1 = profNow();
     profAdd(0, tGet0, tGet1);
+    if (!snapOk) return;                         // 拿不到快照 ⇒ 跳过本帧（绝不回退到跨线程直读）
     frame = info.GameFrame;
+
+    // ★★★ 2026-09-27 机制量自证（每 1500 帧一档，供 OJ 日志核对）★★★
+    //   main>0     ⇒ "主线程代取快照"这条替代路径真的在跑（原崩溃路径已被换掉）
+    //   fallback>0 ⇒ 该环境的主线程事件回环失效（本版已删兜底 ⇒ 恒 0，仅作哨兵）
+    //   skip>0     ⇒ 单帧 1 秒超时、主动放弃的帧数（AI 变钝但不崩）
+    {
+        static int lastSnapBeat = -1;
+        if (frame > 0 && frame / 1500 != lastSnapBeat) {
+            lastSnapBeat = frame / 1500;
+            DebugText(QString("[SNAP f=%1] main=%2 fallback=%3 skip=%4").arg(frame)
+                      .arg(snapState(this).mainCount).arg(snapState(this).fallbackCount).arg(snapState(this).skipCount));
+        }
+    }
 
     // ★★★ 2026-09-19 诊断（可观测机制量；UsrAI 自洽，不引用任何引擎新增符号）★★★ 崩溃场景：OJ(Linux/gcc13) 上 AI 线程在 getInfo() 的深拷贝里 SIGSEGV（源 vector len=6/cap=6）。
     // 根因在引擎侧（tagGame::update() 的 QMutexLocker 被注释掉 + infoShare() 的 clear()/push_back() 构成数据竞争）

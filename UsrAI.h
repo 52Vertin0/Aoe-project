@@ -2,6 +2,7 @@
 #define USRAI_H
 
 #include "ai.h"
+#include <QEvent>      // ★ 2026-09-27 OJ 崩溃自救：主线程代取快照需要 QEvent::User（机理见 UsrAI.cpp）
 #include <set>
 #include <map>
 #include <vector>
@@ -67,9 +68,27 @@ private:
     bool isBlockedByResources(int blockDR, int blockUR, int size,
                               const std::vector<tagResource>& resources) const;
     int countBuildings(int type, bool includePending, bool includeDead,
-                       bool countUnderConstruction);
+bool countUnderConstruction);
 
-    int AddToIns(instruction ins) override {
+// ==================== ★★★ 2026-09-23 OJ SIGSEGV 自救：快照改由"主线程"代取 ★★★ ====================
+// 原实现是**在 AI 线程里直读引擎缓冲区**（tagUsrGame.getInfo()），与主线程 Core::infoShare() 的
+//   clear()/push_back() 释放-重分配竞争 ⇒ OJ(Linux/gcc13) 上 SIGSEGV。backtrace 关键三帧：
+//   UsrAI::processData → tagInfo::operator= (GlobalVariate.cpp) → vector<tagBuilding>::operator=
+//   (源 vector len=6 / cap=6) → __memcpy_avx_unaligned_erms → SIGSEGV。
+// 引擎侧根治 = 恢复 tagGame::update() 内被注释掉的 QMutexLocker（待评测机版本）；UsrAI 侧碰不到
+//   tagGame::Locker（私有成员），改用 tryLock()+getInfo() 会因非递归 QMutex 同线程二次加锁自锁死
+//   （实测整局冻在 frame 1）⇒ 站内靠加锁自救不可行。
+// 本修法：不改引擎、不碰锁，只换"深拷贝发生在哪个线程"——
+//   UsrAI 对象由主线程创建（MainWidget.cpp）⇒ postEvent 给它的事件由主线程事件循环派发；
+//   AI 线程 postEvent(this) → 主线程在 event() 里 getInfo()（此刻不在 infoShare 内 ⇒ 读写同线程、
+//   天然串行）→ 唤醒 AI 取走副本 ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
+// ★ 2026-09-27 恢复：该加固在 09-26 23:48「整文件回退到 g1 无闸」时被一并覆盖丢失，
+//   之后的版本又退回"AI 线程直读 getInfo()"，于是在 OJ 上重现同一崩溃（本次 backtrace 完全一致）。
+enum { kSnapEventType = QEvent::User + 731 };
+bool refreshSnapshot(tagInfo& dst);   // AI 线程：postEvent 请主线程代取快照，成功后写入 dst
+bool event(QEvent* e) override;       // 主线程执行：真正执行 tagUsrGame.getInfo()
+
+int AddToIns(instruction ins) override {
         UsrIns.lock.lock();
         ins.id = UsrIns.g_id;
         UsrIns.g_id++;
