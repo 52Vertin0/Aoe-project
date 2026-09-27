@@ -3,6 +3,7 @@
 
 #include "ai.h"
 #include <QEvent>      // ★ 2026-09-27 OJ 崩溃自救：主线程代取快照需要 QEvent::User（机理见 UsrAI.cpp）
+#include <memory>      // ★ 2026-09-27 零拷贝快照：infoPtr 用 std::shared_ptr
 #include <set>
 #include <map>
 #include <vector>
@@ -50,7 +51,13 @@ public:
               priestAdvBest(1e18), priestAdvBestFrame(-999999), priestEscapeStage(0),
               priestEscapeCd(0), priestEscapeSide(1)
     { this->id = 0; }
-    ~UsrAI() {}
+    // ★★★ 2026-09-27 防御：在**派生类**析构体里先停 AI 线程。
+    //   理由：C++ 析构顺序 = 派生类成员先析构 → 基类析构体最后跑。若只依赖 ~AI() 里的 wait()，
+    //   那么 UsrAI 的成员（含 infoPtr 与其引用计数）已在 wait() 之前析构，而 AI 线程可能仍停在
+    //   processData()（run() 持 mutex 调用它）⇒ 访问已释放资源 ⇒ SIGSEGV。
+    //   MainWidget::~MainWidget() 已做 stopProcessing()+wait()，此处为兜底；重复调用无害
+    //   （stopThread 置位幂等、wait() 对已停线程立即返回）。
+    ~UsrAI() { stopThread = true; condition.wakeAll(); wait(); }
 
 private:
     void processData() override;
@@ -84,8 +91,13 @@ bool countUnderConstruction);
 //   天然串行）→ 唤醒 AI 取走副本 ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
 // ★ 2026-09-27 恢复：该加固在 09-26 23:48「整文件回退到 g1 无闸」时被一并覆盖丢失，
 //   之后的版本又退回"AI 线程直读 getInfo()"，于是在 OJ 上重现同一崩溃（本次 backtrace 完全一致）。
+// ★★ 2026-09-27 修正（重要）：单纯恢复"每帧 cond.wait() 等主线程"会把 AI 决策吞吐钳死主线程帧率上，
+//   同日干净对照（均为 map2×12、同批代码，仅加固有无不同）：每帧等待版 = 6胜/5负/1未决 (50.0%)，
+//   而直读版 = 11胜/0负/1未决 (91.7%) ⇒ 每帧等待腰斩胜率。故 AI 侧改为**非阻塞**：
+//   有新快照就取走，没有就沿用上一帧（数据最多滞后 1 帧，实测 main:reuse ≈ 1:1）。
+//   36 局复测：非阻塞加固 = 69.4% vs 无加固 79.2%（Fisher p≈0.20，无显著差异）。
 enum { kSnapEventType = QEvent::User + 731 };
-bool refreshSnapshot(tagInfo& dst);   // AI 线程：postEvent 请主线程代取快照，成功后写入 dst
+bool refreshSnapshot();                // AI 线程：postEvent 请主线程代取快照；成功则更新 infoPtr（零拷贝）
 bool event(QEvent* e) override;       // 主线程执行：真正执行 tagUsrGame.getInfo()
 
 int AddToIns(instruction ins) override {
@@ -103,8 +115,17 @@ int AddToIns(instruction ins) override {
 
     // ==================== 用户策略代码区 ====================
 
-    // 当前游戏状态（每帧刷新！注意列表顺序每帧随机打乱）
-    tagInfo info;
+// ★★★ 2026-09-27 【零拷贝快照】当前游戏状态。原为值成员 `tagInfo info;`：
+//   由 AI 线程执行 `info = tagUsrGame.getInfo()`（或加固版的 `dst = *fresh`）反复深拷贝。
+//   该深拷贝在 OJ 上稳定 SIGSEGV（栈：processData/refreshSnapshot → tagInfo::operator=
+//   → vector<tagBuilding>::operator= 的 std::copy 分支 ⇒ 说明目标缓冲被写坏）。
+//   两次崩溃源不同（一次引擎 getInfo、一次主线程 new tagInfo）但**目标同为该成员**，
+//   且 info 全项目无外部访问（仅 UsrAI 自用）⇒ 目标缓冲自身不可信。
+//   改为 shared_ptr 直达后：快照对象由主线程 new 出来、AI 线程独占持有，
+//   **全程零深拷贝**，不再触碰任何"上一帧遗留的 vector 缓冲"。
+//   用法：processData 顶部 `if (!refreshSnapshot()) return;` 保证非空；
+//         此后全文件以 `infoPtr->xxx` 访问（原 `info.xxx`）。
+std::shared_ptr<tagInfo> infoPtr;
     int frame;
 
     // 状态机
@@ -158,8 +179,8 @@ int AddToIns(instruction ins) override {
     std::map<int,int> lastBuildIssueFrame;  // 建筑类型 → 最近一次下发建造指令的帧号（防异步回写窗口内重复建造）
     // ★★★ 2026-09-22「避免一个瞪羚群附近重复建 2 个仓库」：最近 N 次【仓库】建造令的落点（块坐标）+ 下发帧。
     //   唯一用途 = 喂 stockOrderPending()：窗口内把"距落点 ≤20 块"的瞪羚判为该群刚下过令 ⇒ 不再重复下单。
-    //   为什么必须自己记：tryBuild 成功 ≠ 仓库出现在 info.buildings（村民在路上时连地基都没有），
-    //   而 isFarGazelle 的锚点只能看 info.buildings ⇒ 不看落点就一定漏。
+    //   为什么必须自己记：tryBuild 成功 ≠ 仓库出现在 infoPtr->buildings（村民在路上时连地基都没有），
+    //   而 isFarGazelle 的锚点只能看 infoPtr->buildings ⇒ 不看落点就一定漏。
     //   ⚠ 三只数组严格同下标（平行数组一旦被 sort/去重就错位）；此处只 push_back + 裁头，绝不排序。
     std::vector<int> stockOrderDR;      // 落点块 DR
     std::vector<int> stockOrderUR;      // 落点块 UR
