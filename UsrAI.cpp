@@ -3047,6 +3047,15 @@ void UsrAI::assignIdleSimple() {
         for (auto &f : info.farmers) {
             if (f.FarmerSort != FARMERTYPE_FARMER) continue;
             if (f.NowState != HUMAN_STATE_WORKING && f.NowState != HUMAN_STATE_WALKING) continue;
+            // ★★★ 2026-09-27 修复「房子建不成 → 人口卡顶 → 造不出兵」(map2 n201 等 7 局 UND, Mil 仅 7~14)：
+            //   建造登记中的村民禁止被抢去采金。根因：本循环过滤允许 WALKING(正走去工地)，
+            //   而 isFood 用 f.WorkObjectSN 判定，引擎会把 WorkObjectSN 长期保留为"上次目标" ⇒
+            //   刚被派去建造的村民仍带着旧的食物目标 ⇒ 被判成食物工抢走；被抢后 manageBuildings 里
+            //   既非 working(目标已变金矿)又非 IDLE(是 WORKING 采集) ⇒ 该分支什么都不做，一直等到
+            //   BUILDER_HARD_TIMEOUT(1800) 硬超时作废 ⇒ 房子反复重建失败 ⇒ 人口上限上不去 ⇒ Mil 卡 7~14。
+            //   ⚠ 与其余 6 处（本函数猎象整队 / manageHunting / findIdleFarmer×2 / findAnyFarmer /
+            //   detectStuckGatherers）对齐（铁律 26）。
+            if (buildingFarmerType.count(f.SN)) continue;
 
             bool isFood = (f.ResourceSort == HUMAN_GRANARYFOOD || f.ResourceSort == HUMAN_STOCKFOOD);
             bool onFarm = false;
@@ -3084,6 +3093,9 @@ void UsrAI::assignIdleSimple() {
         for (auto &f : info.farmers) {
             if (f.FarmerSort != FARMERTYPE_FARMER) continue;
             if (f.NowState != HUMAN_STATE_WORKING && f.NowState != HUMAN_STATE_WALKING) continue;
+            // ★★★ 2026-09-27 同 GOLD-REBAL：建造登记中的村民不得被本「资源达上限回撤」块抢走
+            //   （同为"把人挪岗"路径，同样用 WALKING + WorkObjectSN 判定 ⇒ 同一形态缺口，铁律 26）。
+            if (buildingFarmerType.count(f.SN)) continue;
             bool isStone = (f.ResourceSort == HUMAN_STONE);
             bool isWood  = (f.ResourceSort == HUMAN_WOOD);
             bool isGold  = (f.ResourceSort == HUMAN_GOLD);
@@ -5690,10 +5702,13 @@ int UsrAI::countFarmersOnTarget(int sn) {
 }
 
 bool UsrAI::isPositionFree(int blockDR, int blockUR, int size) {
+    return isPositionFree(blockDR, blockUR, size, true);
+}
+
+bool UsrAI::isPositionFree(int blockDR, int blockUR, int size, bool checkReachability) {
     if (!inBounds(blockDR, blockUR, size)) return false;
     if (info.theMap == nullptr) return false;
 
-    // 地形检查：草地 + 高度一致
     int firstHeight = (*info.theMap)[blockDR][blockUR].height;
     for (int i = blockDR; i < blockDR + size; ++i) {
         for (int j = blockUR; j < blockUR + size; ++j) {
@@ -5704,16 +5719,10 @@ bool UsrAI::isPositionFree(int blockDR, int blockUR, int size) {
         }
     }
 
-    // ★ 建筑间距检查：候选 footprint 外扩 BUILD_GAP 格内不得与任何建筑相交(含边界)， 否则建筑会紧贴成墙、堵死村民/士兵的通行路线。外扩 1 格 = 建筑之间至少留 1 格通道。
     if (isBlockedByBuildings(blockDR, blockUR, size, info.buildings)) return false;
-
-    // 敌方建筑间距检查（已探索区域内的敌方建筑同样阻挡建造）
     if (isBlockedByBuildings(blockDR, blockUR, size, info.enemy_buildings)) return false;
-
-    // 资源重叠检查
     if (isBlockedByResources(blockDR, blockUR, size, info.resources)) return false;
 
-    // ★ 单位重叠检查（村民/士兵站在建造位置上也导致失败）★
     for (auto &f : info.farmers) {
         int fbDR = (int)(f.DR / (double)BLOCKSIDELENGTH);
         int fbUR = (int)(f.UR / (double)BLOCKSIDELENGTH);
@@ -5727,36 +5736,28 @@ bool UsrAI::isPositionFree(int blockDR, int blockUR, int size) {
             abUR >= blockUR && abUR < blockUR + size) return false;
     }
 
-    // ★ 可达性预检：地基旁须有路可走，否则村民永远走不到=卡死（选址被建筑围死）
-    if (!isSiteReachable(blockDR, blockUR, size)) return false;
-
+    if (checkReachability && !isSiteReachable(blockDR, blockUR, size)) return false;
     return true;
 }
 
-// 地基可达性预检：确保村民能走到地基旁（避免选址被建筑围死、村民永远走不到=卡死）。   做法：在 footprint 外扩 1 格的"接近环"上找空闲瓦片作多源起点，
-// 从这些起点向"可行走"瓦片做有界 BFS；若能走出足够远(连通分量够大=通到开阔地)即视为可达。 被建筑完全围死时连通分量很小 → 拒绝该点，迫使 tryBuild 另择新址（而非建在死胡同里卡死）。
 bool UsrAI::isSiteReachable(int blockDR, int blockUR, int size) {
-    if (info.theMap == nullptr) return true;   // 无地图数据则放行(不误杀)
+    if (info.theMap == nullptr) return true;
     if (blockDR < 0 || blockUR < 0 || blockDR + size > MAP_L || blockUR + size > MAP_U) return false;
 
     int firstHeight = (*info.theMap)[blockDR][blockUR].height;
 
-    // 某瓦片是否不可行走（被建筑/地形/悬崖阻挡）
     auto tileBlocked = [&](int i, int j) -> bool {
         if (i < 0 || j < 0 || i >= MAP_L || j >= MAP_U) return true;
         auto &t = (*info.theMap)[i][j];
         if (t.type != MAPPATTERN_GRASS) return true;
         if (t.height < 0) return true;
-        if (t.height != firstHeight) return true;   // 高度不一致=悬崖，不可越
-        // 地基本身也视为障碍：村民必须从外侧接近，不能"穿地基"逃出包围
+        if (t.height != firstHeight) return true;
         if (i >= blockDR && i < blockDR + size && j >= blockUR && j < blockUR + size) return true;
-        // 我方建筑（含未完工地基）
         for (auto &b : info.buildings) {
             int bs = buildingFootprintSize(b.Type);
             if (i >= b.BlockDR && i < b.BlockDR + bs &&
                 j >= b.BlockUR && j < b.BlockUR + bs) return true;
         }
-        // 敌方建筑（已探索区域内同样阻挡）
         for (auto &b : info.enemy_buildings) {
             int bs = buildingFootprintSize(b.Type);
             if (i >= b.BlockDR && i < b.BlockDR + bs &&
@@ -5765,19 +5766,17 @@ bool UsrAI::isSiteReachable(int blockDR, int blockUR, int size) {
         return false;
     };
 
-    // 起点：footprint 外扩 1 格接近环上、未被占用的瓦片（村民站这里即可施工）
     const int R = 1;
     std::vector<std::pair<int,int>> starts;
     for (int i = blockDR - R; i < blockDR + size + R; ++i)
         for (int j = blockUR - R; j < blockUR + size + R; ++j) {
             bool inFoot = (i >= blockDR && i < blockDR + size && j >= blockUR && j < blockUR + size);
-            if (inFoot) continue;           // 地基占用的瓦片不算接近点
+            if (inFoot) continue;
             if (tileBlocked(i, j)) continue;
             starts.push_back({i, j});
         }
-    if (starts.empty()) return false;      // 接近环全被建筑占 → 不可达
+    if (starts.empty()) return false;
 
-    // 多源 BFS，探索连通的可行走区域；连通分量够大即认为"通到开阔地"
     const int ESCAPE_N = 300;
     std::vector<std::pair<int,int>> q = starts;
     std::unordered_set<long long> vis;
@@ -5786,7 +5785,7 @@ bool UsrAI::isSiteReachable(int blockDR, int blockUR, int size) {
     const int dirs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
     while (head < (int)q.size()) {
         auto cur = q[head++]; ++visited;
-        if (visited >= ESCAPE_N) return true;   // 已逃出建筑包围 → 可达
+        if (visited >= ESCAPE_N) return true;
         for (int d = 0; d < 4; ++d) {
             int ni = cur.first + dirs[d][0], nj = cur.second + dirs[d][1];
             if (tileBlocked(ni, nj)) continue;
@@ -5795,12 +5794,9 @@ bool UsrAI::isSiteReachable(int blockDR, int blockUR, int size) {
             vis.insert(k); q.push_back({ni, nj});
         }
     }
-    // 连通分量很小：被建筑围死的死胡同 → 不可达
     return false;
 }
 
-// 建筑选址：偏向 TC→地图中心方向、离 TC 更远，避免挤在 TC 边角堵路。   minR/maxR = 距 TC 的最小/最大环半径(单位:block)；在 [minR,maxR] 范围内收集所有空闲点，
-// 按 score = 朝向中心方向的对齐度*100 + 距TC超出minR的距离 选最优——方向优先、其次更远。
 namespace {
 std::mutex g_buildPosMutex;
 std::map<const UsrAI*, std::map<int,int>> g_buildPosFrame;
