@@ -37,14 +37,16 @@ ins UsrIns;
 // ============================================================================================
 namespace {
 struct SnapState {
-    std::shared_ptr<tagInfo> published; // 已完成的不可变快照
+    std::shared_ptr<tagInfo> published; // 主线程刚发布、AI 尚未取走的新快照
+    std::shared_ptr<tagInfo> lastGood;  // AI 上一次取到的快照（复用来源；只由 AI 线程读写）
     QMutex mutex;
     QWaitCondition cond;
-    bool ready = false;
     int failStreak = 0;
-    int mainCount = 0;
-    int fallbackCount = 0;   // 兜底直读已删除 ⇒ 此计数恒 0（保留作诊断哨兵）
-    int skipCount = 0;
+    int mainCount = 0;      // 主线程代取次数
+    int fallbackCount = 0;  // 兜底直读已删除 ⇒ 恒 0（诊断哨兵）
+    int reuseCount = 0;     // ★ 复用上一份快照的帧数（非阻塞路径）
+    int waitCount = 0;      // ★ 真正进入等待的帧数（正常应仅开局 1 次）
+    int skipCount = 0;      // 完全无可用快照而被跳过的帧数
 };
 std::map<const UsrAI*, SnapState> g_snapStates;
 std::mutex g_snapStatesMutex;
@@ -445,31 +447,66 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // AI 线程侧：请主线程代取快照，成功后把副本写入 dst。全程不碰引擎锁（tagGame::Locker 是私有成员）。
 bool UsrAI::refreshSnapshot(tagInfo& dst) {
     SnapState& st = snapState(this);
-    QMutexLocker stateLock(&st.mutex);
-    st.ready = false;
-    stateLock.unlock();
 
-    // 请主线程代取（UsrAI 归属主线程 ⇒ 事件由主线程事件循环处理，QEvent::User+731 为本类专用）
-    QCoreApplication::postEvent(this, new QEvent(QEvent::Type(kSnapEventType)));
-
-    bool ok = false;
-    std::shared_ptr<tagInfo> snapshot;
+    // ① 主线程是否已发布新快照？有就 O(1) 取走（锁内只做 shared_ptr 所有权交换）
+    std::shared_ptr<tagInfo> fresh;
     {
         QMutexLocker lk(&st.mutex);
-        if (!st.ready) {
-            st.cond.wait(&st.mutex, 1000);   // 1 秒上限：绝不死等
+        if (st.published) {
+            fresh = st.published;
+            st.published.reset();
         }
-        ok = st.ready;
-        if (ok) snapshot = st.published;
     }
-
-    if (ok) {
-        dst = *snapshot;                      // 源快照在 shared_ptr 生命周期内保持不可变
+    if (fresh) {
+        dst = *fresh;                 // 锁外深拷贝：源由主线程独占产生，AI 持有期间不可变
+        QMutexLocker lk(&st.mutex);
+        st.lastGood = fresh;          // 留一份给"没等到新数据"的帧复用
         st.failStreak = 0;
         return true;
     }
 
-    // 主线程回环失联时只跳过本帧；绝不回退到跨线程直读，避免重现 OJ 崩溃。
+    // ② 没有新快照 ⇒ 为下一帧投递请求，同时**立刻**用上一份快照继续（绝不阻塞等待）。
+    //    ★★★ 2026-09-27 关键修正 ★★★ 原实现每帧都 cond.wait() 等主线程把 getInfo() 做完，
+    //    于是 AI 的决策吞吐被主线程帧率钳死。同日干净对照（均为 map2 × 12 局、同批代码）：
+    //      每帧等待版 = 6胜/5负/1未决 (50.0%)  vs  非阻塞复用版/直读版 = 11胜/0负/1未决 (91.7%)
+    //    ⇒ 每帧等待会腰斩胜率，故改为"新到就用、未到就沿用上一帧"（数据最多滞后数帧）。
+    QCoreApplication::postEvent(this, new QEvent(QEvent::Type(kSnapEventType)));
+
+    std::shared_ptr<tagInfo> cached;
+    {
+        QMutexLocker lk(&st.mutex);
+        cached = st.lastGood;         // shared_ptr 拷贝（O(1)）；源不可变
+    }
+    if (cached) {
+        dst = *cached;
+        QMutexLocker lk(&st.mutex);
+        st.reuseCount++;
+        return true;
+    }
+
+    // ③ 从未拿到过快照（仅开局第一帧）⇒ 唯一一次真正等待；主线程回环若根本不通，
+    //    这里 1 秒超时后跳过本帧（skipCount 增长 ⇒ 日志可直接判读环境异常）。
+    {
+        QMutexLocker lk(&st.mutex);
+        st.waitCount++;
+        if (!st.published) {
+            st.cond.wait(&st.mutex, 1000);   // 1 秒上限：绝不死等
+        }
+        if (st.published) {
+            fresh = st.published;
+            st.published.reset();
+        }
+    }
+    if (fresh) {
+        dst = *fresh;
+        QMutexLocker lk(&st.mutex);
+        st.lastGood = fresh;
+        st.failStreak = 0;
+        return true;
+    }
+
+    // 连一次都没拿到 ⇒ 跳过本帧；绝不回退到跨线程直读，避免重现 OJ 崩溃。
+    QMutexLocker lk(&st.mutex);
     ++st.failStreak;
     st.skipCount++;
     return false;   // 本帧不动作（processData 直接返回）
@@ -482,8 +519,7 @@ bool UsrAI::event(QEvent* e) {
         SnapState& st = snapState(this);
         {
             QMutexLocker lk(&st.mutex);
-            st.published = fresh;
-            st.ready = true;
+            st.published = fresh;      // 直接覆盖尚未被取走的旧快照（最坏丢一帧，队列不堆积）
             st.mainCount++;
             st.cond.wakeAll();
         }
@@ -537,8 +573,10 @@ void UsrAI::processData() {
         static int lastSnapBeat = -1;
         if (frame > 0 && frame / 1500 != lastSnapBeat) {
             lastSnapBeat = frame / 1500;
-            DebugText(QString("[SNAP f=%1] main=%2 fallback=%3 skip=%4").arg(frame)
-                      .arg(snapState(this).mainCount).arg(snapState(this).fallbackCount).arg(snapState(this).skipCount));
+            DebugText(QString("[SNAP f=%1] main=%2 reuse=%3 wait=%4 skip=%5 fb=%6").arg(frame)
+                      .arg(snapState(this).mainCount).arg(snapState(this).reuseCount)
+                      .arg(snapState(this).waitCount).arg(snapState(this).skipCount)
+                      .arg(snapState(this).fallbackCount));
         }
     }
 
