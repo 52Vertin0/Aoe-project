@@ -6228,6 +6228,19 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
         trySum[idx] += ms;
         if (ms > tryMax[idx]) tryMax[idx] = ms;
     };
+    auto tryFlush = [&]() {
+        ++trySamples;
+        if (trySamples >= PROF_SAMPLE_FRAMES) {
+            const double n = (double)trySamples;
+            DebugText(QString("[PROF-TRY f=%1 n=%2 farmer=%3/%4 site=%5/%6 issue=%7/%8")
+                      .arg(frame).arg(trySamples)
+                      .arg(trySum[0]/n, 0, 'f', 3).arg(tryMax[0], 0, 'f', 3)
+                      .arg(trySum[1]/n, 0, 'f', 3).arg(tryMax[1], 0, 'f', 3)
+                      .arg(trySum[2]/n, 0, 'f', 3).arg(tryMax[2], 0, 'f', 3));
+            for (int i = 0; i < 3; ++i) { trySum[i] = 0.0; tryMax[i] = 0.0; }
+            trySamples = 0;
+        }
+    };
     auto tryT0 = tryNow();
     if (buildCooldown > 0 && !ignoreCooldown) return false;
     // 农场硬上限：无论哪条建造路径，超过 MAX_FARMS 一律不再下发
@@ -6246,10 +6259,10 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
         f = findIdleFarmerNear((prefX + 1) * (double)BLOCKSIDELENGTH, (prefY + 1) * (double)BLOCKSIDELENGTH);
     if (!f) f = findIdleFarmer();
     if (!f) f = findAnyFarmer();
-    if (!f) return false;
 
     double tryFarmerMs = tryDiff(tryT0, tryNow());
     tryAdd(0, tryFarmerMs);
+    if (!f) { tryFlush(); return false; }
     auto tryTSite = tryNow();
     int x, y;
     bool placed = false;
@@ -6263,7 +6276,17 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
             if (isPositionFree(nx, ny, size)) { x = nx; y = ny; placed = true; break; }
         }
         // ★ 指定坐标却无处可放 + 调用方要求不回退 → 直接失败（避免建到与意图无关的位置）
-        if (!placed && noFallback) return false;
+        if (!placed && noFallback) {
+            double trySiteMs = tryDiff(tryTSite, tryNow());
+            tryAdd(1, trySiteMs);
+            if (trySiteMs > 20.0)
+                DebugText(QString("[PROF-TRY-SLOW f=%1 type=%2 size=%3 farmer=%4 site=%5 pref=%6,%7 noFallback]")
+                          .arg(frame).arg(buildingType).arg(size)
+                          .arg(tryFarmerMs, 0, 'f', 3).arg(trySiteMs, 0, 'f', 3)
+                          .arg(prefX).arg(prefY));
+            tryFlush();
+            return false;
+        }
     }
     // 谷仓：优先建在浆果密集处（未指定目标时）
     if (!placed && buildingType == BUILDING_GRANARY)
@@ -6313,6 +6336,7 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
             DebugText(QString("[PROF-TRY-SLOW f=%1 type=%2 size=%3 farmer=%4 site=%5]")
                       .arg(frame).arg(buildingType).arg(size)
                       .arg(tryFarmerMs, 0, 'f', 3).arg(trySiteMs, 0, 'f', 3));
+        tryFlush();
         return false;
     }
 
@@ -6345,17 +6369,7 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     // ★ 2026-09-13 建造下令观测：记录每次 HumanBuild 的类型/村位/坐标， 用于对照"地基何时放下 / 何时完工"，定位长期卡住的地基。
     double tryIssueMs = tryDiff(tryTIssue, tryNow());
     tryAdd(2, tryIssueMs);
-    ++trySamples;
-    if (trySamples >= PROF_SAMPLE_FRAMES) {
-        const double n = (double)trySamples;
-        DebugText(QString("[PROF-TRY f=%1 n=%2 farmer=%3/%4 site=%5/%6 issue=%7/%8")
-                  .arg(frame).arg(trySamples)
-                  .arg(trySum[0]/n, 0, 'f', 3).arg(tryMax[0], 0, 'f', 3)
-                  .arg(trySum[1]/n, 0, 'f', 3).arg(tryMax[1], 0, 'f', 3)
-                  .arg(trySum[2]/n, 0, 'f', 3).arg(tryMax[2], 0, 'f', 3));
-        for (int i = 0; i < 3; ++i) { trySum[i] = 0.0; tryMax[i] = 0.0; }
-        trySamples = 0;
-    }
+    tryFlush();
     if (trySiteMs > 20.0)
         DebugText(QString("[PROF-TRY-SLOW f=%1 type=%2 size=%3 farmer=%4 site=%5 issue=%6]")
                   .arg(frame).arg(buildingType).arg(size)
