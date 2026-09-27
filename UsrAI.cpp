@@ -226,7 +226,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 目标三级：① 敌方 TC > ② 最近的【软目标】敌建筑 (非箭塔/非武器厂) > ③ 最近的【箭塔】（本图敌方无 TC，靠 ③ 才可达）； 全部不可见 → 行军到 enemyBaseScouted 记忆方位；仍无则不动。
 // ⚠ 绝不把武器厂当目标：exam 胜条件唯一 = 祭司感化敌方武器厂，农民拆了它 = 自毁胜因（同 ARMY_IGNORE_SIEGE_WORKSHOP）。
 // ⚠ 与 COUNTER_ATTACK_FORCE_TIME(33000/22分) 配合：22 分军队强制反攻，27 分农民跟上。 ⚠ 不排除 buildingFarmerType 里的农民（用户要求"所有"）⇒ 未完工建筑会烂尾。
-#define COUNTER_FARMER_ATTACK false  // 2026-09-27 用户需求：取消农民总攻（不用处理打敌农民）——农民留在后方采集，不投入进攻
+#define COUNTER_FARMER_ATTACK true
 #define COUNTER_FARMER_ATTACK_FRAME 40500   // 27 分钟 × 1500 帧/分钟
 #define COUNTER_FARMER_ATTACK_GAP 90        // 同一农民的重复下发节流(帧)：防幂等判据失效时刷屏，
                                             // 重发会 reset 引擎攻击关系并打断动作(铁律 14)
@@ -725,8 +725,7 @@ void UsrAI::managePriest() {
         if (ownOccupied(x, y)) return true;
         for (auto &e : info.enemy_armies)
             if (calDistance(x, y, e.DR, e.UR) < 4.0 * BL) return true;
-        for (auto &e : info.enemy_farmers)
-            if (calDistance(x, y, e.DR, e.UR) < 4.0 * BL) return true;
+        // ★ 2026-09-27 用户需求「祭司不用管敌方农民」⇒ 原「敌农民 4 格内视为落点被占」已删。
         return false;
     };
 
@@ -738,8 +737,7 @@ void UsrAI::managePriest() {
             if (calDistance(x, y, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL) < 2.5 * BL) return false;
         for (auto &e : info.enemy_armies)
             if (calDistance(x, y, e.DR, e.UR) < 2.0 * BL) return false;
-        for (auto &e : info.enemy_farmers)
-            if (calDistance(x, y, e.DR, e.UR) < 2.0 * BL) return false;
+        // ★ 2026-09-27 用户需求「祭司不用管敌方农民」⇒ 原「敌农民 2 格内治疗落点不可用」已删。
         return true;
     };
 
@@ -783,8 +781,7 @@ void UsrAI::managePriest() {
             double clear = 1e12;
             for (auto &e : info.enemy_armies)
                 clear = std::min(clear, calDistance(cx, cy, e.DR, e.UR));
-            for (auto &e : info.enemy_farmers)
-                clear = std::min(clear, calDistance(cx, cy, e.DR, e.UR));
+            // ★ 2026-09-27 用户需求「祭司不用管敌方农民」⇒ 原「再把敌农民计入落点空旷度」已删。
             if (clear > bestClear) { bestClear = clear; bestO = o; }
         }
         if (!allowFallback) return false;
@@ -827,14 +824,9 @@ void UsrAI::managePriest() {
         if ((t = pickByBlood(1)) >= 0) return t;   // 1) 其余近战（保命）
         if ((t = pickByBlood(2)) >= 0) return t;   // 2) 远程军队
         if ((t = pickByBlood(3)) >= 0) return t;   // 3) 投石车降为第四
-        // 兜底：无敌方军队时，最近敌方村民（保留原行为）
-        int bestVilSN = -1; double bestVilDist = 1e12;
-        for (auto &e : info.enemy_farmers) {
-            double d = calDistance(dr, ur, e.DR, e.UR);
-            if (d > range) continue;
-            if (d < bestVilDist) { bestVilDist = d; bestVilSN = e.SN; }
-        }
-        return bestVilSN;
+        // ★ 2026-09-27 用户需求「祭司不用管敌方农民」⇒ 删除原兜底档「无敌方军队时，最近敌方村民」。
+        //   原档会把参战度为零的敌方农民当感化目标，白白占掉祭司的一次感化窗口（反攻期尤为浪费）。
+        return -1;
     };
 
     // ★ 朝敌靠近进入感化范围；落点做可达预检+侧向偏移重试，避免落在建筑/单位上被引擎拒收
@@ -851,7 +843,8 @@ void UsrAI::managePriest() {
         for (auto &e : info.enemy_armies) {
             chkThreat(e.DR, e.UR, enemyThreatRange(e.Sort));
         }
-        for (auto &e : info.enemy_farmers) chkThreat(e.DR, e.UR, 1.0 * BL);
+        // ★ 2026-09-27 用户需求「祭司不用管敌方农民」⇒ 敌农民不再计入祭司的威胁扫描(chkThreat)。
+        //   原行为把不参战的敌农民当威胁源 ⇒ 会把 threatDist 拉低 ⇒ 误导逃跑/治疗判据。
         for (auto &b : info.enemy_buildings)
             if (b.Type == BUILDING_ARROWTOWER) chkThreat((b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL, 12.0 * BL);
     }
@@ -895,10 +888,7 @@ void UsrAI::managePriest() {
             double r = enemyThreatRange(e.Sort);
             if (d <= r + 4.0 * BL) pushThreat(e.DR, e.UR, r);   // 含提前量4格,进射程前就起步
         }
-        for (auto &e : info.enemy_farmers) {
-            double d = calDistance(pDR, pUR, e.DR, e.UR);
-            if (d <= 2.0 * BL) pushThreat(e.DR, e.UR, 1.0 * BL);  // 村民不攻击,仅避免贴脸
-        }
+        // ★ 2026-09-27 用户需求「祭司不用管敌方农民」⇒ 原「敌农民 2 格内作推力(仅避免贴脸)」已删。
         for (auto &b : info.enemy_buildings)
             if (b.Type == BUILDING_ARROWTOWER) {
                 double bx = (b.BlockDR + 1) * BL, by = (b.BlockUR + 1) * BL;
@@ -1058,10 +1048,8 @@ void UsrAI::managePriest() {
 
     // ★ 统一生存/感化决策（迟滞锁 priestMode + 威胁感知，根治往返走 / 走进敌人射程被消耗）
     {
-        double nearestE = 1e12;
+        double nearestE = 1e12;   // ★ 2026-09-27：口径 = 敌方【军事单位 + 箭塔】，**不含敌农民**（用户：祭司不用管敌方农民）
         for (auto &e : info.enemy_armies)
-            nearestE = std::min(nearestE, calDistance(pDR, pUR, e.DR, e.UR));
-        for (auto &e : info.enemy_farmers)
             nearestE = std::min(nearestE, calDistance(pDR, pUR, e.DR, e.UR));
         for (auto &b : info.enemy_buildings)
             if (b.Type == BUILDING_ARROWTOWER)
@@ -1087,8 +1075,7 @@ void UsrAI::managePriest() {
             if (nearestE >= 1e11) return;
             for (auto &e : info.enemy_armies)
                 if (calDistance(pDR, pUR, e.DR, e.UR) <= nearestE + 0.01) { ox = e.DR; oy = e.UR; return; }
-            for (auto &e : info.enemy_farmers)
-                if (calDistance(pDR, pUR, e.DR, e.UR) <= nearestE + 0.01) { ox = e.DR; oy = e.UR; return; }
+            // ★ 2026-09-27：原「再查敌农民」已删（nearestE 不再含敌农民，用户：祭司不用管敌方农民）
         };
         // 感化检测(无安全门槛)：冷却好+视野内有可感化敌(≤28格=PRIEST_CONVERT_RANGE)即可，直接感化/靠近感化。⚠ 旧注释写"≤20格"与常量不符，09-24 已订正。   ★ 用户要求"不用安全感化，能感化直接感化"：感化绝对优先，不再要求逃出敌射程、
         // 不再看血量——冷却好了就转(贴身敌≤3时转走攻击者本身往往就是最好的保命)。
@@ -1103,8 +1090,7 @@ void UsrAI::managePriest() {
         if (safeConv >= 0) {
             convSN = safeConv;
             for (auto &e : info.enemy_armies) if (e.SN == convSN) { convDR = e.DR; convUR = e.UR; break; }
-            if (convDR == 0 && convUR == 0)
-                for (auto &e : info.enemy_farmers) if (e.SN == convSN) { convDR = e.DR; convUR = e.UR; break; }
+            // ★ 2026-09-27：原「坐标回填补查敌农民」已删——findConvertTarget 不再返回敌农民 SN（用户：祭司不用管敌方农民）。
         }
         if (convSN >= 0) {
             // ★ 节流闸(本次bug根因)：感化引导期间 ConvertCooldown 仍为0，若无此闸会每帧
