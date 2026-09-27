@@ -2,6 +2,7 @@
 #include <unordered_set>
 #include <map>
 #include <mutex>
+#include <chrono>
 
 tagGame tagUsrGame;
 ins UsrIns;
@@ -218,13 +219,13 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // ★ 探路先锋（2026-09-03 用户改需求）：不再造侦察骑兵，改派【感化的战车弓兵(优先,SPEED 4.07)或投石车(视野13)】
 // 去探路。未探明敌基地时，这些单位快速奔袭敌基地方向 → 探到 enemy_buildings → 点亮 enemyBaseScouted → 大部队直接全图寻路直达，省去逐格摸索。故侦察骑兵训练开关设 false。
 #define ENABLE_SCOUT_RECON false
-// ★★★ 2026-09-27 探路期【敌情闸】：探路途中祭司附近(≤此格)出现敌军 ⇒ 立即结束探路，交还 managePriest 逃/感化。
-//   根因(map2 实测 z202/z203)：结束探路的唯一触发是"开战/反攻"，而开战由时间闸 frame>=WAVE1_TIME(5000) 决定
-//   ⇒ 敌人在 5000 帧前截住探路中的祭司时，managePriestScout(走路途中不检测敌军) 与 managePriest(scoutPhase<20
-//   整段 return) 两头都不管，祭司在纯探路态挨打不动(死亡帧 3788/4165，全文件 0 条 `Priest st=`)。
-//   把"按时钟打开保命"改为"按敌情打开保命"——不新增任何对祭司行为的限制。口径与 managePriestScout 内
-//   「发现敌军→回TC」的 enemyDist 一致(12 格)，见铁律 21/26(同语义只写一遍)。
-#define SCOUT_BREAK_ENEMY_DIST 12.0
+// ★★★ 2026-09-27 探路半径（用户需求）：100 → 40 格，让祭司【压根不接触】敌主力，而不是"接触后再逃"。
+//   根因(map2 实测)：祭司探路 100 格直奔敌区，在距 TC 56 格处撞上敌 10 个单位；而祭司速度仅 ~0.5 格/秒
+//   vs 敌方 ~1.76 格/秒(3.5 倍) ⇒ 一旦接触，撤/折返/逃全部无效(n1 批 12 局全败、9 局早死 3007~3477)。
+//   缩短半径后祭司最远只到 TC 外 40 格，与 map2 敌主力(~56 格)留 16 格余量。
+//   ⚠ 代价：地图探索覆盖缩小，map3 上"发现敌基地"时机可能变晚 ⇒ 需一并回归验证。
+//   ⚠ 曾试过"遇敌即结束探路"(n1)：有害，见 processData 强推块注释。
+#define SCOUT_MAX_DIST 40.0
 // 人数不足时由强制反攻时间兜底；降低门槛会更早推进、提高门槛则更保守。
 #define COUNTER_ATTACK_MIN_ARMY 12   // ★ 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
@@ -377,7 +378,8 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define TREE_REASSIGN_WINDOW 600
 #define TREE_REASSIGN_MAX 5
 #define TREE_REASSIGN_BLACKLIST_FRAMES 900     // 空手且非空闲超时(帧)→判定寻路卡死(60秒)
-#define STUCK_BLACKLIST_FRAMES 15000  // 不可达资源拉黑时长(10分钟,到期可重试)
+#define STUCK_BLACKLIST_FRAMES 15000
+#define PROF_SAMPLE_FRAMES 300  // 不可达资源拉黑时长(10分钟,到期可重试)
 // processData - 主循环（每帧调用） 规则：祭司保命 > 失败检查 > 阶段切换 > 打猎 > 经济 > 军事 > 反攻
 void UsrAI::processData() {
     // ★★★ 2026-09-23 环境自证：必须放在**首次 getInfo() 之前**。理由：OJ 上的崩溃发生在 getInfo() 内部
@@ -396,7 +398,22 @@ void UsrAI::processData() {
         }
     }
 
+    typedef std::chrono::steady_clock ProfClock;
+    static double profSum[12] = {0.0};
+    static double profMax[12] = {0.0};
+    static int profSamples = 0;
+    auto profNow = []() { return ProfClock::now(); };
+    auto profAdd = [](int idx, ProfClock::time_point a, ProfClock::time_point b) {
+        double ms = std::chrono::duration<double, std::milli>(b - a).count();
+        profSum[idx] += ms;
+        if (ms > profMax[idx]) profMax[idx] = ms;
+    };
+#define AI_PROF_STAGE(idx, call) do { auto _ai_prof_t0 = profNow(); call; profAdd(idx, _ai_prof_t0, profNow()); } while (0)
+
+    auto tGet0 = profNow();
     info = tagUsrGame.getInfo();
+    auto tGet1 = profNow();
+    profAdd(0, tGet0, tGet1);
     frame = info.GameFrame;
 
     // ★★★ 2026-09-19 诊断（可观测机制量；UsrAI 自洽，不引用任何引擎新增符号）★★★ 崩溃场景：OJ(Linux/gcc13) 上 AI 线程在 getInfo() 的深拷贝里 SIGSEGV（源 vector len=6/cap=6）。
@@ -423,10 +440,10 @@ void UsrAI::processData() {
     }
 
     // 0. 处理上一帧建造指令结果：失败则释放建造者并换位置重试
-    handleBuildResults();
+    AI_PROF_STAGE(1, handleBuildResults());
 
     // 1. 失败检查（第一时间检查）
-    checkDefeat();
+    AI_PROF_STAGE(2, checkDefeat());
     if (state == VICTORY || state == DEFEAT) return;
 
     // 2. 初始化关键 SN
@@ -448,40 +465,23 @@ void UsrAI::processData() {
         return;
     }
 
-    // ---- 每帧更新祭司SN（防止祭司被重新编号）+ 记录其坐标（探路期敌情闸用，铁律 53：判据输入必须可打印） ----
-    double priestPosDR = 0.0, priestPosUR = 0.0;
-    bool priestPosOk = false;
+    // ---- 每帧更新祭司SN（防止祭司被重新编号） ----
     {
         bool found = false;
         for (auto &a : info.armies) {
-            if (a.Sort == AT_PRIEST) {
-                priestSN = a.SN;
-                priestPosDR = a.DR; priestPosUR = a.UR;
-                found = true; priestPosOk = true; break;
-            }
+            if (a.Sort == AT_PRIEST) { priestSN = a.SN; found = true; break; }
         }
         if (!found) priestSN = -1;
     }
 
     // ★ 战/反攻期间强制结束探路：探路模块只在 !isWar && state != COUNTERATTACK 时驱动祭司， 而 managePriest 又要求 scoutPhase>=20 才运行 → 开战时若探路未完，祭司两头都不管，
     // 被敌人贴脸也一动不动（表现为"敌人来了祭司也不跑"）。开战即结束探路，交还祭司管理保命。
-    // ★★★ 2026-09-27 第二个触发（探路期敌情闸）：结束探路不再只由"开战/反攻"决定 —— 祭司附近出现敌军也立即结束。
-    //   原唯一触发依赖 updateState 内的时间闸(5000帧)，敌人在 5000 帧前截住探路祭司时保命逻辑整段未开(见 SCOUT_BREAK_ENEMY_DIST 注释)。
+    // ⚠ 2026-09-27 曾试过在此加"祭司附近有敌即结束探路"的第二个触发(n1 批)：实测有害——
+    //   scoutPhase=20 的语义是交还 managePriest，而它感化优先于逃跑 ⇒ 祭司改为停下施法，9/12 局更早死(3007~3477 vs 无闸 3788/4165)。
+    //   故**已回退**，不再以"结束探路"作为遇敌应对（带闸版本留档 bak_20260927_scoutbreak_enemy_UsrAI.cpp）。
     {
         bool isWarNow = (state >= DEFENSE_WAVE1 && state <= DEFENSE_WAVE3);
-        bool scoutBreakByEnemy = false;
-        if (scoutPhase < 20 && !isWarNow && state != COUNTERATTACK && priestPosOk) {
-            for (auto &e : info.enemy_armies) {
-                if (e.Blood <= 0) continue;
-                if (calDistance(priestPosDR, priestPosUR, e.DR, e.UR) <= SCOUT_BREAK_ENEMY_DIST * (double)BLOCKSIDELENGTH) {
-                    scoutBreakByEnemy = true; break;
-                }
-            }
-        }
-        if ((isWarNow || state == COUNTERATTACK || scoutBreakByEnemy) && scoutPhase < 20) {
-            if (scoutBreakByEnemy)
-                DebugText(QString("[SCOUT-BREAK f=%1] 探路期祭司附近发现敌军(≤%2格)→结束探路,交还 managePriest 保命")
-                          .arg(frame).arg(SCOUT_BREAK_ENEMY_DIST, 0, 'f', 0));
+        if ((isWarNow || state == COUNTERATTACK) && scoutPhase < 20) {
             scoutPhase = 20;
             scoutReturnTry = 0;
             scoutWalkTimer = 0;
@@ -490,7 +490,7 @@ void UsrAI::processData() {
     }
 
     // 3. 祭司保命（最高优先级，每帧都要检查！）
-    managePriest();
+    AI_PROF_STAGE(3, managePriest());
 
     // 4. 递减冷却
     if (buildCooldown > 0) buildCooldown--;
@@ -498,30 +498,52 @@ void UsrAI::processData() {
     if (trainCooldown > 0) trainCooldown--;
 
     // 5. 阶段切换
-    updateState();
+    AI_PROF_STAGE(4, updateState());
 
-    manageCarriedResources();
+    AI_PROF_STAGE(5, manageCarriedResources());
 
     // 6. 打猎管理（必须在经济管理之前！否则空闲农民已被分配完）
-    manageHunting();
+    AI_PROF_STAGE(6, manageHunting());
 
 
     // 6.5 检测寻路卡死的采集村民（先拉黑不可达资源再分配，避免反复派去）
-    detectStuckGatherers();
+    AI_PROF_STAGE(7, detectStuckGatherers());
 
     // 7. 经济管理（始终运行）
-    manageEconomy();
+    AI_PROF_STAGE(8, manageEconomy());
 
     // 8. 军事管理（始终运行）
-    manageMilitary();
+    AI_PROF_STAGE(9, manageMilitary());
 
     // 9. 反攻
     if (state == COUNTERATTACK) {
-        manageCounterAttack();
+        AI_PROF_STAGE(10, manageCounterAttack());
     }
 
     // 10. 调试输出
-    doDebugOutput();
+    AI_PROF_STAGE(11, doDebugOutput());
+
+    ++profSamples;
+    if (profSamples >= PROF_SAMPLE_FRAMES) {
+        const double n = (double)profSamples;
+        DebugText(QString("[PROF f=%1 n=%2] get=%3/%4 build=%5/%6 def=%7/%8 priest=%9/%10 state=%11/%12 carry=%13/%14 hunt=%15/%16 stuck=%17/%18 eco=%19/%20 mil=%21/%22 ca=%23/%24 dbg=%25/%26")
+                  .arg(frame).arg(profSamples)
+                  .arg(profSum[0]/n, 0, 'f', 3).arg(profMax[0], 0, 'f', 3)
+                  .arg(profSum[1]/n, 0, 'f', 3).arg(profMax[1], 0, 'f', 3)
+                  .arg(profSum[2]/n, 0, 'f', 3).arg(profMax[2], 0, 'f', 3)
+                  .arg(profSum[3]/n, 0, 'f', 3).arg(profMax[3], 0, 'f', 3)
+                  .arg(profSum[4]/n, 0, 'f', 3).arg(profMax[4], 0, 'f', 3)
+                  .arg(profSum[5]/n, 0, 'f', 3).arg(profMax[5], 0, 'f', 3)
+                  .arg(profSum[6]/n, 0, 'f', 3).arg(profMax[6], 0, 'f', 3)
+                  .arg(profSum[7]/n, 0, 'f', 3).arg(profMax[7], 0, 'f', 3)
+                  .arg(profSum[8]/n, 0, 'f', 3).arg(profMax[8], 0, 'f', 3)
+                  .arg(profSum[9]/n, 0, 'f', 3).arg(profMax[9], 0, 'f', 3)
+                  .arg(profSum[10]/n, 0, 'f', 3).arg(profMax[10], 0, 'f', 3)
+                  .arg(profSum[11]/n, 0, 'f', 3).arg(profMax[11], 0, 'f', 3));
+        for (int i = 0; i < 12; ++i) { profSum[i] = 0.0; profMax[i] = 0.0; }
+        profSamples = 0;
+    }
+#undef AI_PROF_STAGE
 }
 
 // ★★ 铜器升级辅助（2026-09-13 防卡死）：引擎 Development::hasAgeUpgradeBuildings(CIVILIZATION_TOOLAGE) 要求
@@ -2292,7 +2314,7 @@ void UsrAI::managePriestScout() {
 
                 double beastDist = 12 * BL, beastX = scout->DR, beastY = scout->UR;
                 bool beastNearby = false;
-                double enemyDist = SCOUT_BREAK_ENEMY_DIST * BL;   // 与 processData 探路期敌情闸同口径（铁律 21/26）
+                double enemyDist = 12 * BL;
                 bool enemyNearby = false;
 
                 // 野兽
@@ -2421,7 +2443,7 @@ void UsrAI::managePriestScout() {
                     double edgeNorth = MAP_U * BL;
 
                     bool nearTarget = false;
-                    const double SCOUT_DIST = 100.0;  // 探索半径扩大到100格，覆盖整张地图(100x100)边缘
+                    const double SCOUT_DIST = SCOUT_MAX_DIST;  // ★ 2026-09-27 由 100 缩到 40 格：避免祭司深入敌区被敌主力截杀(见常量处注释)
 
                     // ★ 根据TC象限决定探索方向和顺序
                     double distWest  = baseDR / BL;
