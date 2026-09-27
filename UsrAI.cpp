@@ -5918,8 +5918,14 @@ bool UsrAI::findBuildSiteTowardCenter(int &x, int &y, int size, int minR, int ma
     if (glen < 1e-6) { gx = 1.0; gy = 0.0; glen = 1.0; }
     gx /= glen; gy /= glen;
 
-    int bestX = -1, bestY = -1;
-    double bestScore = -1e18;
+    // ★★★ 2026-09-27 性能优化 ★★★
+    // 旧实现：对 r=minR..maxR 外环每个候选都调 isPositionFree(...,true)
+    //   ⇒ 每个候选跑一次 isSiteReachable（最多 300 格 BFS，且每格线性扫全部建筑）
+    //   ⇒ site 阶段实测单次 100~270ms，是 [PROF-TRY] 唯一瓶颈（farmer/issue 均 <0.01ms）。
+    // 新实现：扫描期只做便宜的 isPositionFree(...,false) 收集候选；选出最高分候选后才跑一次可达性终检。
+    //   语义与旧版严格等价：旧 = 在"完整 isPositionFree 通过"的候选里取最高分；
+    //   新 = 候选按 score 稳定降序排（同分保持原枚举先后），返回第一个可达的。
+    std::vector<std::pair<double, std::pair<int,int>>> cand;   // (score, (nx,ny))
     for (int r = minR; r <= maxR; ++r) {
         for (int dx = -r; dx <= r; ++dx) {
             for (int dy = -r; dy <= r; ++dy) {
@@ -5928,20 +5934,26 @@ bool UsrAI::findBuildSiteTowardCenter(int &x, int &y, int size, int minR, int ma
                 if (nx < 0 || ny < 0 || nx >= MAP_L || ny >= MAP_U) continue;
                 int key = nx * 1000 + ny;
                 if (buildPosBlocked(this, triedBuildPositions, key, frame)) continue;
-                if (!isPositionFree(nx, ny, size)) continue;
+                if (!isPositionFree(nx, ny, size, false)) continue;     // ★ 扫描期跳过可达性 BFS
                 // 候选点方向对齐度(与中心方向点积, ∈[-1,1])；正对中心方向得分最高
                 double len = std::sqrt((double)(dx * dx + dy * dy));
                 double align = (len > 1e-6) ? (dx * gx + dy * gy) / len : 0.0;
                 double score = align * 100.0 + (double)(r - minR);     // 方向优先，其次更远
-                if (score > bestScore) { bestScore = score; bestX = nx; bestY = ny; }
+                cand.push_back(std::make_pair(score, std::make_pair(nx, ny)));
             }
         }
     }
-    if (bestX < 0) return false;
-    x = bestX; y = bestY;
-    return true;
+    std::stable_sort(cand.begin(), cand.end(),
+        [](const std::pair<double, std::pair<int,int>> &a,
+           const std::pair<double, std::pair<int,int>> &b) { return a.first > b.first; });
+    for (size_t i = 0; i < cand.size(); ++i) {
+        int nx = cand[i].second.first, ny = cand[i].second.second;
+        if (!isSiteReachable(nx, ny, size)) continue;   // ★ 昂贵终检只付一次(可达时)
+        x = nx; y = ny;
+        return true;
+    }
+    return false;
 }
-
 bool UsrAI::findBuildSite(int &x, int &y, int size, bool avoidFarmAdjacent) {
     if (townCenterSN == -1) return false;
     auto center = findBuilding(BUILDING_CENTER);
@@ -5956,9 +5968,10 @@ bool UsrAI::findBuildSite(int &x, int &y, int size, bool avoidFarmAdjacent) {
                 int nx = cx + dx, ny = cy + dy;
                 int key = nx * 1000 + ny;
                 if (buildPosBlocked(this, triedBuildPositions, key, frame)) continue;
-                if (!isPositionFree(nx, ny, size)) continue;
+                if (!isPositionFree(nx, ny, size, false)) continue;   // ★ 扫描期跳过可达性 BFS
                 // ★ 2026-09-15：农场兜底选址时守住"农场之间至少隔 1 格"（isFarmAdjacent 的刻意设计）
                 if (avoidFarmAdjacent && isFarmAdjacent(nx, ny)) continue;
+                if (!isSiteReachable(nx, ny, size)) continue;   // ★ 第一个便宜全通过点才付可达性
                 x = nx; y = ny;
                 return true;
             }
@@ -5992,8 +6005,8 @@ bool UsrAI::findDefenseBuildSite(int &x, int &y, int size) {
     if (!existingTowers.empty()) { gx = -gx; gy = -gy; }   // 第2座：背离地图中心
 
     // 钻石形外圈扫描 r=4~12（贴近 TC 4~8 优先；超 8 格候选位置略减分，但仍可建——箭塔射程 8 格覆盖 TC 周边）
-    int bestX = -1, bestY = -1;
-    double bestScore = -1e18;
+    // ★ 2026-09-27 性能：同 findBuildSiteTowardCenter —— 扫描期跳过 isSiteReachable，只对最高分候选做一次终检。
+    std::vector<std::pair<double, std::pair<int,int>>> cand;   // (score, (nx,ny))
     int triedCount = 0, blockedCount = 0;
     for (int r = 4; r <= 12; ++r) {
         for (int dx = -r; dx <= r; ++dx) {
@@ -6004,28 +6017,33 @@ bool UsrAI::findDefenseBuildSite(int &x, int &y, int size) {
                 int key = nx * 1000 + ny;
                 ++triedCount;
                 if (buildPosBlocked(this, triedBuildPositions, key, frame)) { ++blockedCount; continue; }
-                if (!isPositionFree(nx, ny, size)) { ++blockedCount; continue; }
+                if (!isPositionFree(nx, ny, size, false)) { ++blockedCount; continue; }
 
                 double len = std::sqrt((double)(dx * dx + dy * dy));
                 double align = (len > 1e-6) ? (dx * gx + dy * gy) / len : 0.0;
                 // 近圈(r=4~8)略加优先分,远圈(r=9~12)减分但仍可作为兜底
                 double score = align * 100.0 - (double)r * 0.5;
-                if (score > bestScore) { bestScore = score; bestX = nx; bestY = ny; }
+                cand.push_back(std::make_pair(score, std::make_pair(nx, ny)));
             }
         }
     }
-    if (bestX < 0) {
-        // ★ 失败前清空 triedBuildPositions，让外层 tryBuild 的默认 findBuildSite 兜底不受旧 ban 卡住
-        if (frame % 50 == 0) {   // 节流避免刷屏
-            DebugText(QString("TowerSite FAIL (no free site in r=4~12) tried=%1 blocked=%2 blacklist_cleared=%3 existingTowers=%4")
-                .arg(triedCount).arg(blockedCount).arg(0).arg((int)existingTowers.size()));
-        }
-        return false;
+    std::stable_sort(cand.begin(), cand.end(),
+        [](const std::pair<double, std::pair<int,int>> &a,
+           const std::pair<double, std::pair<int,int>> &b) { return a.first > b.first; });
+    int reachBlockedCount = 0;
+    for (size_t i = 0; i < cand.size(); ++i) {
+        int nx = cand[i].second.first, ny = cand[i].second.second;
+        if (!isSiteReachable(nx, ny, size)) { ++reachBlockedCount; continue; }
+        x = nx; y = ny;
+        return true;
     }
-    x = bestX; y = bestY;
-    return true;
+    // ★ 失败前清空 triedBuildPositions，让外层 tryBuild 的默认 findBuildSite 兜底不受旧 ban 卡住
+    if (frame % 50 == 0) {   // 节流避免刷屏
+        DebugText(QString("TowerSite FAIL (no free site in r=4~12) tried=%1 blocked=%2 reachBlocked=%3 blacklist_cleared=%4 existingTowers=%5")
+            .arg(triedCount).arg(blockedCount).arg(reachBlockedCount).arg(0).arg((int)existingTowers.size()));
+    }
+    return false;
 }
-// 谷仓选址：靠近浆果丛最密集处，减少村民往返时间
 bool UsrAI::findGranarySite(int &x, int &y) {
     auto center = findBuilding(BUILDING_CENTER);
     if (!center) return false;
@@ -6092,10 +6110,10 @@ bool UsrAI::findGranarySite(int &x, int &y) {
         int nx = bestBX + offsets[d][0] * 3;
         int ny = bestBY + offsets[d][1] * 3;
         if (buildPosBlocked(this, triedBuildPositions, nx * 1000 + ny, frame)) continue;
-        if (isPositionFree(nx, ny, 3)) {
-            x = nx; y = ny;
-            return true;
-        }
+        if (!isPositionFree(nx, ny, 3, false)) continue;   // ★ 扫描期跳过可达性 BFS
+        if (!isSiteReachable(nx, ny, 3)) continue;          // ★ 终检
+        x = nx; y = ny;
+        return true;
     }
     // 四侧都被占→扩大搜索范围
     for (int r = 4; r < 10; r++) {
@@ -6105,10 +6123,10 @@ bool UsrAI::findGranarySite(int &x, int &y) {
                 int nx = bestBX + dx, ny = bestBY + dy;
                 if (nx < 0 || ny < 0) continue;
                 if (buildPosBlocked(this, triedBuildPositions, nx * 1000 + ny, frame)) continue;
-                if (isPositionFree(nx, ny, 3)) {
-                    x = nx; y = ny;
-                    return true;
-                }
+                if (!isPositionFree(nx, ny, 3, false)) continue;   // ★ 扫描期跳过可达性 BFS
+                if (!isSiteReachable(nx, ny, 3)) continue;          // ★ 终检
+                x = nx; y = ny;
+                return true;
             }
         }
     }
