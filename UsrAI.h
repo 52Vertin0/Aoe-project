@@ -2,7 +2,7 @@
 #define USRAI_H
 
 #include "ai.h"
-#include <QEvent>      // ★ 2026-09-27 OJ 崩溃自救：主线程代取快照需要 QEvent::User（机理见 UsrAI.cpp）
+#include <QEvent>      // ★ 2026-09-28 加固层 UsrAICore 需要 QEvent::User（机理见下方 UsrAICore）
 #include <memory>      // ★ 2026-09-27 零拷贝快照：infoPtr 用 std::shared_ptr
 #include <set>
 #include <map>
@@ -13,10 +13,97 @@
 extern tagGame tagUsrGame;
 extern ins UsrIns;
 
-class UsrAI : public AI
+// ============================================================================================
+// ★★★ 2026-09-28 加固层：UsrAICore ★★★
+//   把 2026-09-23~27 为治 OJ(Linux/gcc13) SIGSEGV 陆续加的内容从 UsrAI 集中到本类：
+//     · 快照获取：主线程代取 getInfo() + shared_ptr 零拷贝句柄 + 坏快照完整性哨兵
+//     · 线程生命周期：析构体里先停 AI 线程，避免业务成员先析构后被 AI 线程访问
+//     · 帧末指令提交：commitInstruction()，提交前逐条体检 instruction 的动态指针
+//     · 诊断心跳：[ENV] / [SNAP] / [DIRTY-SNAP]
+//   ★ 为什么"加固类做基类"而不是"新类继承 UsrAI"：
+//     MainWidget.cpp:1536 是引擎侧硬编码的 `UsrAi = new UsrAI();`，而提交范围只有
+//     UsrAI.cpp + UsrAI.h ⇒ 若新类去继承 UsrAI，它永远不会被构造，加固层等于未装。
+//     做成基类则 UsrAI 的构造点/使用点一行都不用改，提交面也不变。
+//   ★ 本类保持抽象（不实现 AI 的纯虚 processData / clearInsRet）⇒ 不可实例化，只能被继承。
+// ============================================================================================
+class UsrAICore : public AI
 {
 public:
-    UsrAI() : frame(0), state(INIT), townCenterSN(-1), priestSN(-1),
+    UsrAICore() : frame(0) { this->id = 0; }
+    // ★★★ 2026-09-27 防御：在**派生类**析构体里先停 AI 线程。
+    //   理由：C++ 析构顺序 = 派生类成员先析构 → 基类析构体最后跑。若只依赖 ~AI() 里的 wait()，
+    //   那么 UsrAI 的成员（含 infoPtr 与其引用计数）已在 wait() 之前析构，而 AI 线程可能仍停在
+    //   processData()（run() 持 mutex 调用它）⇒ 访问已释放资源 ⇒ SIGSEGV。
+    //   MainWidget::~MainWidget() 已做 stopProcessing()+wait()，此处为兜底；重复调用无害
+    //   （stopThread 置位幂等、wait() 对已停线程立即返回）。
+    ~UsrAICore() override { stopThread = true; condition.wakeAll(); wait(); }
+
+// ==================== ★★★ 2026-09-23 OJ SIGSEGV 自救：快照改由"主线程"代取 ★★★ ====================
+// 原实现在 AI 线程里直读引擎缓冲区（tagUsrGame.getInfo()），与主线程 Core::infoShare() 的
+//   clear()/push_back() 释放-重分配竞争 ⇒ OJ(Linux/gcc13) 上 SIGSEGV。backtrace 关键三帧：
+//   UsrAI::processData → tagInfo::operator= (GlobalVariate.cpp) → vector<tagBuilding>::operator=
+//   (源 vector len=6 / cap=6) → __memcpy_avx_unaligned_erms → SIGSEGV。
+// 引擎侧根治 = 恢复 tagGame::update() 内被注释掉的 QMutexLocker（待评测机版本）；UsrAI 侧碰不到
+//   tagGame::Locker（私有成员），改用 tryLock()+getInfo() 会因非递归 QMutex 同线程二次加锁自锁死
+//   （实测整局冻在 frame 1）⇒ 站内靠加锁自救不可行。
+// 本修法：不改引擎、不碰锁，只换"深拷贝发生在哪个线程"——
+//   UsrAI 对象由主线程创建（MainWidget.cpp）⇒ postEvent 给它的事件由主线程事件循环派发；
+//   AI 线程 postEvent(this) → 主线程在 event() 里 getInfo()（此刻不在 infoShare 内 ⇒ 读写同线程、
+//   天然串行）→ AI 取走副本 ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
+// ★ 2026-09-27 恢复：该加固在 09-26 23:48「整文件回退到 g1 无闸」时被一并覆盖丢失，
+//   之后的版本又退回"AI 线程直读 getInfo()"，于是在 OJ 上重现同一崩溃（本次 backtrace 完全一致）。
+// ★★ 2026-09-27 修正（重要）：单纯恢复"每帧 cond.wait() 等主线程"会把 AI 决策吞吐钳死主线程帧率上，
+//   同日干净对照（均为 map2×12、同批代码，仅加固有无不同）：每帧等待版 = 6胜/5负/1未决 (50.0%)，
+//   而直读版 = 11胜/0负/1未决 (91.7%) ⇒ 每帧等待腰斩胜率。故 AI 侧改为**非阻塞**：
+//   有新快照就取走，没有就沿用上一帧（数据最多滞后 1 帧，实测 main:reuse ≈ 1:1）。
+//   36 局复测：非阻塞加固 = 69.4% vs 无加固 79.2%（Fisher p≈0.20，无显著差异）。
+enum { kSnapEventType = QEvent::User + 731 };
+
+protected:
+    bool refreshSnapshot();                // AI 线程：postEvent 请主线程代取快照；成功则更新 infoPtr（零拷贝）
+    bool event(QEvent* e) override;        // 主线程执行：真正执行 tagUsrGame.getInfo()
+
+    // ★★★ 2026-09-28 帧末唯一提交点（由 UsrAI::processData 在每帧业务跑完后调用一次）★★★
+    //   背景：AI::run() 里其实已有 AI::CommitInstruction()（把 InsPerFrame 批量推入 UsrIns），
+    //   但它是**基类非虚函数**、且不做任何校验 ⇒ AI 侧既接管不了、也保不住其内容安全。
+    //   instruction 携带两个裸指针（self / obj）：
+    //     · self = g_Object[SN]  —— SN 不存在时是 nullptr（且 map::operator[] 会插节点）
+    //     · obj  = g_Object[obSN] —— HumanMove / HumanBuild / BuildingAction / PinPointStrike
+    //       这四条构造**根本没给 obj 赋值**（GlobalVariate.cpp:538/546/553/560）⇒ 未初始化野指针
+    //   ⇒ 提交前必须逐条体检，否则野指针递进引擎就是 SIGSEGV。（实现见 .cpp 内本函数）
+    void commitInstruction();
+
+    // 诊断心跳（2026-09-28 从 UsrAI::processData 迁入，日志文本逐字未改）
+    void logEnvOnce();                     // [ENV]   引擎版本/运行期玩家数自证（必须在首次 getInfo 之前调）
+    void logSnapBeat();                    // [SNAP]  快照机制量心跳（每 1500 帧一档）
+    void checkDirtySnapshot();             // [DIRTY-SNAP] 脏快照累计拦截（每 1500 帧一行）
+
+// ★★★ 2026-09-27 【零拷贝快照】当前游戏状态。原为值成员 `tagInfo info;`：
+//   由 AI 线程执行 `info = tagUsrGame.getInfo()`（或加固版的 `dst = *fresh`）反复深拷贝。
+//   该深拷贝在 OJ 上稳定 SIGSEGV（栈：processData/refreshSnapshot → tagInfo::operator=
+//   → vector<tagBuilding>::operator= 的 std::copy 分支 ⇒ 说明目标缓冲被写坏）。
+//   两次崩溃源不同（一次引擎 getInfo、一次主线程 new tagInfo）但**目标同为该成员**，
+//   且 info 全项目无外部访问（仅 UsrAI 自用）⇒ 目标缓冲自身不可信。
+//   改为 shared_ptr 直达后：快照对象由主线程 new 出来、AI 线程独占持有，
+//   **全程零深拷贝**，不再触碰任何"上一帧遗留的 vector 缓冲"。
+//   用法：processFrame 顶部 `if (!refreshSnapshot()) return;` 保证非空；
+//         此后全文件以 `infoPtr->xxx` 访问（原 `info.xxx`）。
+    std::shared_ptr<tagInfo> infoPtr;
+    int frame;                             // 当前帧号（= infoPtr->GameFrame 的副本；加固层心跳与业务共用）
+
+private:
+    // 三条心跳的跨帧状态（原为 processData 内的 static 局部量，2026-09-28 迁入）
+    bool envLogged_ = false;               // [ENV] 只打一次
+    int  lastSnapBeat_ = -1;               // [SNAP] 分桶去重
+    int  localDirtySnap_ = 0;              // [DIRTY-SNAP] 累计脏快照拦截
+    int  lastNonzeroFrame_ = 0;
+    int  lastBeatBucket_ = -1;
+};
+
+class UsrAI : public UsrAICore
+{
+public:
+    UsrAI() : state(INIT), townCenterSN(-1), priestSN(-1),
               enemySiegeSN(-1), enemyBaseScouted(false), enemyBaseDR(0), enemyBaseUR(0),
               hasUpgraded(false),
               bronzeIssuedFrame(-999999), bronzeAttemptCount(0), bronzeStallFrames(0),
@@ -50,17 +137,11 @@ public:
               priestConvSN(-1), priestConvFrame(-999999), priestSiegeApproach(0),
               priestAdvBest(1e18), priestAdvBestFrame(-999999), priestEscapeStage(0),
               priestEscapeCd(0), priestEscapeSide(1)
-    { this->id = 0; }
-    // ★★★ 2026-09-27 防御：在**派生类**析构体里先停 AI 线程。
-    //   理由：C++ 析构顺序 = 派生类成员先析构 → 基类析构体最后跑。若只依赖 ~AI() 里的 wait()，
-    //   那么 UsrAI 的成员（含 infoPtr 与其引用计数）已在 wait() 之前析构，而 AI 线程可能仍停在
-    //   processData()（run() 持 mutex 调用它）⇒ 访问已释放资源 ⇒ SIGSEGV。
-    //   MainWidget::~MainWidget() 已做 stopProcessing()+wait()，此处为兜底；重复调用无害
-    //   （stopThread 置位幂等、wait() 对已停线程立即返回）。
-    ~UsrAI() { stopThread = true; condition.wakeAll(); wait(); }
+    { }
 
 private:
-    void processData() override;
+    void processData() override;           // 引擎入口：跑完一帧业务后调用 commitInstruction()
+    void processFrame();                   // 业务主体（原 processData 的全部内容）
 
     static int buildingFootprintSize(int type);
     static bool footprintsOverlap(int ax, int ay, int aw, int ah,
@@ -77,28 +158,7 @@ private:
     int countBuildings(int type, bool includePending, bool includeDead,
 bool countUnderConstruction);
 
-// ==================== ★★★ 2026-09-23 OJ SIGSEGV 自救：快照改由"主线程"代取 ★★★ ====================
-// 原实现是**在 AI 线程里直读引擎缓冲区**（tagUsrGame.getInfo()），与主线程 Core::infoShare() 的
-//   clear()/push_back() 释放-重分配竞争 ⇒ OJ(Linux/gcc13) 上 SIGSEGV。backtrace 关键三帧：
-//   UsrAI::processData → tagInfo::operator= (GlobalVariate.cpp) → vector<tagBuilding>::operator=
-//   (源 vector len=6 / cap=6) → __memcpy_avx_unaligned_erms → SIGSEGV。
-// 引擎侧根治 = 恢复 tagGame::update() 内被注释掉的 QMutexLocker（待评测机版本）；UsrAI 侧碰不到
-//   tagGame::Locker（私有成员），改用 tryLock()+getInfo() 会因非递归 QMutex 同线程二次加锁自锁死
-//   （实测整局冻在 frame 1）⇒ 站内靠加锁自救不可行。
-// 本修法：不改引擎、不碰锁，只换"深拷贝发生在哪个线程"——
-//   UsrAI 对象由主线程创建（MainWidget.cpp）⇒ postEvent 给它的事件由主线程事件循环派发；
-//   AI 线程 postEvent(this) → 主线程在 event() 里 getInfo()（此刻不在 infoShare 内 ⇒ 读写同线程、
-//   天然串行）→ 唤醒 AI 取走副本 ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
-// ★ 2026-09-27 恢复：该加固在 09-26 23:48「整文件回退到 g1 无闸」时被一并覆盖丢失，
-//   之后的版本又退回"AI 线程直读 getInfo()"，于是在 OJ 上重现同一崩溃（本次 backtrace 完全一致）。
-// ★★ 2026-09-27 修正（重要）：单纯恢复"每帧 cond.wait() 等主线程"会把 AI 决策吞吐钳死主线程帧率上，
-//   同日干净对照（均为 map2×12、同批代码，仅加固有无不同）：每帧等待版 = 6胜/5负/1未决 (50.0%)，
-//   而直读版 = 11胜/0负/1未决 (91.7%) ⇒ 每帧等待腰斩胜率。故 AI 侧改为**非阻塞**：
-//   有新快照就取走，没有就沿用上一帧（数据最多滞后 1 帧，实测 main:reuse ≈ 1:1）。
-//   36 局复测：非阻塞加固 = 69.4% vs 无加固 79.2%（Fisher p≈0.20，无显著差异）。
-enum { kSnapEventType = QEvent::User + 731 };
-bool refreshSnapshot();                // AI 线程：postEvent 请主线程代取快照；成功则更新 infoPtr（零拷贝）
-bool event(QEvent* e) override;       // 主线程执行：真正执行 tagUsrGame.getInfo()
+
 
 int AddToIns(instruction ins) override {
         UsrIns.lock.lock();
@@ -113,20 +173,8 @@ int AddToIns(instruction ins) override {
         tagUsrGame.clearInsRet();
     }
 
-    // ==================== 用户策略代码区 ====================
+        // ==================== 用户策略代码区 ====================
 
-// ★★★ 2026-09-27 【零拷贝快照】当前游戏状态。原为值成员 `tagInfo info;`：
-//   由 AI 线程执行 `info = tagUsrGame.getInfo()`（或加固版的 `dst = *fresh`）反复深拷贝。
-//   该深拷贝在 OJ 上稳定 SIGSEGV（栈：processData/refreshSnapshot → tagInfo::operator=
-//   → vector<tagBuilding>::operator= 的 std::copy 分支 ⇒ 说明目标缓冲被写坏）。
-//   两次崩溃源不同（一次引擎 getInfo、一次主线程 new tagInfo）但**目标同为该成员**，
-//   且 info 全项目无外部访问（仅 UsrAI 自用）⇒ 目标缓冲自身不可信。
-//   改为 shared_ptr 直达后：快照对象由主线程 new 出来、AI 线程独占持有，
-//   **全程零深拷贝**，不再触碰任何"上一帧遗留的 vector 缓冲"。
-//   用法：processData 顶部 `if (!refreshSnapshot()) return;` 保证非空；
-//         此后全文件以 `infoPtr->xxx` 访问（原 `info.xxx`）。
-std::shared_ptr<tagInfo> infoPtr;
-    int frame;
 
     // 状态机
     enum State {

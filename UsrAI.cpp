@@ -13,27 +13,13 @@ ins UsrIns;
 /*##########DO NOT MODIFY THE CODE ABOVE##########*/
 
 // ============================================================================================
-// ★★★ 2026-09-23 OJ(Linux/gcc13) SIGSEGV 自救：快照深拷贝改由"写侧线程"（主线程）执行 ★★★
-// 现象：OJ 上 AI 线程在 `info = getInfo()` 处 SIGSEGV。backtrace 关键三帧：
-//   UsrAI::processData → tagInfo::operator= (GlobalVariate.cpp) → vector<tagBuilding>::operator=
-//   (源 vector len=6 / cap=6) → __memcpy_avx_unaligned_erms → SIGSEGV
-// 根因（本机引擎源码逐行核对）：双缓冲"主线程写、AI 线程读"，唯一互斥 tagGame::Locker 保护不住这条路径 ——
-//   ① tagGame::update() 的 QMutexLocker 被注释掉（GlobalVariate.cpp）；
-//   ② getInfo() 的锁只覆盖引擎自己那层拷贝，调用点（processData）的深拷贝在锁外
-//      ⇒ 与写侧 clear()/push_back() 的释放/重分配竞争 ⇒ memcpy 读到已释放页（len=cap 恰为拷贝产物特征）。
-// 引擎侧根治 = 恢复 update() 内的锁（待评测机版本）。UsrAI 侧碰不到 Locker（tagGame 私有成员），
-//   改用 tryLock()+getInfo() 会因非递归 QMutex "同线程二次加锁"自锁死（实测整局冻在 frame 1）
-//   ⇒ 站内靠加锁自救不可行。
-// 本修法：不改引擎、不碰锁，只换"深拷贝发生在哪个线程"——
-//   UsrAI 由主线程创建（MainWidget.cpp `UsrAi = new UsrAI();`）⇒ postEvent 给它的事件由主线程派发；
-//   AI 线程 postEvent(this) → 主线程在 event() 里 getInfo()（此刻不在 infoShare 内 ⇒ 读写同线程、天然串行）
-//   → 唤醒 AI 取走副本 ⇒ 与引擎版本 / NOWPLAYER / Buffer 尺寸无关。
-// ★ 2026-09-24 加固：临界区只做 O(1) 的 shared_ptr 所有权交换；真正的深拷贝（`dst = *snapshot`）在锁外，
-//   且源快照在 shared_ptr 生命周期内不可变 ⇒ AI 侧永远读一份"已完成、不再被写"的对象。
-// ★ 已删除"连续 5 帧失联就退回 AI 线程直读 getInfo()"的兜底 —— 那条兜底=原崩溃路径本身。
-//   现在失联只**跳过本帧**（AI 变钝但不崩）；单帧超时 1 秒，绝不死等（AI 线程持有 AI::mutex）。
-// ★★ 2026-09-27 恢复：本块加固在 09-26 23:48「整文件回退到 g1 无闸」时被一并覆盖丢失，
-//   之后的版本又退回"AI 线程直读 getInfo()"，于是在 OJ 上重现同一崩溃（backtrace 与原诊断完全一致）。
+// ★★★ 2026-09-23~28 OJ(Linux/gcc13) SIGSEGV 自救 —— 已整体迁入 UsrAICore（定义见 UsrAI.h）★★★
+//   完整机理记录随代码一起迁到了 UsrAICore::refreshSnapshot / commitInstruction 上方，
+//   避免同一段机理在多处各写一份。此处只留结论：
+//     · 快照：主线程代取 getInfo() + shared_ptr 零拷贝 + 完整性哨兵（原 AI 线程直读会与
+//       infoShare() 的 clear()/push_back() 竞争 ⇒ SIGSEGV）
+//     · 指令：帧末统一提交（UsrAI::processData 调 UsrAICore::commitInstruction），
+//       提交前逐条体检 instruction 的裸指针 self/obj
 // ============================================================================================
 namespace {
 struct SnapState {
@@ -48,9 +34,9 @@ struct SnapState {
     int skipCount = 0;      // 完全无可用快照而被跳过的帧数
     int badSnapCount = 0;   // ★ 完整性哨兵拦下的坏快照数（非 0 ⇒ 引擎侧 buffer 被踩）
 };
-std::map<const UsrAI*, SnapState> g_snapStates;
+std::map<const UsrAICore*, SnapState> g_snapStates;
 std::mutex g_snapStatesMutex;
-SnapState& snapState(const UsrAI* self) {
+SnapState& snapState(const UsrAICore* self) {
     std::lock_guard<std::mutex> lock(g_snapStatesMutex);
     return g_snapStates[self];
 }
@@ -466,7 +452,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // AI 线程侧：请主线程代取快照，成功后**直接把 shared_ptr 交给 infoPtr**。
 //   ⇒ 全程不做任何 tagInfo/vector 深拷贝 ⇒ "写坏的目标缓冲"这条崩溃路径在结构上消失。
 //   ⇒ 不碰引擎锁（tagGame::Locker 是私有成员）。
-bool UsrAI::refreshSnapshot() {
+bool UsrAICore::refreshSnapshot() {
     SnapState& st = snapState(this);
 
     // ① 主线程是否已发布新快照？有就 O(1) 取走（锁内只做 shared_ptr 所有权交换）
@@ -526,7 +512,7 @@ bool UsrAI::refreshSnapshot() {
 }
 
 // 主线程执行：真正的快照获取。此时主线程不在 infoShare() 内 ⇒ 与写侧天然串行，无需任何锁配合。
-bool UsrAI::event(QEvent* e) {
+bool UsrAICore::event(QEvent* e) {
     if (e && e->type() == QEvent::Type(kSnapEventType)) {
         std::shared_ptr<tagInfo> fresh(new tagInfo(tagUsrGame.getInfo()));
         // ★ 完整性哨兵（实现在匿名 namespace 的 snapshotLooksSane）：拦下被踩坏的快照。
@@ -550,23 +536,149 @@ bool UsrAI::event(QEvent* e) {
     return QThread::event(e);
 }
 
-// processData - 主循环（每帧调用） 规则：祭司保命 > 失败检查 > 阶段切换 > 打猎 > 经济 > 军事 > 反攻
-void UsrAI::processData() {
-    // ★★★ 2026-09-23 环境自证：必须放在**首次 getInfo() 之前**。理由：OJ 上的崩溃发生在 getInfo() 内部
-    //   的深拷贝里，若把诊断放在 getInfo() 之后，那一局就什么线索都留不下。
-    //   零新增链接符号：GAME_VERSION / NOWPLAYER / MAXPLAYER 与文件里已在用的 MAP_L / MAP_U /
-    //   BLOCKSIDELENGTH 同属 RuntimeConfig 访问器（RuntimeConfig.h:38/51/54/81），已在同一链接单元。
-    //   目的：把评测机的**引擎版本 + 运行期玩家数**钉死，用于判定 Core.cpp 的 Buffer0/Buffer1[2]
-    //   是否与运行期 NOWPLAYER 不匹配（不匹配 ⇒ currentBuff[i] i>=2 越界 ⇒ 快照被踩 ⇒ 崩在 getInfo）。
-    {
-        static bool envLogged = false;
-        if (!envLogged) {
-            envLogged = true;
-            DebugText(QString("[ENV] engine=%1 NOWPLAYER=%2 MAXPLAYER=%3 represent=%4")
-                      .arg(QString::fromStdString(GAME_VERSION))
-                      .arg(NOWPLAYER).arg(MAXPLAYER).arg(NOWPLAYERREPRESENT));
-        }
+// ============================================================================================
+// ★★★ 2026-09-28 加固层实现（UsrAICore）★★★
+//   本区块收纳三类内容：
+//     ① 诊断心跳 [ENV] / [SNAP] / [DIRTY-SNAP]（原散落在 UsrAI::processData 顶部，逐字迁入）
+//     ② instruction 动态指针体检 instructionSelfOk()
+//     ③ 帧末唯一提交点 commitInstruction()
+// ============================================================================================
+
+// ★★★ 2026-09-23 环境自证：必须放在**首次 getInfo() 之前**。理由：OJ 上的崩溃发生在 getInfo()
+//   内部的深拷贝里，若把诊断放在 getInfo() 之后，那一局就什么线索都留不下。
+//   零新增链接符号：GAME_VERSION / NOWPLAYER / MAXPLAYER 与文件里已在用的 MAP_L / MAP_U /
+//   BLOCKSIDELENGTH 同属 RuntimeConfig 访问器（RuntimeConfig.h:38/51/54/81），已在同一链接单元。
+//   目的：把评测机的**引擎版本 + 运行期玩家数**钉死，用于判定 Core.cpp 的 Buffer0/Buffer1[2]
+//   是否与运行期 NOWPLAYER 不匹配（不匹配 ⇒ currentBuff[i] i>=2 越界 ⇒ 快照被踩 ⇒ 崩在 getInfo）。
+void UsrAICore::logEnvOnce() {
+    if (envLogged_) return;
+    envLogged_ = true;
+    DebugText(QString("[ENV] engine=%1 NOWPLAYER=%2 MAXPLAYER=%3 represent=%4")
+              .arg(QString::fromStdString(GAME_VERSION))
+              .arg(NOWPLAYER).arg(MAXPLAYER).arg(NOWPLAYERREPRESENT));
+}
+
+// ★★★ 2026-09-27 机制量自证（每 1500 帧一档，供 OJ 日志核对）★★★
+//   main>0     ⇒ "主线程代取快照"这条替代路径真的在跑（原崩溃路径已被换掉）
+//   fallback>0 ⇒ 该环境的主线程事件回环失效（本版已删兜底 ⇒ 恒 0，仅作哨兵）
+//   skip>0     ⇒ 单帧 1 秒超时、主动放弃的帧数（AI 变钝但不崩）
+//   bad>0      ⇒ 完整性哨兵拦下的坏快照数（>0 = 引擎侧 buffer 确实被踩过，但已被拦下不崩）
+void UsrAICore::logSnapBeat() {
+    if (!(frame > 0 && frame / 1500 != lastSnapBeat_)) return;
+    lastSnapBeat_ = frame / 1500;
+    DebugText(QString("[SNAP f=%1] main=%2 reuse=%3 wait=%4 skip=%5 fb=%6 bad=%7").arg(frame)
+              .arg(snapState(this).mainCount).arg(snapState(this).reuseCount)
+              .arg(snapState(this).waitCount).arg(snapState(this).skipCount)
+              .arg(snapState(this).fallbackCount).arg(snapState(this).badSnapCount));
+}
+
+// ★★★ 2026-09-19 诊断（可观测机制量；UsrAI 自洽，不引用任何引擎新增符号）★★★ 崩溃场景：OJ(Linux/gcc13) 上 AI 线程在 getInfo() 的深拷贝里 SIGSEGV（源 vector len=6/cap=6）。
+// 根因在引擎侧（tagGame::update() 的 QMutexLocker 被注释掉 + infoShare() 的 clear()/push_back() 构成数据竞争）
+// ⇒ **站内修不了**。⚠ 提交范围只有 UsrAI.cpp + UsrAI.h ⇒ 严禁引用引擎新增符号（悬空 extern ⇒ undefined reference ⇒ 整个提交链接失败，比崩溃更严重）。故本诊断只依赖 UsrAI 自身可观测的两条判据：
+// (a) 已跑过非 0 帧、却收到 GameFrame==0 —— 加固版引擎拦下脏快照时返回默认 tagInfo（GameFrame 恒 0）； (b) 帧号回退（本帧 < 上帧）—— 读到过期/错乱 buffer 的直接迹象，原始引擎下同样有效。
+// 崩溃后查 ait 里最后一条 [DIRTY-SNAP] 的计数：>0 ⇒ 证明"读到的快照确实异常"。
+void UsrAICore::checkDirtySnapshot() {
+    const int curF = infoPtr->GameFrame;
+    if (curF > 0) {
+        if (lastNonzeroFrame_ > 0 && curF < lastNonzeroFrame_) localDirtySnap_++;  // (b) 帧号回退
+        lastNonzeroFrame_ = curF;                                                 // 正常快照：推进基准帧
+    } else if (lastNonzeroFrame_ > 0) {
+        localDirtySnap_++;                                                        // (a) 空快照
     }
+    // 每分钟一行心跳（lastNonzeroFrame_ 不动时不重复打，防刷屏）
+    if (lastNonzeroFrame_ > 0 && lastNonzeroFrame_ / 1500 != lastBeatBucket_) {
+        lastBeatBucket_ = lastNonzeroFrame_ / 1500;
+        DebugText(QString("[DIRTY-SNAP f=%1] 累计脏快照拦截=%2").arg(lastNonzeroFrame_).arg(localDirtySnap_));
+    }
+}
+
+// ★★★ 2026-09-28 instruction 动态指针体检 ★★★
+//   为什么需要：instruction 里有两个**裸指针**成员，它们在构造函数里从 g_Object 现查：
+//     Coordinate* self;   // = g_Object[SN]
+//     Coordinate* obj;    // = g_Object[obSN]
+//   但 GlobalVariate.cpp 的四个构造里**只有** HumanAction 那条（type,SN,obSN,bool）填了 obj：
+//     instruction(type,SN,BL,BU,option)   ← HumanBuild        : self 赋了，obj 没赋
+//     instruction(type,SN,Double,Double)  ← HumanMove/PinPoint: self 赋了，obj 没赋
+//     instruction(type,SN,option)         ← BuildingAction    : self 赋了，obj 没赋
+//   而 instruction 类里 `Coordinate* obj;` 没有类内初始化器 ⇒ 这三类指令的 obj 是
+//   **未初始化的栈/堆垃圾**，一旦被引擎拿着当对象指针用就是 SIGSEGV。
+//   本函数在提交前把这三类指令的 obj **显式清成 nullptr**（它们的语义本就不用 obj，
+//   归零不改变行为），并校验 self 确实等于当前的 g_Object[SN]（防"对象已销毁、指针悬垂"）。
+//   ⚠ 为什么不一律丢弃：HumanMove/HumanBuild/BuildingAction 是 AI 的主力指令通道
+//     （分别 37/8/30 处调用点），若仅因 obj 未初始化就整条丢弃，等于把 AI 打瘫 ⇒
+//     对"未使用 obj 的指令类型"必须归零而非丢弃；只有 self 无效才真丢。
+//   ⚠ g_Object 是引擎全局表（GlobalVariate.h:29 已声明），AI 线程本来就在碰它 ——
+//     instruction 构造里的 `g_Object[SN]` 就是在 AI 线程执行的 ⇒ 此处用 find() 只读，
+//     与既有访问同线程同容器，不引入新的竞争类别。
+static bool instructionSelfOk(const instruction& c) {
+    if (!c.self) return false;                     // SN 无效 ⇒ g_Object[SN] 取到 nullptr
+    const std::map<int, Coordinate*>::const_iterator it = g_Object.find(c.SN);
+    if (it == g_Object.end()) return false;        // 引擎侧已无此对象
+    return it->second == c.self;                   // 指针与权威表一致（防悬垂 / SN 复用后的陈旧指针）
+}
+
+void UsrAICore::commitInstruction() {
+    if (InsPerFrame.empty()) return;               // 常见路径：本帧没下任何命令
+
+    int dropIns = 0;                               // self 无效 ⇒ 丢弃
+    int nullObj = 0;                               // obj 未初始化野值 ⇒ 归零
+
+    ins& Ins = GetInsStruct();
+    Ins.lock.lock();
+    for (size_t i = 0; i < InsPerFrame.size(); ++i) {
+        instruction& c = InsPerFrame[i];
+
+        // ① 动态指针 self：必须与引擎权威表 g_Object 一致，否则丢弃
+        if (!instructionSelfOk(c)) {
+            ++dropIns;
+            continue;
+        }
+
+        // ② 动态指针 obj：只有 HumanAction 语义上使用它
+        if (c.type == INS_HUMANACTION) {
+            if (!c.obj) { ++dropIns; continue; }   // 目标对象已不在
+            const std::map<int, Coordinate*>::const_iterator it = g_Object.find(c.obSN);
+            if (it == g_Object.end() || it->second != c.obj) { ++dropIns; continue; }
+        } else if (c.obj != nullptr) {
+            // 其余类型（HumanMove/HumanBuild/BuildingAction/PinPointStrike/Cancel）构造时未赋 obj
+            c.obj = nullptr;
+            ++nullObj;
+        }
+
+        Ins.instructions.push(c);
+    }
+    Ins.lock.unlock();
+    InsPerFrame.clear();
+
+    // 计数与日志（static 局部量；本函数只在 AI 线程跑 ⇒ 无需加锁）
+    static int g_dropInsTotal = 0;
+    static int g_nullObjTotal = 0;
+    static int g_lastInsBeat = -1;
+    g_dropInsTotal += dropIns;
+    g_nullObjTotal += nullObj;
+    if ((dropIns > 0 || nullObj > 0) && frame / 1500 != g_lastInsBeat) {
+        g_lastInsBeat = frame / 1500;
+        DebugText(QString("[INS-BAD f=%1] 本帧丢弃=%2 本帧 obj 归零=%3 累计丢弃=%4 累计归零=%5")
+                  .arg(frame).arg(dropIns).arg(nullObj).arg(g_dropInsTotal).arg(g_nullObjTotal));
+    }
+}
+
+
+// ============================================================================================
+// ★★★ 2026-09-28 帧边界：processData 只做"跑一帧 + 帧末统一提交指令"两件事 ★★★
+//   为什么拆出 processFrame：原 processData 有 3 处 `return` 早退（快照未就绪 / 胜负已分 /
+//   反攻分支），若把 commitInstruction() 直接写在函数末尾，早退路径上已产出的指令就永远提交不出去。
+//   拆开后 processFrame 内无论从哪个出口离开，都会回到这里执行提交 ⇒ 语义正好是
+//   "每帧所有命令下完调用一次 commitInstruction()"。
+// ============================================================================================
+void UsrAI::processData() {
+    processFrame();          // 业务主体（原 processData 全部内容）
+    commitInstruction();     // ★ 帧末唯一提交点：体检动态指针 + 批量推入 UsrIns
+}
+
+// processFrame - 主循环（每帧调用） 规则：祭司保命 > 失败检查 > 阶段切换 > 打猎 > 经济 > 军事 > 反攻
+void UsrAI::processFrame() {
+    logEnvOnce();            // ★ [ENV] 环境自证；必须在首次 getInfo() 之前（实现见 UsrAICore::logEnvOnce）
 
     typedef std::chrono::steady_clock ProfClock;
     static double profSum[12] = {0.0};
@@ -587,44 +699,9 @@ void UsrAI::processData() {
     if (!snapOk) return;                         // 拿不到快照 ⇒ 跳过本帧（绝不回退到跨线程直读）
     frame = infoPtr->GameFrame;
 
-    // ★★★ 2026-09-27 机制量自证（每 1500 帧一档，供 OJ 日志核对）★★★
-    //   main>0     ⇒ "主线程代取快照"这条替代路径真的在跑（原崩溃路径已被换掉）
-    //   fallback>0 ⇒ 该环境的主线程事件回环失效（本版已删兜底 ⇒ 恒 0，仅作哨兵）
-    //   skip>0     ⇒ 单帧 1 秒超时、主动放弃的帧数（AI 变钝但不崩）
-    //   bad>0      ⇒ 完整性哨兵拦下的坏快照数（>0 = 引擎侧 buffer 确实被踩过，但已被拦下不崩）
-    {
-        static int lastSnapBeat = -1;
-        if (frame > 0 && frame / 1500 != lastSnapBeat) {
-            lastSnapBeat = frame / 1500;
-            DebugText(QString("[SNAP f=%1] main=%2 reuse=%3 wait=%4 skip=%5 fb=%6 bad=%7").arg(frame)
-                      .arg(snapState(this).mainCount).arg(snapState(this).reuseCount)
-                      .arg(snapState(this).waitCount).arg(snapState(this).skipCount)
-                      .arg(snapState(this).fallbackCount).arg(snapState(this).badSnapCount));
-        }
-    }
+    logSnapBeat();                         // ★ [SNAP] 快照机制量心跳（实现见 UsrAICore::logSnapBeat）
 
-    // ★★★ 2026-09-19 诊断（可观测机制量；UsrAI 自洽，不引用任何引擎新增符号）★★★ 崩溃场景：OJ(Linux/gcc13) 上 AI 线程在 getInfo() 的深拷贝里 SIGSEGV（源 vector len=6/cap=6）。
-    // 根因在引擎侧（tagGame::update() 的 QMutexLocker 被注释掉 + infoShare() 的 clear()/push_back() 构成数据竞争）
-    // ⇒ **站内修不了**。⚠ 提交范围只有 UsrAI.cpp + UsrAI.h ⇒ 严禁引用引擎新增符号（悬空 extern ⇒ undefined reference ⇒ 整个提交链接失败，比崩溃更严重）。故本诊断只依赖 UsrAI 自身可观测的两条判据：
-    // (a) 已跑过非 0 帧、却收到 GameFrame==0 —— 加固版引擎拦下脏快照时返回默认 tagInfo（GameFrame 恒 0）； (b) 帧号回退（本帧 < 上帧）—— 读到过期/错乱 buffer 的直接迹象，原始引擎下同样有效。
-    // 崩溃后查 ait 里最后一条 [DIRTY-SNAP] 的计数：>0 ⇒ 证明"读到的快照确实异常"。
-    {
-        static int localDirtySnap = 0;
-        static int lastNonzeroFrame = 0;
-        static int lastBeatBucket = -1;
-        const int curF = infoPtr->GameFrame;
-        if (curF > 0) {
-            if (lastNonzeroFrame > 0 && curF < lastNonzeroFrame) localDirtySnap++;  // (b) 帧号回退
-            lastNonzeroFrame = curF;                                                // 正常快照：推进基准帧
-        } else if (lastNonzeroFrame > 0) {
-            localDirtySnap++;                                                       // (a) 空快照
-        }
-        // 每分钟一行心跳（lastNonzeroFrame 不动时不重复打，防刷屏）
-        if (lastNonzeroFrame > 0 && lastNonzeroFrame / 1500 != lastBeatBucket) {
-            lastBeatBucket = lastNonzeroFrame / 1500;
-            DebugText(QString("[DIRTY-SNAP f=%1] 累计脏快照拦截=%2").arg(lastNonzeroFrame).arg(localDirtySnap));
-        }
-    }
+    checkDirtySnapshot();                  // ★ [DIRTY-SNAP] 脏快照累计拦截（实现见 UsrAICore::checkDirtySnapshot）
 
     // 0. 处理上一帧建造指令结果：失败则释放建造者并换位置重试
     AI_PROF_STAGE(1, handleBuildResults());
