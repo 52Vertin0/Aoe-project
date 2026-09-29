@@ -168,16 +168,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define PRIEST_ADV_CLEAR_R      2.0   // B 档清障半径(格)：只有贴到这个距离内的友军才算"堵路的"
 #define PRIEST_ADV_CLEAR_PUSH   6.0   // B 档清障推离距离(格)：沿侧向推开，不朝我方/敌方纵向推（避免又排成一列）
 #define PRIEST_ADV_CLEAR_MAX    3     // B 档单次最多挪走的友军数（保命：留其余护卫）
-// ★★★ 2026-09-28 反攻推进「卡死自救活锁」修复（manageCounterAttack / issueMarch）★★★
-//   活锁：自救退让把【本轮下发点】挪向我方，而旧重锚口径是"单位当前点→退让点"
-//   ⇒ 单位朝退让点走就被记成"在前进" ⇒ marchStuckTry 清零 ⇒ 每轮只退 1 格、"退完即成功"
-//   ⇒ 永远升不到 2/3 档 ⇒ 卡死单位被永久焊在原地（铁律 9：脱困动作不得充数为进展）。
-//   修：① 重锚口径改为"退让点→最终目标"；② 判据参照改为最终推进目标 targetDR/UR。
-//   ⛔ 另记：曾试"距最终目标的历史最优值(marchToFinal)"作判据 —— 实测有害（推远一次即无法
-//      再创新低 ⇒ 档位只涨不落 ⇒ 部队反复退让），已回滚。勿重犯。
-#define MARCH_STUCK_FRAMES  90     // 距最终目标连续 N 帧无新低 ⇒ 判卡死（≈3.6 秒@25fps，原硬编码 90）
-#define MARCH_MAX_BACK      8.0    // 自救退让距离上限(格)：档位单调升时防"一路退回 TC"
-#define MARCH_STUCK_TRY_MAX 8      // 退让档位上限（8 档 × 1 格 = 8 格，与 MARCH_MAX_BACK 对应）
 // ★ 打猎瞪羚选取范围（2026-09-04 用户要求"扩大一些"）：30→50 格，覆盖远距未建仓库的瞪羚群。 仓库覆盖判断（1547/1705 nearStock）也用此常量同步，避免猎人跑出去 50 格打、仓库仍卡 30 格内。
 #define GAZELLE_HUNT_RANGE  50
 // ★★★ 2026-09-12 用户需求：「在村民开始狩猎瞪羚前尽量先建仓库，仓库可以比其他建筑先建」★★★ 参考录像 build order：抵达猎场 01:35 → 就地建仓库 → 02:05 落成 → 之后才是市场/兵营/靶场。
@@ -1725,6 +1715,8 @@ void UsrAI::manageBuildings() {
     };
     auto bT0 = bNow();
     releasedBuilders.clear();
+    // ★ 2026-09-28 幽灵地基拉黑计数器（诊断用：证明"零进度卡死地基"确实被拉黑，否则无法区分已修/未生效）
+    static int g_ghostBuildN = 0;
 
     auto isCriticalBuildType = [](int t) {
         return t == BUILDING_ARMYCAMP || t == BUILDING_RANGE ||
@@ -1736,8 +1728,11 @@ void UsrAI::manageBuildings() {
     // 农场上限按“实际存在 + 已下发未回写”统计，不能因 deadBuildings 漏算而超建
     auto countFarmsForCap = [&]() {
         int cnt = 0;
+        // ★ 2026-09-28：排除已拉黑的零进度幽灵地基 —— 否则一座被引擎拒绝放置的农场地基会永久占掉 MAX_FARMS 名额
+        // （实测 map3 `[FARM-RING] farms=9/10` 长期卡在 9 座：第 10 座位置上是个永远建不成的幽灵）。pendingBuildIns
+        //（指令已下发、地基尚未回写）仍照常计入，避免"在途"被漏算导致超建。
         for (auto &b : infoPtr->buildings)
-            if (b.Type == BUILDING_FARM) cnt++;
+            if (b.Type == BUILDING_FARM && !deadBuildings.count(b.SN)) cnt++;
         for (auto &kv : pendingBuildIns)
             if (kv.second.second == BUILDING_FARM) cnt++;
         return cnt;
@@ -1824,9 +1819,18 @@ void UsrAI::manageBuildings() {
                 if (myB && myB->Percent < 100) {
                     // ★ 分档处置：percent==0（纯卡死，材料未投入）→ 拉黑另址重建； percent>0（已有进度）→ 不拉黑，仅释放登记，交由孤儿抢救派人接手建完，
                     // 避免丢弃已投入的建造进度（该地基仍会被 countBuildingsExisting 计入， 不会重复建造；且 deadBuildings 清理逻辑见 percent>0 即自动复活）。
-                    if (myB->Percent == 0 && !isCriticalBuildType(myB->Type)) {
+                    // ★★★ 2026-09-28 修复「幽灵地基死锁」：原条件带 `!isCriticalBuildType` ⇒ 房屋/农场/兵营/靶场/市场/谷仓/仓库
+                    // 的零进度地基【永不拉黑】。而引擎对"位置重叠"的建造令**会拒绝放置却残留一个 Percent==0 的地基对象**，
+                    // 于是：① countExisting/farmCount 仍把它算作"已存在"⇒ 不在别处新建；② 孤儿抢救(1848+)每 ORPHAN_STEAL_CD
+                    // 抽一个采集岗村民去建它 ⇒ 建不成 ⇒ 1800 帧 BUILDER_HARD_TIMEOUT ⇒ 无限循环（实测 map3 每局 81~193 次，
+                    // 村民 Walk:16/Work:6 经济被抽干 ⇒ 复合弓 0 产出 ⇒ 8/8 局全败）。
+                    // Percent==0 表示材料零投入 ⇒ 拉黑无任何进度损失；破环后会在别处另址新建。
+                    if (myB->Percent == 0) {
                         deadBuildings.insert(myB->SN);
                         if (!deadBuildingsFrame.count(myB->SN)) deadBuildingsFrame[myB->SN] = frame;
+                        ++g_ghostBuildN;
+                        DebugText(QString("[GHOST-BLD f=%1] 拉黑零进度卡死地基 SN=%2 type=%3(无人施工且超%4帧) 累计=%5")
+                                  .arg(frame).arg(myB->SN).arg(myB->Type).arg(frame - dsp->second).arg(g_ghostBuildN));
                     }
                     DebugText(QString("[BUILDER-HARD f=%1] 建造者SN=%2 type=%3 地基SN=%4 percent=%5 超时%6帧 → %7").arg(frame).arg(sn).arg(buildType).arg(myB->SN).arg(myB->Percent)
                               .arg(frame - dsp->second).arg(myB->Percent == 0 ? "作废另址重建" : "仅释放登记(交孤儿抢救接手)"));
@@ -1855,9 +1859,14 @@ void UsrAI::manageBuildings() {
             }
             // 累计空闲>15秒仍建不成 → 判定地基不可达/废弃，放弃并拉黑（避免死等浪费村民）
             if (frame - builderIdleFrame[sn] > 900) {
-                if (!isCriticalBuildType(myB->Type)) {
+                // ★★★ 2026-09-28 同 1817：Percent==0（零进度，多半是引擎拒绝放置的幽灵地基）时【任何类型】都拉黑，
+                // 否则 critical 类型的幽灵地基会落入孤儿抢救的无限补派循环。非 critical 类型保持原有"无条件拉黑"行为不变。
+                if (myB->Percent == 0 || !isCriticalBuildType(myB->Type)) {
                     deadBuildings.insert(myB->SN);
                     if (!deadBuildingsFrame.count(myB->SN)) deadBuildingsFrame[myB->SN] = frame;
+                    ++g_ghostBuildN;
+                    DebugText(QString("[GHOST-BLD f=%1] 拉黑零进度卡死地基(IDLE>900) SN=%2 type=%3 累计=%4")
+                              .arg(frame).arg(myB->SN).arg(myB->Type).arg(g_ghostBuildN));
                 }
                 releaseBuilderAndErase(sn, it);
                 continue;
@@ -5062,12 +5071,7 @@ void UsrAI::manageCounterAttack() {
 // 统一推进出口：直达敌方基地附近目标点，交给引擎全图寻路（可穿越未探索区）。
 // ★ 2026-09-15 用户要求「不用步进或绕路」：已删 marchWaypoint/nextVisibleStep/axisAlignedTry/findDetourWaypoint。
 // 唯一退路 = 卡死时朝集结 TC 内缩 stuckTry 格重发。canReissue(30帧节流) 必须保留：每帧重发会刷新 marchCmdFrame
-// ⇒ stuckTry 永不涨 ⇒ 卡死打转。
-// ★★★ 2026-09-28 判据参照改锚（修自救活锁）★★★
-//   原注："marchGoal*(本轮下发点) 必须作参照，否则退让会被误判为更卡死一路退回 TC" —— 该两难已解：
-//     用 marchGoal* ⇒ 退让把目标挪近 ⇒ 单位朝退让点走 = 假进展 ⇒ 档位清零 ⇒ 活锁；
-//     用最终目标 ⇒ 旧顾虑是"一路退回 TC"，现由 MARCH_MAX_BACK(8 格) 硬上限兜住。
-//   ⇒ 参照 = targetDR/UR（最终推进目标，跨帧稳定）；退让时由 issueMarch 重锚为"退让点→最终目标"。
+// ⇒ stuckTry 永不涨 ⇒ 卡死打转。   ⚠ marchGoal* = 本轮【实际下发点】：卡死判据必须以它为参照，否则退让会被误判为"更卡死"一路退回 TC。
     static std::map<int, double> marchGoalDR, marchGoalUR;
     // ★★★ 2026-09-20 方案 B【Tier-2 优化点】：新增尾参 biasTowerSN（默认 -1 ⇒ 既有全部调用点行为逐字不变）。
     // -1 = 落点 = 敌方基地附近 targetDR/UR（原语义）；   ≥0 = 落点改贴到该敌塔【靠我方一侧】的 standoff 环上（TOWER_APPROACH_STANDOFF 格）。
@@ -5076,7 +5080,6 @@ void UsrAI::manageCounterAttack() {
     auto issueMarch = [&](double fx, double fy, int sn, int sort, int stuckTry, bool canReissue,
                           int biasTowerSN = -1) {
         (void)sort;
-        (void)fx; (void)fy;   // ★ 2026-09-28：重锚口径改为"退让点→最终目标"后，单位当前点不再参与判据
         if (!canReissue) return;                 // 未到节流窗口：本帧静默，不重复下发
         double mx = targetDR, my = targetUR;
         // —— Tier-2 落点偏置：塔外侧 standoff 环（塔在 12 格内时不会走到这里，Tier-1 已 return）——
@@ -5098,15 +5101,10 @@ void UsrAI::manageCounterAttack() {
         if (stuckTry > 0) {
             double dx = mx - rallyCtrDR, dy = my - rallyCtrUR, d = std::sqrt(dx * dx + dy * dy);
             double back = (d > BL) ? ((stuckTry * BL < d - BL) ? stuckTry * BL : d - BL) : 0.0;
-            if (back > MARCH_MAX_BACK * BL) back = MARCH_MAX_BACK * BL;   // ★ 2026-09-28 退让上限：档位单调升时防"一路退回 TC"
             if (d > 1e-6) { mx -= dx / d * back; my -= dy / d * back; }
             snapWalkable(mx, my, forestGrid);                // 内缩后可能落进海/林/矿 → 再吸附一次
-            // ★★★ 2026-09-28 重锚口径修正（修「自救活锁」根因）★★★
-            //   旧口径 = calDistance(单位当前点 → 退让点)：退让点被挪向我方 ⇒ 单位朝它走即"距离变近"
-            //   ⇒ 被下游判成"在前进" ⇒ 档位清零 ⇒ 每轮只退 1 格 ⇒ 活锁。
-            //   新口径 = calDistance(退让点 → 【最终推进目标】)：退让点必然比单位更远离目标 ⇒
-            //   基准 > 当前值 ⇒ 不触发清零 ⇒ 档位单调升；真绕过障碍朝目标推进 >0.5 格时才清零。
-            marchIssueDist[sn] = calDistance(mx, my, targetDR, targetUR);
+            // 退让点算一个【新目标】：基准与计时一起重锚，"能否走到退让点"成为新一轮判据；走到即复位，不累积。
+            marchIssueDist[sn] = calDistance(fx, fy, mx, my);
             marchMoveFrame[sn] = frame;
         }
         marchGoalDR[sn] = mx; marchGoalUR[sn] = my;   // 判据参照 = 本轮实际下发点
@@ -5120,13 +5118,6 @@ void UsrAI::manageCounterAttack() {
     // ⚠ 声明位置必须在 attackBuildingOrMarch **之前**：Tier-2 分支要 `++twBias`，同函数内"后声明"的变量
     // 在 lambda 体内查不到名字（编译期错误，不是运行期）。   twBias = Tier-2【去重后】的偏置次数；验收判据 = 跑局后 twBias 必须 ≠ 0（否则方案 B 没生效）。
     static long long twArmyFrames = 0, twChance12 = 0, twChance30 = 0, twBias = 0;
-    // ★★★ 2026-09-28 只读诊断（验证「卡死自救活锁」修复）★★★
-    //   活锁特征：档位永远只到 1（退 1 格 → 朝退让点走 → 被误判脱困 → 清零 → 再退 1 格）。
-    //   修复后应出现 >=2 档。验收判据 A：跑局后「其中>=2档」必须 > 0。
-    //   验收判据 B：胜负零回归（对拍基线 map2 24 局 = 17胜/4负/3未决 = 70.8%）。
-    static long long marchRiseN = 0, marchRiseGe2 = 0, marchClearN = 0;
-    static int marchStuckMax = 0;
-    bool marchSelfReported = false;
 
     // ★ 2026-09-15 去重（铁律 21/26）：单位无「敌方兵」可打时的统一出口 = 最近敌塔 → 最近敌建筑 → 推进。 原远程分支与近战分支各自抄了一份完全相同的 25 行（连 ARMY_IGNORE_SIEGE_WORKSHOP 分支都一样）。
     // who 仅用于 [TOWER-TGT] 日志标签（"复合弓兵/远程" / "近战"），不改任何决策。   ★ 语义保持原样：打塔后不再推进；打建筑时若"已在打它"则退回推进；否则推进兜底。
@@ -5194,12 +5185,6 @@ void UsrAI::manageCounterAttack() {
 
     const int maxMarchCmds = readyToAttack ? 8 : (armyCount + 4);
     for (int pass = 0; pass < 2 && marchCmds < maxMarchCmds; ++pass) {
-        // ★ 2026-09-28 只读诊断：自救退让档位分布（不参与任何决策；每 1500 帧一档）
-        if (pass == 0 && frame % 1500 == 0 && !marchSelfReported) {
-            marchSelfReported = true;
-            DebugText(QString("[MARCH-SELF f=%1] 升档=%2 其中>=2档=%3 最高档=%4 真进展清档=%5")
-                      .arg(frame).arg(marchRiseN).arg(marchRiseGe2).arg(marchStuckMax).arg(marchClearN));
-        }
         for (auto &a : infoPtr->armies) {
             if (a.Sort == AT_PRIEST) { priest = &a; continue; }
 
@@ -5212,19 +5197,15 @@ void UsrAI::manageCounterAttack() {
 
             // ★ 卡死检测（独立表 marchIssue*/marchMoveFrame，绝不复用 armyIssue*）。 判据 = "有没有朝推进目标靠近"(marchIssueDist)，【不是】绝对位移——原地抖动 A→B→A 每步都 >0.5BL。
             // ⚠ 旧 `NowState != IDLE → continue` 有致命漏洞：领到走不到的航点会永久停在 WALKING → 卡死。
-            // ★★★ 2026-09-28 判据参照改锚（修自救活锁）★★★
-            //   参照一律用【最终推进目标 targetDR/UR】（跨帧稳定），**不再**用 marchGoal*（本轮下发点）：
-            //   后者会被自救退让挪动，distance 变近 ⇒ 与"进展即清档"互相污染 ⇒ 活锁。
-            const double gDR = targetDR;
-            const double gUR = targetUR;
-            const double curDistToTgt = calDistance(a.DR, a.UR, gDR, gUR);   // ★ 参照 = 最终推进目标
+            const double gDR = marchGoalDR.count(a.SN) ? marchGoalDR[a.SN] : targetDR;
+            const double gUR = marchGoalUR.count(a.SN) ? marchGoalUR[a.SN] : targetUR;
+            const double curDistToTgt = calDistance(a.DR, a.UR, gDR, gUR);   // ★ 参照 = 本轮实际下发点
             if (!marchIssueDist.count(a.SN)) {          // 首次见到→建立基准
                 marchIssueDist[a.SN] = curDistToTgt;
                 marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
             } else if (marchIssueDist[a.SN] - curDistToTgt > 0.5 * BL) {
                 marchIssueDist[a.SN] = curDistToTgt;    // 朝目标靠近了→刷新基准
                 marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0; // 并清卡死档，回正常寻路
-                ++marchClearN;                                          // ★ 只读诊断：真进展清档次数
             }
             // ⚠ ATTACKING(正在开火)绝不算卡死：投石车/弓兵按最大射程站桩输出时本就不位移，   若计入卡死，90帧后会被拽走去移动，直接破坏投石车的 standoff 输出。
             // 这里同时刷新基准，使其停火后重新计时而非立刻被判卡死。
@@ -5232,15 +5213,10 @@ void UsrAI::manageCounterAttack() {
                 marchIssueDist[a.SN] = curDistToTgt;
                 marchMoveFrame[a.SN] = frame; marchStuckTry[a.SN] = 0;
             }
-            bool stuckNow = (frame - marchMoveFrame[a.SN] > MARCH_STUCK_FRAMES);  // 距最终目标无新低→判卡死
+            bool stuckNow = (frame - marchMoveFrame[a.SN] > 90);        // 90帧无位移→判定卡死
             bool canReissue = !marchCmdFrame.count(a.SN) ||
                               (frame - marchCmdFrame[a.SN] >= 30);      // 30帧节流，防每帧换方向抖动
-            if (stuckNow && canReissue && marchStuckTry[a.SN] < MARCH_STUCK_TRY_MAX) {
-                marchStuckTry[a.SN]++;                                  // 升档：逐档加深退让（有上限，不退回 TC）
-                ++marchRiseN;
-                if (marchStuckTry[a.SN] >= 2) ++marchRiseGe2;           // ★ 活锁下此值恒 0（永久只到 1 档）
-                if (marchStuckTry[a.SN] > marchStuckMax) marchStuckMax = marchStuckTry[a.SN];
-            }
+            if (stuckNow && canReissue) marchStuckTry[a.SN]++;          // 升档：换个方向试
             int stuckTry = marchStuckTry[a.SN];
 
             // ===== ★ 高机动单位"先锋探路"（独立于集结/接战，最优先调度） =====   不造侦察骑兵，改派感化的战车弓兵/骑兵；投石车 SPEED 极慢不参与（会把攻城火力锁死在 TC）。
@@ -6642,8 +6618,9 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
     // 农场硬上限：无论哪条建造路径，超过 MAX_FARMS 一律不再下发
     if (buildingType == BUILDING_FARM) {
         int farmCount = 0;
+        // ★ 2026-09-28：同 countFarmsForCap —— 拉黑的幽灵地基不再占用 MAX_FARMS 名额（见该处注释）。
         for (auto &b : infoPtr->buildings)
-            if (b.Type == BUILDING_FARM) farmCount++;
+            if (b.Type == BUILDING_FARM && !deadBuildings.count(b.SN)) farmCount++;
         for (auto &kv : pendingBuildIns)
             if (kv.second.second == BUILDING_FARM) farmCount++;
         if (farmCount >= MAX_FARMS) return false;
