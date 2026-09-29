@@ -358,6 +358,14 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define COUNTER_FARMER_ATTACK_FRAME 40500   // 27 分钟 × 1500 帧/分钟
 #define COUNTER_FARMER_ATTACK_GAP 90        // 同一农民的重复下发节流(帧)：防幂等判据失效时刷屏，
                                             // 重发会 reset 引擎攻击关系并打断动作(铁律 14)
+// ★★★ 2026-09-29 用户需求：「派农民吸引火力，尝试让祭司【跟随农民】直接感化敌方武器厂」★★★
+// 背景（用户原话）：反攻时派农民是因为再生产资源已经没用了 —— 农民是【诱饵】，不是主力。
+// 原先代码里【零耦合】：grep farmerAtk × 祭司跟随锚(armyDR/armyUR) = 0 命中 ⇒ 祭司跟的是己方大军重心、
+//   且被 PRIEST_MIN_DIST_TARGET(18) 硬夹在后方 ⇒ "跟随农民"这条路根本不存在（本轮新增）。
+// 判据：农民波"已投入" = 已过总攻帧 且 存在【正在攻击敌建筑】的农民（WorkObjectSN ∈ 敌建筑 SN）。
+//   ⚠ 不用"农民离基地远"这类间接量 —— 农民往返/被打退时距离会抖，误判窗口大。
+//   取 N>=3 而不是 >=1：只剩 1~2 个农民时诱饵已经不成立，祭司此时前出=白送（祭司死=立刻判负）。
+#define COUNTER_FARMER_WAVE_MIN 3   // 判「农民波已投入」所需的最少在打建筑农民数
 // ★ 祭司护驾三级半径(格)：祭司死=立刻失败，故护驾优先于士兵自卫/守家/前出等一切军事行为
 #define PRIEST_GUARD_URGENT 8.0   // 紧急：敌进入祭司此半径 → 所有兵(可打断战斗)立即回防
 #define PRIEST_GUARD_ALERT  15.0  // 预警：敌进入祭司此半径 → 空闲/行军兵前往护驾(不打断正在战斗的兵，防反复横跳)
@@ -4795,6 +4803,20 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
 // ★ 2026-09-16 修正：原先打印的 towers= 是 scanTowerThreat【祭司周边】塔数，与"塔全拆"这个【全局】判据不是同一个量
 // ⇒ 极易误读（历史教训：`[LC-DBG] towers=0` @f=33300 被判成"塔已全拆"，实为未探明伪影，塔是 0→1→2 逐个探明的）。
 // 现同时打印两个口径：gT=全局已探明敌箭塔数（判据真源）／seen=已探明敌建筑总数（保险项）／nearT+loc=祭司周边。
+        // ★★★ 2026-09-29 用户需求：「农民吸火 ⇒ 祭司跟随农民直接感化武器厂」的判据（本函数内自算）★★★
+        //   为什么自算：农民总攻段在 manageCounterAttack() 的【另一处】，与本函数原先零耦合；自算可做到
+        //   【不改 .h、不引入跨函数状态、不新增成员变量】⇒ 加固面最小（同 §0 金丝雀的纪律）。
+        //   判据语义见文件头 COUNTER_FARMER_WAVE_MIN 处注释；铁律 53：该量在下行 LC-DBG 里可打印。
+        int farmerWaveN = 0;
+        if (frame >= COUNTER_FARMER_ATTACK_FRAME) {
+            for (auto &f : infoPtr->farmers) {
+                if (f.FarmerSort != FARMERTYPE_FARMER || f.WorkObjectSN < 0) continue;
+                for (auto &b : infoPtr->enemy_buildings)
+                    if (b.SN == f.WorkObjectSN) { farmerWaveN++; break; }
+            }
+        }
+        const bool farmerWaveOn = (farmerWaveN >= COUNTER_FARMER_WAVE_MIN);
+
         if (frame % 300 == 0) {
             double nearTowerD = 1e9; int towerCnt = 0;
             scanTowerThreat(nearTowerD, towerCnt);   // 祭司周边的塔（态势用，非判据）
@@ -4803,10 +4825,10 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 seen++;
                 if (b.Type == BUILDING_ARROWTOWER) gT++;
             }
-            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 gT=%10 seen=%11 nearT=%12 loc=%13").arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
+            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 gT=%10 seen=%11 nearT=%12 loc=%13 fW=%14").arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
                       .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
                       .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2).arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown)
-                      .arg(gT).arg(seen).arg((nearTowerD > 1e8) ? -1.0 : nearTowerD / BL, 0, 'f', 1).arg(towerCnt));
+                      .arg(gT).arg(seen).arg((nearTowerD > 1e8) ? -1.0 : nearTowerD / BL, 0, 'f', 1).arg(towerCnt).arg(farmerWaveN));
         }
 
         // ★★★ 2026-09-16 用户需求：祭司感化武器厂的【唯一】限制 = 敌方全部箭塔拆完 ★★★
@@ -4833,7 +4855,23 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
         const bool towersClearEnough = (enemyTowerN <= PRIEST_TOWERS_CLEAR_MAX)
                                 && (enemySiegeSN != -1)
                                 && (enemyBldSeenN >= PRIEST_TOWERS_CLEAR_MIN_SEEN);
-        const bool clearOk = PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR ? towersClearEnough : localClear;
+        const bool clearOk = (PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR ? towersClearEnough : localClear)
+                             || (farmerWaveOn && localClear);
+        // ★ 2026-09-29 用户拍板：农民波已投入 ⇒ 闸放行。**但必须叠加 localClear 保命条件**（下面是被实测逼出来的）：
+        //   ⚠⚠ 实测（fw1 批，8 局冒烟）：无条件放行版 `|| farmerWaveOn` 在 2/2 咬合局都把祭司【送死】——
+        //     · fw103：f=40500 `gT=4 dS=30.5 hp=0.80` ⇒ 祭司一路 ADVANCE 到 d=11.4（`nearT` 从 24.5 缩到 7.6）起手，
+        //       37 帧后 `dS=5.4 nearT=3.0` ⇒ hp 0.80→0.68→0.20 ⇒ f=41233 `DEFEAT: Priest killed`。整局 41264 结束（原本会拖到 45000 UND）。
+        //     · fw108：`towers=3` 下走到 d=11.9 起手，384 帧后同为 `Priest killed`。
+        //   ⇒ **「农民吸引火力」对【箭塔】不成立**：塔是静态远程，谁最近打谁 —— 祭司为了进 12 格感化射程必然走进塔环，
+        //     于是自己成了塔的目标（fw103 起手时 `nearT=7.6`，施法中被射死）。塔不靠"仇恨"选目标，诱饵换不来豁免。
+        //   ⚠ 更严重的回归面：h309（历史胜局）f=41700 时 `gT=3 dS=11.0 hp=0.68 nearT=4.4`，被闸拦 7 次、等到 `towers=2`（f=42174）
+        //     才起手成功；无条件放行会让它在 `nearT=4.4` 就起手 ⇒ 几乎必死 ⇒ **把一个胜局翻成败局**。
+        //   ⇒ 故保留 `localClear`（= 祭司周边 8 格无敌兵 且 14 格内无塔）作为二次条件：放行只在【确实安全】时生效。
+        //     若要回到"无条件放行"，把上面这行的 `(farmerWaveOn && localClear)` 改回 `farmerWaveOn` 即可（但不建议，见上）。
+        // ⚠ 口径冲突备忘：本条与 2026-09-16 用户需求「祭司感化的【唯一】限制条件 = 敌方全部箭塔拆完」冲突；
+        //   2026-09-29 用户选择「农民波投入后放行」，此处以 `&& localClear` 折中（放行但保命）。
+        //   依据（h2+h3 共 48 局）：有 5 局（h214/h224/h303/h311/h324）拖到 45000 帧上限仍未决，末态 =「双方军队都打光、
+        //   我 Mil 0~4、敌 E 0~4，但敌塔残留 2~5 座」⇒ gT > PRIEST_TOWERS_CLEAR_MAX ⇒ clearOk 恒假 ⇒ 祭司被永久锁死。
 
 // ★★★ 2026-09-14 关键修复：武器厂感化【提前到状态/移动闸之前】★★★ 铁证：[LC-DBG] 8 局仅命中 1 次 ⇒ 下方整段执行率 <1%（被 NowState 闸 + priestMoveCooldown 闸挡住）。
 // 而【感化是 HumanAction，与 priestMoveCooldown(移动节流) 无关】—— 引擎侧转换冷却由 ConvertCooldown 管。
@@ -4871,8 +4909,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                     HumanAction(priestSN, enemySiegeSN);
                     priestCounterCooldown = PRIEST_SIEGE_CONVERT_LOCKOUT;
                     // 每次发令必打（原为 frame%50 采样 ⇒ 起手过程不可观测）；发令本身已被 lockout 节流到 <=1/400 帧
-                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 hp=%3 nearT=%4 towers=%5 path=early").arg(frame).arg(sD0 / BL, 0, 'f', 1).arg(pHp0, 0, 'f', 2)
-                              .arg((nearT0 > 1e8) ? -1.0 : nearT0 / BL, 0, 'f', 1).arg(towerN0));
+                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 hp=%3 nearT=%4 towers=%5 path=early fW=%6").arg(frame).arg(sD0 / BL, 0, 'f', 1).arg(pHp0, 0, 'f', 2)
+                              .arg((nearT0 > 1e8) ? -1.0 : nearT0 / BL, 0, 'f', 1).arg(towerN0).arg(farmerWaveN));
                 }
                 priestMoveCooldown = 60;   // 钉住：施法期禁止后撤/移动打断（移动会清空 WorkObjectSN）
                 return;
@@ -4928,6 +4966,9 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
         // ★ 2026-09-13：局部清场成立时安全距离约束失效（否则 18 格安全 > 12 格感化射程 ⇒ 永远够不到）。
         // ★ 2026-09-14 副作用修复：只有【确实存在武器厂目标】才解除。旧写法 `if (allowConvertSiege)` 在未发现 武器厂时也会解除 ⇒ 祭司不进后撤分支、停在原地挨打（lc8 f=36980 死 / lc4 f=36100 死）。
         if (allowConvertSiege && enemySiegeSN != -1) priestTooClose = false;
+        // ★ 2026-09-29（农民吸火口径）：农民波已投入时同样解除"太靠前 ⇒ 后撤"。否则下方 rear 分支的
+        //   `PRIEST_MIN_DIST_TARGET` 夹持会从另一条路径把祭司拉回后方，抵消掉"跟随农民"的效果（两条路径互斥，铁律 21/26）。
+        if (farmerWaveOn) priestTooClose = false;
 
         // ★★★ 2026-09-13 用户需求：敌方军队全灭 + 箭塔全拆 → 祭司主动前出感化武器厂 ★★★ 优先级高于"后撤保命"（清场后无威胁，前出不会送命）。
         if (allowConvertSiege && enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
@@ -5024,8 +5065,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                     if (!escaping) {
                         double nearT2 = 1e9; int towerN2 = 0;
                         scanTowerThreat(nearT2, towerN2);
-                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared").arg(frame).arg(dSiege / BL, 0, 'f', 1)
-                                  .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2));
+                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared fW=%5").arg(frame).arg(dSiege / BL, 0, 'f', 1)
+                                  .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2).arg(farmerWaveN));
                     }
                 }
             }
@@ -5042,10 +5083,21 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             // ★ 2026-09-12（用户需求"祭司反攻不要太靠前"）：旧版把祭司推到 target(敌基地)-5格(仅沿 DR 轴)， 几乎与大军一起冲到敌方基地外 5 格，前线一崩就暴露在敌塔/敌兵火力下 = 立即失败。
             // 新：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格， 且与反攻目标保持 ≥ PRIEST_MIN_DIST_TARGET 格。上方感化段保留但改为【被动】。
             double tcDR = rallyCtrDR, tcUR = rallyCtrUR;   // ★ 后方锚点 = 集结 TC（己方基地方向），祭司朝此方向退
+            // ★★★ 2026-09-29 用户需求：农民波已投入 ⇒ 跟随锚从【大军重心】换成【农民重心】★★★
+            //   理由：农民是吸火的那一波、走在大军前面（`[FARMER-ATK] 已投入=19` 实测）；祭司跟农民才会被带到武器厂近旁。
+            //   ⚠ 仅当本帧确实统计到农民时才切换（`nArmy > 0` 已兜底），否则回退大军重心 —— 空重心会把祭司拉回 TC。
+            //   ⚠ 变量名保留 armyDR/armyUR（下游 4 处引用），但此处的语义已变为"跟随锚重心"。
             double sumDR = 0, sumUR = 0; int nArmy = 0;
-            for (auto &a : infoPtr->armies) {
-                if (a.SN == priestSN) continue;       // 重心不算祭司自己
-                sumDR += a.DR; sumUR += a.UR; nArmy++;
+            if (farmerWaveOn) {
+                for (auto &f : infoPtr->farmers) {
+                    if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+                    sumDR += f.DR; sumUR += f.UR; nArmy++;
+                }
+            } else {
+                for (auto &a : infoPtr->armies) {
+                    if (a.SN == priestSN) continue;       // 重心不算祭司自己
+                    sumDR += a.DR; sumUR += a.UR; nArmy++;
+                }
             }
             double armyDR = (nArmy > 0) ? sumDR / nArmy : tcDR;
             double armyUR = (nArmy > 0) ? sumUR / nArmy : tcUR;
@@ -5057,8 +5109,12 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             double px = armyDR + ux * PRIEST_SAFE_BEHIND * BL;
             double py = armyUR + uy * PRIEST_SAFE_BEHIND * BL;
             // 安全距离约束：距反攻目标 ≥ MIN_DIST_TARGET（不满足则沿身后方向继续退，直到满足）
+            // ★★★ 2026-09-29 用户拍板：农民波已投入 ⇒ 解除 18 格夹持 ★★★
+            //   实证（h311 末段逐帧）：祭司每 30 帧重发 HumanMove，目标只在小数位变
+            //   （(2328.45,2512.74)→(2320.14,2502.3)→(2317.55,2509.19)→(2329.47,2514.23)）⇒ 净位移≈0，
+            //   且 `[PRST-REAR] dTgt 恒 18.1` == PRIEST_MIN_DIST_TARGET ⇒ 正是本夹持把祭司钉在环上、永远够不到武器厂。
             double dTgt = calDistance(px, py, targetDR, targetUR);
-            if (dTgt < PRIEST_MIN_DIST_TARGET * BL) {
+            if (!farmerWaveOn && dTgt < PRIEST_MIN_DIST_TARGET * BL) {
                 double need = (PRIEST_MIN_DIST_TARGET * BL - dTgt) + 2.0 * BL;
                 px += ux * need; py += uy * need;
             }
@@ -5067,8 +5123,9 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             if (isPassableAt(px, py, forestGrid))
                 HumanMove(priestSN, px, py);
             if (frame % 100 == 0)
-                DebugText(QString("[PRST-REAR f=%1] army=(%2,%3) tgt=(%4,%5) dTgt=%6 tooClose=%7").arg(frame).arg(armyDR / BL, 0, 'f', 0).arg(armyUR / BL, 0, 'f', 0)
-                          .arg(targetDR / BL, 0, 'f', 0).arg(targetUR / BL, 0, 'f', 0).arg(dTgt / BL, 0, 'f', 1).arg(priestTooClose ? 1 : 0));
+                DebugText(QString("[PRST-REAR f=%1] army=(%2,%3) tgt=(%4,%5) dTgt=%6 tooClose=%7 anchor=%8 fW=%9").arg(frame).arg(armyDR / BL, 0, 'f', 0).arg(armyUR / BL, 0, 'f', 0)
+                          .arg(targetDR / BL, 0, 'f', 0).arg(targetUR / BL, 0, 'f', 0).arg(dTgt / BL, 0, 'f', 1).arg(priestTooClose ? 1 : 0)
+                          .arg(farmerWaveOn ? "farmer" : "army").arg(farmerWaveN));
             priestCounterCooldown = 30; priestMoveCooldown = 30;
         }
     }
@@ -5334,6 +5391,34 @@ void UsrAI::manageCounterAttack() {
     };
 
     const int maxMarchCmds = readyToAttack ? 8 : (armyCount + 4);
+
+    // ★ 2026-09-29 反攻前集结：确定性、互不重叠的环形槽位表（同心环六角填充）。
+    // 槽位按 rank 0,1,2,... 由内向外分配，每个单位锁死一个 ⇒ 物理上不可能重复。
+    static std::vector<std::pair<double, double>> gAssembleSlots;
+    if (gAssembleSlots.empty()) {
+        const double ASM_SPACING = 2.2 * BL;            // 槽位最小间距（像素）≈ 2.2 格
+        const double ASM_MAXR    = 11.5 * BL;            // 不超过 12 格集结判据 ⇒ 到位即停重发
+        const double ASM_PI      = 3.14159265358979323846;
+        for (int r = 0; ; ++r) {
+            double R = r * ASM_SPACING;
+            if (r > 0 && R > ASM_MAXR) break;            // 超半径的环不再生成
+            if (r == 0) { gAssembleSlots.push_back({0.0, 0.0}); continue; }
+            int cnt = 6 * r;                             // 第 r 环 6r 个点（六角填充）
+            for (int k = 0; k < cnt; ++k) {
+                double ang = (k * 2.0 * ASM_PI) / cnt + (r % 2) * (ASM_PI / cnt); // 相邻环错开，避免正对
+                gAssembleSlots.push_back({std::cos(ang) * R, std::sin(ang) * R});
+            }
+        }
+    }
+    // 军事单位（非祭司）按 SN 升序的稳定序号 rank：SN 跨帧不变 ⇒ rank 稳定 ⇒ 槽位稳定（不抖动）。
+    std::map<int, int> snRank;
+    {
+        std::vector<int> sns;
+        for (auto &x : infoPtr->armies) if (x.Sort != AT_PRIEST) sns.push_back(x.SN);
+        std::sort(sns.begin(), sns.end());
+        for (size_t i = 0; i < sns.size(); ++i) snRank[sns[i]] = (int)i;
+    }
+
     for (int pass = 0; pass < 2 && marchCmds < maxMarchCmds; ++pass) {
         for (auto &a : infoPtr->armies) {
             if (a.Sort == AT_PRIEST) { priest = &a; continue; }
@@ -5648,23 +5733,29 @@ void UsrAI::manageCounterAttack() {
             // 寻路反复失败 ⇒ 原地抖动。新：目标点 = TC 中心 + 朝该单位自己方向外推 12 格 + SN 扇形散开。
             if (!readyToAttack) {
                 if (calDistance(a.DR, a.UR, rallyCtrDR, rallyCtrUR) > 12 * BL && canReissue) {
-                    double ux = a.DR - rallyCtrDR, uy = a.UR - rallyCtrUR;
-                    double baseAng = (std::sqrt(ux*ux + uy*uy) > 1e-6) ? std::atan2(uy, ux) : 0.0;
+                    // ★ 2026-09-29（用户：「反攻前集结在一起，但位置不能重复」）：
+                    // 旧 SN%13/SN%5 散开 ⇒ 同类 SN 在同方向大量撞同一点（实测多个复合弓挤同点互卡）。
+                    // 新：按「稳定序号 rank」映射到确定性、互不重叠的环形槽位（见上方 gAssembleSlots）。
+                    // rank 由 SN 升序决定（SN 跨帧不变 ⇒ 每个单位永远锁同一个槽位，不抖动）。
                     bool moved = false;
-                    double angTries[3] = {0.0, 0.25, -0.25};          // 主方向 + 两侧微调，防落点被占
-                    // ★ 2026-09-17（用户：「停驻集结时不要站在同一点」）：原 SN 散开只有 7 类 ((SN%7)-3)*0.12 ⇒ 同方向出发的单位大量撞同一点。改为 13 类角度 + 5 类半径
-                    // 向内错位（半径 9.6~12 格，不越过下方 `>12格` 的集结到位判据 ⇒ 到达即停止重发）。
-                    for (int ti = 0; ti < 3 && !moved; ++ti) {
-                        double ang = baseAng + ((a.SN % 13) - 6) * 0.09 + angTries[ti];
-                        double holdR = (12.0 - (double)(a.SN % 5) * 0.6) * BL;
-                        double gx = rallyCtrDR + std::cos(ang) * holdR;
-                        double gy = rallyCtrUR + std::sin(ang) * holdR;
+                    int rank = snRank.count(a.SN) ? snRank[a.SN] : 0;
+                    const int slot = (rank < (int)gAssembleSlots.size()) ? rank : (int)gAssembleSlots.size() - 1;
+                    double offRot[5] = {0.0, 0.35, -0.35, 0.7, -0.7};   // 主槽 + 4 个旋转微调（仅主槽不可走时兜底）
+                    for (int ti = 0; ti < 5 && !moved; ++ti) {
+                        double ox = gAssembleSlots[slot].first, oy = gAssembleSlots[slot].second;
+                        if (ti > 0) {                                    // 绕 TC 旋转当前偏移（保持半径 ⇒ 仍在 12 格内）
+                            double ca = std::cos(offRot[ti]), sa = std::sin(offRot[ti]);
+                            double nx = ox * ca - oy * sa, ny = ox * sa + oy * ca;
+                            ox = nx; oy = ny;
+                        }
+                        double gx = rallyCtrDR + ox, gy = rallyCtrUR + oy;
                         gx = max(0.0, min((double)MAP_L * BL, gx));
                         gy = max(0.0, min((double)MAP_U * BL, gy));
                         if (isPassableAt(gx, gy, forestGrid)) {
                             HumanMove(a.SN, gx, gy);
                             marchCmdFrame[a.SN] = frame;
                             moved = true;
+                            DebugText(QString("[ASM f=%1] SN=%2 rank=%3 slot=%4 ->(%5,%6)").arg(frame).arg(a.SN).arg(rank).arg(slot).arg(gx / BL, 0, 'f', 1).arg(gy / BL, 0, 'f', 1));
                         }
                     }
                 }
