@@ -17,8 +17,9 @@ ins UsrIns;
 //   [ENV]/[SNAP]/[INS-BAD] 文本心跳在评测机上很可能被整条丢弃。而 backtrace 里带着 gdb 自身
 //   的 stderr（"could not find '.gnu_debugaltlink'"）⇒ 评测机**捕获了进程输出** ⇒
 //   直接 fprintf(stdout/stderr) + fflush 是唯一能被回读的通道。
-//   只用 <cstdio>，不引用任何引擎/新增符号，不改变任何判据或指令 ⇒ 纯观测。
+//   只用 <cstdio>/<new>，不引用任何引擎/新增符号，不改变任何判据或指令 ⇒ 纯观测/纯自救。
 #include <cstdio>
+#include <new>        // ★ 2026-09-29 金丝雀修复路径用 placement new（<memory> 只是间接带入，此处显式声明）
 
 // ============================================================================================
 // ★★★ 2026-09-23~28 OJ(Linux/gcc13) SIGSEGV 自救 —— 已整体迁入 UsrAICore（定义见 UsrAI.h）★★★
@@ -41,12 +42,53 @@ struct SnapState {
     int waitCount = 0;      // ★ 真正进入等待的帧数（正常应仅开局 1 次）
     int skipCount = 0;      // 完全无可用快照而被跳过的帧数
     int badSnapCount = 0;   // ★ 完整性哨兵拦下的坏快照数（非 0 ⇒ 引擎侧 buffer 被踩）
+    int ptrBadCount = 0;    // ★ 金丝雀：infoPtr 被外部踩坏而放弃决策的帧数（>0 ⇒ 引擎侧确在踩我们的对象）
+    int ptrRepairCount = 0; // ★ 金丝雀：被踩坏后用 placement new 原地重建 infoPtr 的次数
 };
 std::map<const UsrAICore*, SnapState> g_snapStates;
 std::mutex g_snapStatesMutex;
 SnapState& snapState(const UsrAICore* self) {
     std::lock_guard<std::mutex> lock(g_snapStatesMutex);
     return g_snapStates[self];
+}
+
+// ★★★ 2026-09-29 OJ 崩点金丝雀（同语义只写一遍：机理、判据、修法都在这一处）★★★
+//   现象：6 次 OJ SIGSEGV 的"崩点行号"看着各不相同，逐个回落到源码后**全部落在同一个对象
+//   `infoPtr` 上**：
+//     · `:428` / `:501`      = `infoPtr = fresh`   （解引用【旧】控制块去减引用计数）
+//     · `shared_ptr_base.h:1665 get()`（内联进 processFrame）= `infoPtr->xxx` / `if (infoPtr)`
+//     · `:700` / `:756`      = `frame = infoPtr->GameFrame`
+//   ⇒ 这不是"随机落点"，而是【UsrAI 对象里那 16 字节被外部写坏】—— 崩点只是"被踩之后的第一次解引用"。
+//     这也解释了为什么三轮快照内容加固（深拷贝→零拷贝→完整性哨兵）全都无效：
+//     它们加固的是**快照内容**，而被踩的是**持有快照的那个句柄**。
+//   判据（充要，且只用一次整数比较）：本文件对 infoPtr 是**单写者** —— 只在 refreshSnapshot() 里赋值，
+//   且只在 AI 线程执行 ⇒ "当前合法值"必然等于 g_curSnapPtr ⇒ 比较一次即知有没有被踩：
+//     · 没被踩 ⇒ 恒等（正常路径零成本）；  · 被踩 ⇒ 恒不等（除非恰好等于正确值 —— 那本就等于没被踩）。
+//   ⚠ 不要改用"再查一遍 st.published"之类的间接判据：那要拿锁、要解引用别的对象，在被踩的现场自己也会崩。
+//     只有一个 8 字节的整数比较是"绝对安全"的 —— 读一个已知有效的地址，不可能 SIGSEGV。
+static const tagInfo* g_curSnapPtr = nullptr;   // infoPtr 最近一次被合法赋予的值（仅 AI 线程读写）
+
+// 安装新快照：正常路径 = 一次 shared_ptr 赋值；**仅当检测到 infoPtr 已被踩坏**时才改走原地重建。
+//   为什么不能一律 `infoPtr = fresh`：赋值会先解引用**旧**控制块去减引用计数 ⇒ 旧控制块若已被踩坏，
+//   这一步本身就是 SIGSEGV（历史崩点 `:428` / `:501` 正是它）。
+//   原地重建 = 用 placement new 覆盖这 16 字节：既不读旧控制块、也不释放它（它已被踩坏、本就不可回收
+//   ⇒ 只泄漏这一次），语义与普通赋值等价（fresh 出作用域时自减 1，净持有仍为 1）。
+//   ⚠ 绝不可改成"无条件接位拷贝/无条件 placement new"：那样旧 tagInfo 每帧都收不回 ⇒ 一局泄漏上百 MB。
+//   返回 true = 本次走了"修复"路径（调用方据此计数上报，供 OJ 日志判读）。
+static bool installSnap(std::shared_ptr<tagInfo>& dst, const std::shared_ptr<tagInfo>& fresh) {
+    if (dst && dst.get() != g_curSnapPtr) {
+        new (&dst) std::shared_ptr<tagInfo>(fresh);   // 拷贝构造 ⇒ 引用计数 +1；旧对象不解引用、不释放
+        g_curSnapPtr = dst.get();
+        return true;
+    }
+    dst = fresh;
+    g_curSnapPtr = dst.get();
+    return false;
+}
+
+// 每帧解引用 infoPtr **之前**的一次自证（只有一次指针比较，自身不可能崩）。
+static inline bool snapPtrIntact(const std::shared_ptr<tagInfo>& p) {
+    return p.get() == g_curSnapPtr;
 }
 
 // ★★★ 2026-09-27 快照完整性哨兵（零拷贝版的配套防线）★★★
@@ -473,7 +515,9 @@ bool UsrAICore::refreshSnapshot() {
         }
     }
     if (fresh) {
-        infoPtr = fresh;              // ★ 零拷贝：只换 shared_ptr（引用计数原子 +1），不碰任何 vector
+        // ★ 零拷贝：正常路径只换 shared_ptr（引用计数原子 +1），不碰任何 vector；
+        //   若旧 infoPtr 已被外部踩坏，则改走原地重建，避免赋值时解引用坏控制块（见 installSnap 上方说明）。
+        if (installSnap(infoPtr, fresh)) st.ptrRepairCount++;   // 本函数只在 AI 线程跑，static 计数无需加锁
         QMutexLocker lk(&st.mutex);
         st.failStreak = 0;
         return true;
@@ -506,7 +550,7 @@ bool UsrAICore::refreshSnapshot() {
         }
     }
     if (fresh) {
-        infoPtr = fresh;
+        if (installSnap(infoPtr, fresh)) st.ptrRepairCount++;   // 同上（开局首帧路径）
         QMutexLocker lk(&st.mutex);
         st.failStreak = 0;
         return true;
@@ -584,13 +628,16 @@ void UsrAICore::logEnvOnce() {
 //   fallback>0 ⇒ 该环境的主线程事件回环失效（本版已删兜底 ⇒ 恒 0，仅作哨兵）
 //   skip>0     ⇒ 单帧 1 秒超时、主动放弃的帧数（AI 变钝但不崩）
 //   bad>0      ⇒ 完整性哨兵拦下的坏快照数（>0 = 引擎侧 buffer 确实被踩过，但已被拦下不崩）
+//   ptrBad>0   ⇒ ★ 金丝雀命中：infoPtr 这个**句柄本身**被外部踩坏（≠ 快照内容坏）⇒ 该帧被放弃、下帧自愈
+//   repair>0   ⇒ ★ 金丝雀修复：用 placement new 原地重建了 infoPtr（不改走这条，该处赋值必崩）
 void UsrAICore::logSnapBeat() {
     if (!(frame > 0 && frame / 1500 != lastSnapBeat_)) return;
     lastSnapBeat_ = frame / 1500;
-    DebugText(QString("[SNAP f=%1] main=%2 reuse=%3 wait=%4 skip=%5 fb=%6 bad=%7").arg(frame)
+    DebugText(QString("[SNAP f=%1] main=%2 reuse=%3 wait=%4 skip=%5 fb=%6 bad=%7 ptrBad=%8 repair=%9").arg(frame)
               .arg(snapState(this).mainCount).arg(snapState(this).reuseCount)
               .arg(snapState(this).waitCount).arg(snapState(this).skipCount)
-              .arg(snapState(this).fallbackCount).arg(snapState(this).badSnapCount));
+              .arg(snapState(this).fallbackCount).arg(snapState(this).badSnapCount)
+              .arg(snapState(this).ptrBadCount).arg(snapState(this).ptrRepairCount));
 }
 
 // ★★★ 2026-09-19 诊断（可观测机制量；UsrAI 自洽，不引用任何引擎新增符号）★★★ 崩溃场景：OJ(Linux/gcc13) 上 AI 线程在 getInfo() 的深拷贝里 SIGSEGV（源 vector len=6/cap=6）。
@@ -774,6 +821,20 @@ void UsrAI::processFrame() {
     auto tGet1 = profNow();
     profAdd(0, tGet0, tGet1);
     if (!snapOk) return;                         // 拿不到快照 ⇒ 跳过本帧（绝不回退到跨线程直读）
+
+    // ★★★ 2026-09-29 野指针金丝雀（机理见文件顶部 installSnap 上方的说明块）★★★
+    //   refreshSnapshot() 刚更新过 infoPtr ⇒ 这里一次指针比较即可自证它没被外部踩坏。
+    //   必须在**本帧第一次解引用 infoPtr 之前**，且只允许做"读一个已知有效地址"这种不可能崩的操作。
+    //   命中后：本帧不做任何决策（不解引用 infoPtr），直接返回；下一帧 refreshSnapshot() 会把它
+    //   重新指向一份全新快照 ⇒ **自愈**。代价 = 丢 1 帧，而不是整局 RE（栈里就是这一行在解引用）。
+    if (!snapPtrIntact(infoPtr)) {
+        SnapState& stB = snapState(this);
+        {
+            QMutexLocker lkB(&stB.mutex);
+            stB.ptrBadCount++;
+        }
+        return;
+    }
     frame = infoPtr->GameFrame;
 
     // ★★★ 2026-09-29 评测机心跳（纯 libc）★★★
