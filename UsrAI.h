@@ -143,6 +143,23 @@ private:
     void processData() override;           // 引擎入口：跑完一帧业务后调用 commitInstruction()
     void processFrame();                   // 业务主体（原 processData 的全部内容）
 
+    // ★★★ 2026-09-29 OJ SIGSEGV 根因加固：隐藏基类 5 个指令入口（机理见 .cpp 同名区块）★★★
+    //   根因：instruction 的四个构造函数都执行 `self = g_Object[SN]`（GlobalVariate.cpp:599-620），
+    //   而 g_Object 是全局 std::map（MainWidget.cpp:35）且全工程零锁保护 ⇒ std::map::operator[]
+    //   在 key 不存在时【插入节点 + 旋转红黑树】(结构性写)，与主线程在 Core.cpp:143/264/347/382/417
+    //   的 `g_Object[SN]=NULL`、Army/Farmer/Building/Animal.cpp 的 insert 并发 ⇒ 树被写坏 ⇒
+    //   崩溃点随机落在下一次堆访问（4 次 OJ 崩点各异：428 / 501 / shared_ptr get / 700）。
+    //   本组方法在转发前用 g_Object.find() 只读确认 SN 存在 ⇒ 引擎构造里的 g_Object[key]
+    //   必然命中已有键 ⇒ 退化为纯查找、不再改结构 ⇒ 消除 AI 侧对 g_Object 的全部写操作。
+    //   ⚠ 基类这 5 个都是 **非虚 public** 函数（ai.h:21-25）⇒ 派生类同名声明即隐藏；
+    //      UsrAI.cpp 内 0 处 `AI::` 限定调用（已核对）⇒ 全覆盖。外部经 AI* 的调用
+    //      （Core.cpp:778 / SelectWidget.cpp:1105+）频率低且属引擎自身代码，不受影响。
+    int HumanMove(int SN, double DR0, double UR0);
+    int HumanAction(int SN, int obSN);
+    int HumanBuild(int SN, int BuildingNum, int BlockDR, int BlockUR);
+    int BuildingAction(int SN, int Action);
+    int PinPointStrike(int SN, double DR0, double UR0);
+
     static int buildingFootprintSize(int type);
     static bool footprintsOverlap(int ax, int ay, int aw, int ah,
                                  int bx, int by, int bw, int bh);

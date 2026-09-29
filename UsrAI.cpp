@@ -665,6 +665,62 @@ void UsrAICore::commitInstruction() {
 
 
 // ============================================================================================
+// ★★★ 2026-09-29 OJ SIGSEGV 根因加固：消除 AI 线程对 g_Object 的"结构性写" ★★★
+// 现象：4 次 OJ backtrace 崩点各异却全在"堆访问"上 —— UsrAI.cpp:428 / UsrAI.cpp:501
+//   （= infoPtr = fresh）/ shared_ptr_base.h:1665 get()（内联进 processData）/
+//   UsrAI.cpp:700（= frame = infoPtr->GameFrame）。本机 g321 亦复现（崩于 f≈13）。
+// 根因：instruction 的**四个构造函数全部**执行 `this->self = g_Object[SN]`
+//   （HumanAction 那条多一句 `this->obj = g_Object[obSN]`，见 GlobalVariate.cpp:599-620），
+//   而 g_Object 是**全局 std::map<int, Coordinate*>**（定义在 MainWidget.cpp:35），
+//   **全工程零锁保护**（唯一那把 AI::aiLock 在 AI.cpp:73-78 只有定义、零调用点，是死锁）。
+//   std::map::operator[] 在 key 不存在时**插入节点并旋转红黑树** —— 这是结构性写。
+//   与此同时主线程也在写同一棵树：单位进场 insert（Army.cpp:75/118、Farmer.cpp:61、
+//   Building.cpp:55、Animal.cpp:51）；单位阵亡 `g_Object[SN]=NULL`
+//   （Core.cpp:143/264/347/382/417）。
+//   ⇒ 两线程并发改同一棵红黑树 ⇒ 节点被写坏 ⇒ **崩溃点随机落在下一次堆访问上**
+//   （这正是 4 次崩点各不相同的成因；也是"快照零拷贝 + 完整性哨兵"治不好的原因 ——
+//     那层加固的是快照内容，与本根因无关：实测 [SNAP] bad=0、[DIRTY-SNAP] 累计 0 佐证）。
+// AI 侧可行边界：加不了锁（aiLock 是死锁；tagGame::Locker 是引擎私有成员；提交范围只有
+//   UsrAI.cpp/.h ⇒ 不能新增引擎符号）⇒ 只能**消除 AI 侧的全部写操作**：先用 find() 只读
+//   确认 SN 存在，再转发给引擎的 Human*；此后构造里的 `g_Object[key]` 命中的是已存在的键
+//   ⇒ 退化为纯查找，不再插入、不再旋转 ⇒ 树结构只由主线程单方修改。
+//   ⚠ 残留的 g_Object 访问只有 find()（本组函数 + instructionSelfOk + commitInstruction
+//     校验），全为只读；只读与主线程写并发的最坏后果是"读到旋转中的节点"⇒ 返回无效指针
+//     ⇒ 本组判为 nullptr 并丢弃该指令（等价于引擎原本会判的 ACTION_INVALID_SN，
+//     Core.cpp:1355），**不会损坏内存** ⇒ 把"必然崩溃"降为"最多丢一条指令"。
+//   ⚠ 为什么不自己构造 instruction 绕过构造函数：默认构造 instruction() 只设 type=-1
+//     （GlobalVariate.cpp:595），SN/obSN/option/DR/UR/BlockDR/BlockUR/ret 全是未初始化垃圾值
+//     ⇒ 漏初始化任一项就是新的野值源（比 obj 野指针更难查）。转发引擎构造则零遗漏。
+//   ⚠ 基类这 5 个是**非虚 public** 函数 ⇒ 派生类同名声明即隐藏生效；用 `AI::` 显式限定转发
+//     自身 ⇒ 不构成自递归。
+// ============================================================================================
+static Coordinate* lookupObjectRO(int sn) {
+    const std::map<int, Coordinate*>::const_iterator it = g_Object.find(sn);
+    return (it == g_Object.end()) ? nullptr : it->second;
+}
+
+int UsrAI::HumanMove(int SN, double DR0, double UR0) {
+    if (!lookupObjectRO(SN)) return -1;             // SN 不在引擎表 ⇒ 丢弃（引擎亦会判 INVALID_SN）
+    return AI::HumanMove(SN, DR0, UR0);             // 显式限定 ⇒ 调引擎实现，避免自递归
+}
+int UsrAI::HumanAction(int SN, int obSN) {
+    if (!lookupObjectRO(SN) || !lookupObjectRO(obSN)) return -1;
+    return AI::HumanAction(SN, obSN);
+}
+int UsrAI::HumanBuild(int SN, int BuildingNum, int BlockDR, int BlockUR) {
+    if (!lookupObjectRO(SN)) return -1;
+    return AI::HumanBuild(SN, BuildingNum, BlockDR, BlockUR);
+}
+int UsrAI::BuildingAction(int SN, int Action) {
+    if (!lookupObjectRO(SN)) return -1;
+    return AI::BuildingAction(SN, Action);
+}
+int UsrAI::PinPointStrike(int SN, double DR0, double UR0) {
+    if (!lookupObjectRO(SN)) return -1;
+    return AI::PinPointStrike(SN, DR0, UR0);
+}
+
+// ============================================================================================
 // ★★★ 2026-09-28 帧边界：processData 只做"跑一帧 + 帧末统一提交指令"两件事 ★★★
 //   为什么拆出 processFrame：原 processData 有 3 处 `return` 早退（快照未就绪 / 胜负已分 /
 //   反攻分支），若把 commitInstruction() 直接写在函数末尾，早退路径上已产出的指令就永远提交不出去。
@@ -6713,6 +6769,10 @@ bool UsrAI::tryBuild(int buildingType, int size, bool ignoreCooldown, int prefX,
         return false;
     }
 
+    // ★ 2026-09-29 加固层守卫：建造者 SN 不在引擎表 ⇒ 本次 HumanBuild 必被丢弃（返回 -1）
+    //   ⇒ 提前退出，避免把 -1 写进 pendingBuildIns / pendingBuildInsFrame 造成记账错乱。
+    //   （f 取自当帧快照的 farmers，正常恒有效 ⇒ 该分支实际不会触发，属纯防御。）
+    if (!lookupObjectRO(f->SN)) { tryFlush(); return false; }
     auto tryTIssue = tryNow();
     buildingFarmerType[f->SN] = buildingType;
     builderDispatchFrame[f->SN] = frame;   // ★ 硬超时起点（本次建造令下发帧）
