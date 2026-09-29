@@ -12,6 +12,14 @@ tagGame tagUsrGame;
 ins UsrIns;
 /*##########DO NOT MODIFY THE CODE ABOVE##########*/
 
+// ★★★ 2026-09-29 评测机自证 v2 所需的纯 libc 头 ★★★
+//   为什么要它：评测机的引擎与 7h 同源，7h 的 call_debugText 在 -exam 闸之后 ⇒ 我们此前的
+//   [ENV]/[SNAP]/[INS-BAD] 文本心跳在评测机上很可能被整条丢弃。而 backtrace 里带着 gdb 自身
+//   的 stderr（"could not find '.gnu_debugaltlink'"）⇒ 评测机**捕获了进程输出** ⇒
+//   直接 fprintf(stdout/stderr) + fflush 是唯一能被回读的通道。
+//   只用 <cstdio>，不引用任何引擎/新增符号，不改变任何判据或指令 ⇒ 纯观测。
+#include <cstdio>
+
 // ============================================================================================
 // ★★★ 2026-09-23~28 OJ(Linux/gcc13) SIGSEGV 自救 —— 已整体迁入 UsrAICore（定义见 UsrAI.h）★★★
 //   完整机理记录随代码一起迁到了 UsrAICore::refreshSnapshot / commitInstruction 上方，
@@ -556,6 +564,19 @@ void UsrAICore::logEnvOnce() {
     DebugText(QString("[ENV] engine=%1 NOWPLAYER=%2 MAXPLAYER=%3 represent=%4")
               .arg(QString::fromStdString(GAME_VERSION))
               .arg(NOWPLAYER).arg(MAXPLAYER).arg(NOWPLAYERREPRESENT));
+    // ★★★ 2026-09-29 评测机自证 v2（纯 libc 落盘，不依赖引擎 DebugText 通道）★★★
+    //   ⚠ 必须先把 GAME_VERSION 存成具名 std::string：它是 RuntimeConfig_GAME_VERSION()
+    //     返回的**临时对象**，直接 .c_str() 会拿到悬垂指针（本行若写成 const char* p = GAME_VERSION.c_str()
+    //     就是典型的 use-after-free）。
+    //   目的：把评测机的【真实引擎版本 + 运行期玩家数】钉死，用于判定 Core.cpp 的
+    //   Buffer0/Buffer1[2] 与运行期 NOWPLAYER 是否不匹配。
+    const std::string engVer = GAME_VERSION;
+    fprintf(stdout, "[OJ-ENV] engine=%s NOWPLAYER=%d MAXPLAYER=%d represent=%d frame=%d\n",
+            engVer.c_str(), (int)NOWPLAYER, (int)MAXPLAYER, (int)NOWPLAYERREPRESENT, frame);
+    fflush(stdout);
+    fprintf(stderr, "[OJ-ENV] NOWPLAYER=%d MAXPLAYER=%d frame=%d\n",
+            (int)NOWPLAYER, (int)MAXPLAYER, frame);
+    fflush(stderr);
 }
 
 // ★★★ 2026-09-27 机制量自证（每 1500 帧一档，供 OJ 日志核对）★★★
@@ -754,6 +775,18 @@ void UsrAI::processFrame() {
     profAdd(0, tGet0, tGet1);
     if (!snapOk) return;                         // 拿不到快照 ⇒ 跳过本帧（绝不回退到跨线程直读）
     frame = infoPtr->GameFrame;
+
+    // ★★★ 2026-09-29 评测机心跳（纯 libc）★★★
+    //   放在"取到帧号之后" ⇒ 打印的都是**已完成帧**；崩溃帧 = 最后一行 + ≤300 帧。
+    //   纯 <cstdio> + 立即 fflush ⇒ 被 SIGSEGV 打断也不会丢；不引用任何引擎符号、不改判据。
+    //   用途：判定评测机的崩溃是"早期确定性"（f 很小 ⇒ 接线/初始化问题）还是
+    //         "晚期随机"（f 成千上万 ⇒ 竞态/踩内存），这是分开两类根因的唯一现地证据。
+    static int g_ojHeartbeatCnt = 0;
+    if (++g_ojHeartbeatCnt >= 300) {
+        g_ojHeartbeatCnt = 0;
+        fprintf(stdout, "[OJ-HB] f=%d\n", frame);
+        fflush(stdout);
+    }
 
     logSnapBeat();                         // ★ [SNAP] 快照机制量心跳（实现见 UsrAICore::logSnapBeat）
 
