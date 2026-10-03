@@ -5269,6 +5269,83 @@ void UsrAI::manageCounterAttack() {
     for (auto &a : infoPtr->armies) if (a.Sort != AT_PRIEST) armyCount++;  // 非祭司军队总数(近战集结门槛用)
     // ★ 全体反攻门槛：所有军事单位(非祭司，含远程/近战/投石车)≥COUNTER_ATTACK_MIN_ARMY 才一起反攻； 或到 COUNTER_ATTACK_FORCE_TIME(24分钟) 强制一起进攻——避免人数不足时零散冲出被敌方集火。
     bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY) || (frame >= COUNTER_ATTACK_FORCE_TIME);
+
+    // ★★★ 2026-09-30 试验（用户：「尝试集结在地图中心附近」）★★★
+    // 沿用 09-29c 成阵框架，【唯一变量】= 成阵中心从"全军质心"改为"地图中心" (MAP_L*BL/2, MAP_U*BL/2)。
+    // 触发/退出条件与 asm7 版严格一致 ⇒ 与 asm7 的对比才具有归因意义：
+    //   散开 >20格 触发；质心 15 格内无敌军否则放弃；收拢到 ≤8格 视为完成；窗口 600 帧。
+    static int  asmEnterFrame = -1;
+    if (asmEnterFrame < 0 || frame < asmEnterFrame) asmEnterFrame = frame;   // 新局 frame 归零 ⇒ 自动重置
+    const int    ASM_WINDOW   = 600;            // 成阵窗口（帧）
+    const double ASM_TRIGGER  = 20.0 * BL;      // 散开 > 20 格 ⇒ 触发成阵
+    const double ASM_FORMED   = 8.0 * BL;       // 收拢到 ≤ 8 格 ⇒ 成阵完成
+    double asmCx = 0, asmCy = 0;                // 当前全军质心（仅用于判据：散开度 / 敌是否近）
+    static double asmFixCx = 0, asmFixCy = 0;   // 成阵中心（首次触发时冻结，避免目标追逐）
+    bool assembling = false;
+    {
+        int cn = 0;
+        for (auto &a : infoPtr->armies) if (a.Sort != AT_PRIEST) { asmCx += a.DR; asmCy += a.UR; ++cn; }
+        if (cn >= 2) {
+            asmCx /= cn; asmCy /= cn;
+            double asmSpread = 0;                     // ⚠ 不可叫 far（Windows windef.h 宏）
+            for (auto &a : infoPtr->armies)
+                if (a.Sort != AT_PRIEST) asmSpread = max(asmSpread, calDistance(a.DR, a.UR, asmCx, asmCy));
+            static bool asmFormed = false;
+            static int  asmStartFrame = -1;
+            if (frame < asmEnterFrame) { asmEnterFrame = frame; asmFormed = false; asmStartFrame = -1; }
+            bool enemyNear = (findNearestEnemySN(asmCx, asmCy, 15.0 * BL) >= 0);
+            if (enemyNear) asmFormed = true;                       // 敌已近 ⇒ 放弃成阵、立刻应战
+            else if (asmSpread <= ASM_FORMED) asmFormed = true;    // 已收拢 ⇒ 成阵完成
+            if (!asmFormed && asmSpread > ASM_TRIGGER) {
+                if (asmStartFrame < 0) {
+                    asmStartFrame = frame;
+                    asmFixCx = MAP_L * BL * 0.5;                   // ★ 本版试验变量：地图中心
+                    asmFixCy = MAP_U * BL * 0.5;
+                    // ★ 地图中心可能是海：map2 中心(50,50) ±13 格内有 95 个 Type=14 海格 ⇒ 中心本身站不住
+                    //   （asm8/asm9 实测反攻期军事落点进海 57~76 次/局，基线为 0）。吸附到最近可走格。
+                    snapWalkable(asmFixCx, asmFixCy, forestGrid);
+                }
+                assembling = (frame - asmStartFrame < ASM_WINDOW);
+            }
+            static std::map<int, int> asmStFrame;
+            if (assembling && (!asmStFrame.count(0) || frame - asmStFrame[0] >= 300)) {
+                asmStFrame[0] = frame;
+                DebugText(QString("[ASM-SET f=%1] 地图中心集结: 军事%2 散开%3格 >%4 ⇒ 中心(%5,%6) 质心距中心%7格")
+                          .arg(frame).arg(cn).arg(asmSpread / BL, 0, 'f', 1).arg(ASM_TRIGGER / BL, 0, 'f', 0)
+                          .arg(asmFixCx / BL, 0, 'f', 1).arg(asmFixCy / BL, 0, 'f', 1)
+                          .arg(calDistance(asmCx, asmCy, asmFixCx, asmFixCy) / BL, 0, 'f', 1));
+            }
+        }
+    }
+
+    // ★ 反攻前集结：确定性、互不重叠的环形槽位表（同心环六角填充）。
+    // 槽位按 rank 0,1,2,... 由内向外分配，每个单位锁死一个 ⇒ 物理上不可能重复。
+    static std::vector<std::pair<double, double>> gAssembleSlots;
+    if (gAssembleSlots.empty()) {
+        const double ASM_SPACING = 2.2 * BL;            // 槽位最小间距 ≈ 2.2 格
+        const double ASM_MAXR    = 11.5 * BL;           // 成阵半径上限（紧凑一团）
+        const double ASM_PI      = 3.14159265358979323846;
+        for (int r = 0; ; ++r) {
+            double R = r * ASM_SPACING;
+            if (r > 0 && R > ASM_MAXR) break;
+            if (r == 0) { gAssembleSlots.push_back({0.0, 0.0}); continue; }
+            int cnt = 6 * r;                             // 第 r 环 6r 个点（六角填充）
+            for (int k = 0; k < cnt; ++k) {
+                double ang = (k * 2.0 * ASM_PI) / cnt + (r % 2) * (ASM_PI / cnt);
+                gAssembleSlots.push_back({std::cos(ang) * R, std::sin(ang) * R});
+            }
+        }
+    }
+    // 军事单位（非祭司）按 SN 升序的稳定序号 rank：SN 跨帧不变 ⇒ rank 稳定 ⇒ 槽位稳定（不抖动）。
+    std::map<int, int> snRank;
+    static std::map<int, int> asmLogFrame;      // [ASM] 日志按 SN 节流（300 帧/单位）
+    {
+        std::vector<int> sns;
+        for (auto &x : infoPtr->armies) if (x.Sort != AT_PRIEST) sns.push_back(x.SN);
+        std::sort(sns.begin(), sns.end());
+        for (size_t i = 0; i < sns.size(); ++i) snRank[sns[i]] = (int)i;
+    }
+
     // 集结中心：未达门槛时全军回己方 TC 附近集结待命(形成密集兵力，来敌也能抱团防守)
     tagBuilding* rallyTC = findBuilding(BUILDING_CENTER);
     double rallyCtrDR = rallyTC ? (rallyTC->BlockDR + 1) * BL : MAP_L * BL * 0.5;
@@ -5391,34 +5468,6 @@ void UsrAI::manageCounterAttack() {
     };
 
     const int maxMarchCmds = readyToAttack ? 8 : (armyCount + 4);
-
-    // ★ 2026-09-29 反攻前集结：确定性、互不重叠的环形槽位表（同心环六角填充）。
-    // 槽位按 rank 0,1,2,... 由内向外分配，每个单位锁死一个 ⇒ 物理上不可能重复。
-    static std::vector<std::pair<double, double>> gAssembleSlots;
-    if (gAssembleSlots.empty()) {
-        const double ASM_SPACING = 2.2 * BL;            // 槽位最小间距（像素）≈ 2.2 格
-        const double ASM_MAXR    = 11.5 * BL;            // 不超过 12 格集结判据 ⇒ 到位即停重发
-        const double ASM_PI      = 3.14159265358979323846;
-        for (int r = 0; ; ++r) {
-            double R = r * ASM_SPACING;
-            if (r > 0 && R > ASM_MAXR) break;            // 超半径的环不再生成
-            if (r == 0) { gAssembleSlots.push_back({0.0, 0.0}); continue; }
-            int cnt = 6 * r;                             // 第 r 环 6r 个点（六角填充）
-            for (int k = 0; k < cnt; ++k) {
-                double ang = (k * 2.0 * ASM_PI) / cnt + (r % 2) * (ASM_PI / cnt); // 相邻环错开，避免正对
-                gAssembleSlots.push_back({std::cos(ang) * R, std::sin(ang) * R});
-            }
-        }
-    }
-    // 军事单位（非祭司）按 SN 升序的稳定序号 rank：SN 跨帧不变 ⇒ rank 稳定 ⇒ 槽位稳定（不抖动）。
-    std::map<int, int> snRank;
-    {
-        std::vector<int> sns;
-        for (auto &x : infoPtr->armies) if (x.Sort != AT_PRIEST) sns.push_back(x.SN);
-        std::sort(sns.begin(), sns.end());
-        for (size_t i = 0; i < sns.size(); ++i) snRank[sns[i]] = (int)i;
-    }
-
     for (int pass = 0; pass < 2 && marchCmds < maxMarchCmds; ++pass) {
         for (auto &a : infoPtr->armies) {
             if (a.Sort == AT_PRIEST) { priest = &a; continue; }
@@ -5715,6 +5764,47 @@ void UsrAI::manageCounterAttack() {
                 // 射程外 / 无敌 / SHOOT 但脱战:落入下方常规推进段
             }
 
+            // ★ 反攻前成阵（2026-09-30 地图中心版）：
+            // 【位置必须在状态闸之前】放在下方 `NowState != IDLE → continue` 之后的话，移动中的单位会被闸跳过继续推进
+            //   ⇒ 一半成阵一半冲（09-29 asm6 现象）。放在闸之前 ⇒ 全军一致成阵。
+            // 【旧 `if (!readyToAttack)` 为何是死代码】本函数只在 state==COUNTERATTACK 时调用，而进入该状态的门槛与
+            //   readyToAttack 同源 ⇒ 恒为 true ⇒ 分支不可达（诊断 D0/D1：本函数 33000 帧前从未运行）。
+            // ★ 不占 marchCmds 预算（成阵期不推进，需对全员下发）。
+            if (assembling) {
+                int rank = snRank.count(a.SN) ? snRank[a.SN] : 0;
+                const int slot = (rank < (int)gAssembleSlots.size()) ? rank : (int)gAssembleSlots.size() - 1;
+                double ox0 = gAssembleSlots[slot].first, oy0 = gAssembleSlots[slot].second;
+                double tx0 = max(0.0, min((double)MAP_L * BL, asmFixCx + ox0));   // 目标 = 地图中心 + 自己的槽位偏移
+                double ty0 = max(0.0, min((double)MAP_U * BL, asmFixCy + oy0));
+                const double ASM_HOLD_TOL = 1.2 * BL;      // 到位容差 1.2 格（< 槽位间距 2.2 格 ⇒ 不会互相抢位）
+                if (calDistance(a.DR, a.UR, tx0, ty0) > ASM_HOLD_TOL && canReissue) {
+                    bool moved = false;
+                    double offRot[5] = {0.0, 0.35, -0.35, 0.7, -0.7};   // 主槽 + 4 个旋转微调（仅主槽不可走时兜底）
+                    for (int ti = 0; ti < 5 && !moved; ++ti) {
+                        double ox = ox0, oy = oy0;
+                        if (ti > 0) {                                    // 绕成阵中心旋转偏移（保持半径）
+                            double ca = std::cos(offRot[ti]), sa = std::sin(offRot[ti]);
+                            double nx = ox * ca - oy * sa, ny = ox * sa + oy * ca;
+                            ox = nx; oy = ny;
+                        }
+                        double gx = max(0.0, min((double)MAP_L * BL, asmFixCx + ox));
+                        double gy = max(0.0, min((double)MAP_U * BL, asmFixCy + oy));
+                        snapWalkable(gx, gy, forestGrid);   // ★ 落点可能压海/林/矿 → 吸附到最近可走格（与 issueMarch 同口径；asm8 实测未吸附时进海 218 次）
+                        if (isPassableAt(gx, gy, forestGrid)) {
+                            HumanMove(a.SN, gx, gy);
+                            marchCmdFrame[a.SN] = frame;
+                            moved = true;
+                            if (!asmLogFrame.count(a.SN) || frame - asmLogFrame[a.SN] >= 300) {   // 日志节流
+                                asmLogFrame[a.SN] = frame;
+                                DebugText(QString("[ASM f=%1] SN=%2 rank=%3 slot=%4 d=%5 ->(%6,%7)").arg(frame).arg(a.SN).arg(rank).arg(slot)
+                                          .arg(calDistance(a.DR, a.UR, tx0, ty0) / BL, 0, 'f', 1).arg(gx / BL, 0, 'f', 1).arg(gy / BL, 0, 'f', 1));
+                            }
+                        }
+                    }
+                }
+                continue;                                   // 成阵期不推进、不接战
+            }
+
             // ★ 2026-09-14：投石车豁免此闸。原实现下投石车开火即进 ATTACKING(≠IDLE)，整段 standoff/后撤 被 continue 跳过 ⇒ 只会站桩挨打、永不拉扯（弓兵相位机在闸之前才有拉扯）。豁免后由下方投石车块
             // 按"≤10.5 格站桩 / ≤7 格后撤"自行节奏，且全程受节流保护，不会每帧换目标或改方向。
             if (a.NowState != HUMAN_STATE_IDLE && a.Sort != AT_STONE_THROWER) {
@@ -5733,29 +5823,23 @@ void UsrAI::manageCounterAttack() {
             // 寻路反复失败 ⇒ 原地抖动。新：目标点 = TC 中心 + 朝该单位自己方向外推 12 格 + SN 扇形散开。
             if (!readyToAttack) {
                 if (calDistance(a.DR, a.UR, rallyCtrDR, rallyCtrUR) > 12 * BL && canReissue) {
-                    // ★ 2026-09-29（用户：「反攻前集结在一起，但位置不能重复」）：
-                    // 旧 SN%13/SN%5 散开 ⇒ 同类 SN 在同方向大量撞同一点（实测多个复合弓挤同点互卡）。
-                    // 新：按「稳定序号 rank」映射到确定性、互不重叠的环形槽位（见上方 gAssembleSlots）。
-                    // rank 由 SN 升序决定（SN 跨帧不变 ⇒ 每个单位永远锁同一个槽位，不抖动）。
+                    double ux = a.DR - rallyCtrDR, uy = a.UR - rallyCtrUR;
+                    double baseAng = (std::sqrt(ux*ux + uy*uy) > 1e-6) ? std::atan2(uy, ux) : 0.0;
                     bool moved = false;
-                    int rank = snRank.count(a.SN) ? snRank[a.SN] : 0;
-                    const int slot = (rank < (int)gAssembleSlots.size()) ? rank : (int)gAssembleSlots.size() - 1;
-                    double offRot[5] = {0.0, 0.35, -0.35, 0.7, -0.7};   // 主槽 + 4 个旋转微调（仅主槽不可走时兜底）
-                    for (int ti = 0; ti < 5 && !moved; ++ti) {
-                        double ox = gAssembleSlots[slot].first, oy = gAssembleSlots[slot].second;
-                        if (ti > 0) {                                    // 绕 TC 旋转当前偏移（保持半径 ⇒ 仍在 12 格内）
-                            double ca = std::cos(offRot[ti]), sa = std::sin(offRot[ti]);
-                            double nx = ox * ca - oy * sa, ny = ox * sa + oy * ca;
-                            ox = nx; oy = ny;
-                        }
-                        double gx = rallyCtrDR + ox, gy = rallyCtrUR + oy;
+                    double angTries[3] = {0.0, 0.25, -0.25};          // 主方向 + 两侧微调，防落点被占
+                    // ★ 2026-09-17（用户：「停驻集结时不要站在同一点」）：原 SN 散开只有 7 类 ((SN%7)-3)*0.12 ⇒ 同方向出发的单位大量撞同一点。改为 13 类角度 + 5 类半径
+                    // 向内错位（半径 9.6~12 格，不越过下方 `>12格` 的集结到位判据 ⇒ 到达即停止重发）。
+                    for (int ti = 0; ti < 3 && !moved; ++ti) {
+                        double ang = baseAng + ((a.SN % 13) - 6) * 0.09 + angTries[ti];
+                        double holdR = (12.0 - (double)(a.SN % 5) * 0.6) * BL;
+                        double gx = rallyCtrDR + std::cos(ang) * holdR;
+                        double gy = rallyCtrUR + std::sin(ang) * holdR;
                         gx = max(0.0, min((double)MAP_L * BL, gx));
                         gy = max(0.0, min((double)MAP_U * BL, gy));
                         if (isPassableAt(gx, gy, forestGrid)) {
                             HumanMove(a.SN, gx, gy);
                             marchCmdFrame[a.SN] = frame;
                             moved = true;
-                            DebugText(QString("[ASM f=%1] SN=%2 rank=%3 slot=%4 ->(%5,%6)").arg(frame).arg(a.SN).arg(rank).arg(slot).arg(gx / BL, 0, 'f', 1).arg(gy / BL, 0, 'f', 1));
                         }
                     }
                 }
