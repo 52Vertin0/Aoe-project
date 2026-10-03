@@ -446,15 +446,21 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // （边采边建，不是攒齐再建；塔建满后由 STONE_CAP_STOP/towersDone 永久停采）。
 #define STONE_WORKERS_LATE 1    // 后期保底采石人数（只需1人采够150石建第2座箭塔）
 #define FOOD_PAUSE_TECH_TRAIN 60 // 食物<60暂停科技/训练
+// ★ 空手 + 非空闲 持续这么多帧 ⇒ 判定寻路卡死（1500 帧 = 60 秒）。2026-10-03 起 detectStuckGatherers 会「拉黑目标 + 注入待重派」。
 #define STUCK_GATHER_TIMEOUT 1500
 // 2026-09-26 fix: repeated assignment to an unreachable-looking tree.
 // If the same farmer is sent to the same tree several times with almost no movement,
 // temporarily blacklist that tree and pick another one.
 #define TREE_REASSIGN_WINDOW 600
 #define TREE_REASSIGN_MAX 5
-#define TREE_REASSIGN_BLACKLIST_FRAMES 900     // 空手且非空闲超时(帧)→判定寻路卡死(60秒)
+#define TREE_REASSIGN_BLACKLIST_FRAMES 900
+// ★ 不可达【资源点】拉黑时长（15000 帧 = 10 游戏分）。资源点可以换一个采，拉长无害。
 #define STUCK_BLACKLIST_FRAMES 15000
-#define PROF_SAMPLE_FRAMES 300  // 不可达资源拉黑时长(10分钟,到期可重试)
+// ★ 不可达【农场】拉黑时长（900 帧 = 36 秒）。与资源点分开的原因：农场是固定食物源，
+//   长拉黑等于白扔一个食物源；而农场"卡死"多半只是去路被在建建筑临时堵住 ⇒
+//   短拉黑既止损、又不至于让农场闲置十分钟。2026-10-03
+#define FARM_BLACKLIST_FRAMES 900
+#define PROF_SAMPLE_FRAMES 300
 
 // ★★★ 2026-09-27 OJ 崩溃自救 v2【零拷贝】（详细机理由文件顶部同名注释块给出）★★★
 // AI 线程侧：请主线程代取快照，成功后**直接把 shared_ptr 交给 infoPtr**。
@@ -3232,6 +3238,7 @@ void UsrAI::assignIdleSimple() {
             for (size_t k = 0; k < elePool.size() && sent < need; ++k) {
                 int sn = infoPtr->farmers[elePool[k]].SN;
                 HumanAction(sn, tgt->SN);
+                villLastResourceSN[sn] = tgt->SN;   // ★ 2026-10-03：记录目标，供卡死兜底拉黑（原先整队猎象不记录 ⇒ 打象卡死时拉黑打空）
                 elephantPartyPending.insert(sn);
                 sent++;
             }
@@ -3244,6 +3251,10 @@ void UsrAI::assignIdleSimple() {
             if (calDistance(tcDR, tcUR, r.DR, r.UR) > 30 * BL) continue;
             auto bit = elephantBanUntil.find(r.SN);
             if (bit != elephantBanUntil.end() && frame < bit->second) continue;   // 拉黑期内不提这头象
+            // ★★★ 2026-10-03：与「卡死兜底」统一黑名单对齐 —— detectStuckGatherers 判定打象卡死后写的是
+            //   stuckResourceUntil，而本块此前【只读】elephantBanUntil（那是"凑不齐人数主动召回"专用拉黑）
+            //   ⇒ 卡死拉黑对象一旦是大象就完全无效，村民被重派回来继续送死（铁律 26：同语义只写一遍）。
+            if (stuckResourceUntil.count(r.SN)) continue;
             int on = countFarmersOnTarget(r.SN);
             if (on >= ELEPHANT_HUNT_GROUP) continue;                    // 已满员(5) → 不再加人
             if (on < ELEPHANT_HUNT_MIN) {
@@ -3386,6 +3397,9 @@ void UsrAI::assignIdleSimple() {
         tagBuilding* farm = nullptr;
         for (auto &b : infoPtr->buildings) {
             if (b.Type != BUILDING_FARM || b.Percent < 100) continue;
+            // ★★★ 2026-10-03 与 树/浆果/瞪羚 对齐：被「卡死兜底」拉黑的农场本帧跳过。
+            //   此前主路径不查黑名单 ⇒ 村民在农场卡死后被打断重派，又派回同一座农场，60 秒一轮无限复发（铁律 26）。
+            if (stuckResourceUntil.count(b.SN)) continue;
             if (assignedFarm.count(b.SN)) continue;        // 本帧已派过，跳过
             int onFarm = countFarmersOnTarget(b.SN);
             if (onFarm >= 1) continue;                     // 已有工人，不再加派
@@ -3393,6 +3407,7 @@ void UsrAI::assignIdleSimple() {
         }
         if (farm) {
             HumanAction(f.SN, farm->SN);
+            villLastResourceSN[f.SN] = farm->SN;           // ★ 记录目标（农场），供卡死兜底拉黑 —— 此前农场不在记录范围 ⇒ 农场卡死时拉黑恒为空
             assignedFarm[farm->SN] = f.SN;                 // 记录，本帧内后续空闲村民不会再来这座
             frameFoodTargets.insert(farm->SN);
             continue;
@@ -6955,9 +6970,17 @@ void UsrAI::detectStuckGatherers() {
             const int stuckFrames = frame - gatherStuckFrame[f.SN];
             int targetSN = f.WorkObjectSN;
             // ★ WorkObjectSN 在寻路失败/目标丢失时已被引擎清零(-1) ⇒ 用 villLastResourceSN 兜底：
-            //   取本村民最近一次被派去的【任意资源】SN（树/浆果/瞪羚/金/石），避免拉黑到张冠李戴的旧树
+            //   取本村民最近一次被派去的【任意目标】SN（树/浆果/瞪羚/金/石/大象/农场），避免拉黑到张冠李戴的旧树
             if (targetSN <= 0 && villLastResourceSN.count(f.SN)) targetSN = villLastResourceSN[f.SN];
-            if (targetSN > 0) stuckResourceUntil[targetSN] = frame + STUCK_BLACKLIST_FRAMES;
+            // ★ 2026-10-03 拉黑时限按目标类型区分：农场用短时限(36 秒)，资源点用长时限(10 分钟)。
+            //   理由见 FARM_BLACKLIST_FRAMES 定义处 —— 农场是固定食物源，长拉黑 = 白扔一个食物源。
+            bool targetIsFarm = false;
+            if (targetSN > 0) {
+                for (auto &b : infoPtr->buildings)
+                    if (b.SN == targetSN && b.Type == BUILDING_FARM) { targetIsFarm = true; break; }
+            }
+            const int blacklistFrames = targetIsFarm ? FARM_BLACKLIST_FRAMES : STUCK_BLACKLIST_FRAMES;
+            if (targetSN > 0) stuckResourceUntil[targetSN] = frame + blacklistFrames;
             // ★★★ 2026-10-03 修「浆果采集者一直不动」的关键一步：打断必须【真正复位】。
             //   旧实现只发一条 HumanAction(f.SN, center->SN)（派回 TC）⇒ 村民从"卡死原目标"变成"卡死去 TC"，
             //   既非 IDLE（主派工捞不回）又无有效目标 ⇒ 1500 帧后原样复发（实测三次触发帧号严格等间隔 1502/1503）。
@@ -6966,10 +6989,12 @@ void UsrAI::detectStuckGatherers() {
             HumanAction(f.SN, center->SN);  // 先打断与坏目标的关系（下一帧被 pendingRedispatch 覆盖为新目标）
             gatherStuckFrame.erase(f.SN);
             const double BL = (double)BLOCKSIDELENGTH;
-            DebugText(QString("[STUCK f=%1] 村民SN=%2 state=%3 空手%4帧 目标资源SN=%5 位置=(%6,%7) 距TC=%8格 已拉黑+待重派")
+            const int onTarget = (targetSN > 0) ? countFarmersOnTarget(targetSN) : -1;   // ★ 判据：卡死时该目标上已有几人（≥2 且为浆果 ⇒ "满员超派"）
+            const double dToTC = calDistance(f.DR, f.UR, (center->BlockDR + 1) * BL, (center->BlockUR + 1) * BL) / BL;
+            const QString where = QString("位置=(%1,%2) 距TC=%3格").arg(f.DR, 0, 'f', 1).arg(f.UR, 0, 'f', 1).arg(dToTC, 0, 'f', 1);
+            DebugText(QString("[STUCK f=%1] 村民SN=%2 state=%3 空手%4帧 目标SN=%5(%6) 在采%7人 %8 拉黑%9帧+待重派")
                       .arg(frame).arg(f.SN).arg((int)f.NowState).arg(stuckFrames).arg(targetSN)
-                      .arg(f.DR, 0, 'f', 1).arg(f.UR, 0, 'f', 1)
-                      .arg(calDistance(f.DR, f.UR, (center->BlockDR + 1) * BL, (center->BlockUR + 1) * BL) / BL, 0, 'f', 1));
+                      .arg(targetIsFarm ? QString("农场") : QString("资源")).arg(onTarget).arg(where).arg(blacklistFrames));
         }
     }
 }
@@ -7076,10 +7101,12 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
     // ★ 优先级3：农场（每块≤1人，实时扫描+同帧去重）★
     for (auto &b : infoPtr->buildings) {
         if (b.Type != BUILDING_FARM || b.Percent < 100) continue;
+        if (stuckResourceUntil.count(b.SN)) continue;  // ★★★ 2026-10-03 与主路径 assignIdleSimple 同口径（铁律 26）：拉黑农场跳过
         if (frameFoodTargets.count(b.SN)) continue;  // 本帧已分配
         int realCount = countFarmersOnTarget(b.SN);
         if (realCount >= 1) continue;
         HumanAction(f->SN, b.SN);
+        villLastResourceSN[f->SN] = b.SN;   // ★ 记录目标（农场），供卡死兜底拉黑
         frameFoodTargets.insert(b.SN);  // 本帧标记
         return true;
     }

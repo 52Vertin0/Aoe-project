@@ -235,7 +235,7 @@ int AddToIns(instruction ins) override {
     std::set<int> releasedBuilders;   // 本帧刚完成建造/释放的村民，允许跳过 IDLE 限制立即重新分配
     std::map<int,int> gatherStuckFrame;   // 村民SN → 空手且非空闲的起始帧（寻路卡死检测）
     std::map<int,int> stuckResourceUntil; // 资源SN → 拉黑截止帧（判定不可达，暂不派）
-    std::map<int,int> villLastResourceSN; // 村民SN → 最近一次被派去的目标资源SN（树/浆果/瞪羚/金/石；STUCK时WorkObjectSN已清零，兜底拉黑用）
+    std::map<int,int> villLastResourceSN; // 村民SN → 最近一次被派去的目标SN（树/浆果/瞪羚/金/石/大象/农场；STUCK时WorkObjectSN已清零，兜底拉黑用）
     std::set<int> pendingRedispatch;      // ★ 卡死待重派村民SN（detectStuckGatherers 注入 → assignIdleSimple 无视 IDLE 优先重派一次）
     std::map<int, std::pair<int,int>> pendingBuildIns; // 建造指令id → {建造者SN, 建筑类型}
     std::map<int,int> pendingBuildInsFrame; // 建造指令id → 下发帧号（结果迟迟不回时超时清理，避免永久占位）
