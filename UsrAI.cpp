@@ -17,9 +17,8 @@ ins UsrIns;
 //   [ENV]/[SNAP]/[INS-BAD] 文本心跳在评测机上很可能被整条丢弃。而 backtrace 里带着 gdb 自身
 //   的 stderr（"could not find '.gnu_debugaltlink'"）⇒ 评测机**捕获了进程输出** ⇒
 //   直接 fprintf(stdout/stderr) + fflush 是唯一能被回读的通道。
-//   只用 <cstdio>/<new>，不引用任何引擎/新增符号，不改变任何判据或指令 ⇒ 纯观测/纯自救。
+//   只用 <cstdio>，不引用任何引擎/新增符号，不改变任何判据或指令 ⇒ 纯观测。
 #include <cstdio>
-#include <new>        // ★ 2026-09-29 金丝雀修复路径用 placement new（<memory> 只是间接带入，此处显式声明）
 
 // ============================================================================================
 // ★★★ 2026-09-23~28 OJ(Linux/gcc13) SIGSEGV 自救 —— 已整体迁入 UsrAICore（定义见 UsrAI.h）★★★
@@ -42,53 +41,12 @@ struct SnapState {
     int waitCount = 0;      // ★ 真正进入等待的帧数（正常应仅开局 1 次）
     int skipCount = 0;      // 完全无可用快照而被跳过的帧数
     int badSnapCount = 0;   // ★ 完整性哨兵拦下的坏快照数（非 0 ⇒ 引擎侧 buffer 被踩）
-    int ptrBadCount = 0;    // ★ 金丝雀：infoPtr 被外部踩坏而放弃决策的帧数（>0 ⇒ 引擎侧确在踩我们的对象）
-    int ptrRepairCount = 0; // ★ 金丝雀：被踩坏后用 placement new 原地重建 infoPtr 的次数
 };
 std::map<const UsrAICore*, SnapState> g_snapStates;
 std::mutex g_snapStatesMutex;
 SnapState& snapState(const UsrAICore* self) {
     std::lock_guard<std::mutex> lock(g_snapStatesMutex);
     return g_snapStates[self];
-}
-
-// ★★★ 2026-09-29 OJ 崩点金丝雀（同语义只写一遍：机理、判据、修法都在这一处）★★★
-//   现象：6 次 OJ SIGSEGV 的"崩点行号"看着各不相同，逐个回落到源码后**全部落在同一个对象
-//   `infoPtr` 上**：
-//     · `:428` / `:501`      = `infoPtr = fresh`   （解引用【旧】控制块去减引用计数）
-//     · `shared_ptr_base.h:1665 get()`（内联进 processFrame）= `infoPtr->xxx` / `if (infoPtr)`
-//     · `:700` / `:756`      = `frame = infoPtr->GameFrame`
-//   ⇒ 这不是"随机落点"，而是【UsrAI 对象里那 16 字节被外部写坏】—— 崩点只是"被踩之后的第一次解引用"。
-//     这也解释了为什么三轮快照内容加固（深拷贝→零拷贝→完整性哨兵）全都无效：
-//     它们加固的是**快照内容**，而被踩的是**持有快照的那个句柄**。
-//   判据（充要，且只用一次整数比较）：本文件对 infoPtr 是**单写者** —— 只在 refreshSnapshot() 里赋值，
-//   且只在 AI 线程执行 ⇒ "当前合法值"必然等于 g_curSnapPtr ⇒ 比较一次即知有没有被踩：
-//     · 没被踩 ⇒ 恒等（正常路径零成本）；  · 被踩 ⇒ 恒不等（除非恰好等于正确值 —— 那本就等于没被踩）。
-//   ⚠ 不要改用"再查一遍 st.published"之类的间接判据：那要拿锁、要解引用别的对象，在被踩的现场自己也会崩。
-//     只有一个 8 字节的整数比较是"绝对安全"的 —— 读一个已知有效的地址，不可能 SIGSEGV。
-static const tagInfo* g_curSnapPtr = nullptr;   // infoPtr 最近一次被合法赋予的值（仅 AI 线程读写）
-
-// 安装新快照：正常路径 = 一次 shared_ptr 赋值；**仅当检测到 infoPtr 已被踩坏**时才改走原地重建。
-//   为什么不能一律 `infoPtr = fresh`：赋值会先解引用**旧**控制块去减引用计数 ⇒ 旧控制块若已被踩坏，
-//   这一步本身就是 SIGSEGV（历史崩点 `:428` / `:501` 正是它）。
-//   原地重建 = 用 placement new 覆盖这 16 字节：既不读旧控制块、也不释放它（它已被踩坏、本就不可回收
-//   ⇒ 只泄漏这一次），语义与普通赋值等价（fresh 出作用域时自减 1，净持有仍为 1）。
-//   ⚠ 绝不可改成"无条件接位拷贝/无条件 placement new"：那样旧 tagInfo 每帧都收不回 ⇒ 一局泄漏上百 MB。
-//   返回 true = 本次走了"修复"路径（调用方据此计数上报，供 OJ 日志判读）。
-static bool installSnap(std::shared_ptr<tagInfo>& dst, const std::shared_ptr<tagInfo>& fresh) {
-    if (dst && dst.get() != g_curSnapPtr) {
-        new (&dst) std::shared_ptr<tagInfo>(fresh);   // 拷贝构造 ⇒ 引用计数 +1；旧对象不解引用、不释放
-        g_curSnapPtr = dst.get();
-        return true;
-    }
-    dst = fresh;
-    g_curSnapPtr = dst.get();
-    return false;
-}
-
-// 每帧解引用 infoPtr **之前**的一次自证（只有一次指针比较，自身不可能崩）。
-static inline bool snapPtrIntact(const std::shared_ptr<tagInfo>& p) {
-    return p.get() == g_curSnapPtr;
 }
 
 // ★★★ 2026-09-27 快照完整性哨兵（零拷贝版的配套防线）★★★
@@ -358,14 +316,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define COUNTER_FARMER_ATTACK_FRAME 40500   // 27 分钟 × 1500 帧/分钟
 #define COUNTER_FARMER_ATTACK_GAP 90        // 同一农民的重复下发节流(帧)：防幂等判据失效时刷屏，
                                             // 重发会 reset 引擎攻击关系并打断动作(铁律 14)
-// ★★★ 2026-09-29 用户需求：「派农民吸引火力，尝试让祭司【跟随农民】直接感化敌方武器厂」★★★
-// 背景（用户原话）：反攻时派农民是因为再生产资源已经没用了 —— 农民是【诱饵】，不是主力。
-// 原先代码里【零耦合】：grep farmerAtk × 祭司跟随锚(armyDR/armyUR) = 0 命中 ⇒ 祭司跟的是己方大军重心、
-//   且被 PRIEST_MIN_DIST_TARGET(18) 硬夹在后方 ⇒ "跟随农民"这条路根本不存在（本轮新增）。
-// 判据：农民波"已投入" = 已过总攻帧 且 存在【正在攻击敌建筑】的农民（WorkObjectSN ∈ 敌建筑 SN）。
-//   ⚠ 不用"农民离基地远"这类间接量 —— 农民往返/被打退时距离会抖，误判窗口大。
-//   取 N>=3 而不是 >=1：只剩 1~2 个农民时诱饵已经不成立，祭司此时前出=白送（祭司死=立刻判负）。
-#define COUNTER_FARMER_WAVE_MIN 3   // 判「农民波已投入」所需的最少在打建筑农民数
 // ★ 祭司护驾三级半径(格)：祭司死=立刻失败，故护驾优先于士兵自卫/守家/前出等一切军事行为
 #define PRIEST_GUARD_URGENT 8.0   // 紧急：敌进入祭司此半径 → 所有兵(可打断战斗)立即回防
 #define PRIEST_GUARD_ALERT  15.0  // 预警：敌进入祭司此半径 → 空闲/行军兵前往护驾(不打断正在战斗的兵，防反复横跳)
@@ -523,9 +473,7 @@ bool UsrAICore::refreshSnapshot() {
         }
     }
     if (fresh) {
-        // ★ 零拷贝：正常路径只换 shared_ptr（引用计数原子 +1），不碰任何 vector；
-        //   若旧 infoPtr 已被外部踩坏，则改走原地重建，避免赋值时解引用坏控制块（见 installSnap 上方说明）。
-        if (installSnap(infoPtr, fresh)) st.ptrRepairCount++;   // 本函数只在 AI 线程跑，static 计数无需加锁
+        infoPtr = fresh;              // ★ 零拷贝：只换 shared_ptr（引用计数原子 +1），不碰任何 vector
         QMutexLocker lk(&st.mutex);
         st.failStreak = 0;
         return true;
@@ -558,7 +506,7 @@ bool UsrAICore::refreshSnapshot() {
         }
     }
     if (fresh) {
-        if (installSnap(infoPtr, fresh)) st.ptrRepairCount++;   // 同上（开局首帧路径）
+        infoPtr = fresh;
         QMutexLocker lk(&st.mutex);
         st.failStreak = 0;
         return true;
@@ -636,16 +584,13 @@ void UsrAICore::logEnvOnce() {
 //   fallback>0 ⇒ 该环境的主线程事件回环失效（本版已删兜底 ⇒ 恒 0，仅作哨兵）
 //   skip>0     ⇒ 单帧 1 秒超时、主动放弃的帧数（AI 变钝但不崩）
 //   bad>0      ⇒ 完整性哨兵拦下的坏快照数（>0 = 引擎侧 buffer 确实被踩过，但已被拦下不崩）
-//   ptrBad>0   ⇒ ★ 金丝雀命中：infoPtr 这个**句柄本身**被外部踩坏（≠ 快照内容坏）⇒ 该帧被放弃、下帧自愈
-//   repair>0   ⇒ ★ 金丝雀修复：用 placement new 原地重建了 infoPtr（不改走这条，该处赋值必崩）
 void UsrAICore::logSnapBeat() {
     if (!(frame > 0 && frame / 1500 != lastSnapBeat_)) return;
     lastSnapBeat_ = frame / 1500;
-    DebugText(QString("[SNAP f=%1] main=%2 reuse=%3 wait=%4 skip=%5 fb=%6 bad=%7 ptrBad=%8 repair=%9").arg(frame)
+    DebugText(QString("[SNAP f=%1] main=%2 reuse=%3 wait=%4 skip=%5 fb=%6 bad=%7").arg(frame)
               .arg(snapState(this).mainCount).arg(snapState(this).reuseCount)
               .arg(snapState(this).waitCount).arg(snapState(this).skipCount)
-              .arg(snapState(this).fallbackCount).arg(snapState(this).badSnapCount)
-              .arg(snapState(this).ptrBadCount).arg(snapState(this).ptrRepairCount));
+              .arg(snapState(this).fallbackCount).arg(snapState(this).badSnapCount));
 }
 
 // ★★★ 2026-09-19 诊断（可观测机制量；UsrAI 自洽，不引用任何引擎新增符号）★★★ 崩溃场景：OJ(Linux/gcc13) 上 AI 线程在 getInfo() 的深拷贝里 SIGSEGV（源 vector len=6/cap=6）。
@@ -829,20 +774,6 @@ void UsrAI::processFrame() {
     auto tGet1 = profNow();
     profAdd(0, tGet0, tGet1);
     if (!snapOk) return;                         // 拿不到快照 ⇒ 跳过本帧（绝不回退到跨线程直读）
-
-    // ★★★ 2026-09-29 野指针金丝雀（机理见文件顶部 installSnap 上方的说明块）★★★
-    //   refreshSnapshot() 刚更新过 infoPtr ⇒ 这里一次指针比较即可自证它没被外部踩坏。
-    //   必须在**本帧第一次解引用 infoPtr 之前**，且只允许做"读一个已知有效地址"这种不可能崩的操作。
-    //   命中后：本帧不做任何决策（不解引用 infoPtr），直接返回；下一帧 refreshSnapshot() 会把它
-    //   重新指向一份全新快照 ⇒ **自愈**。代价 = 丢 1 帧，而不是整局 RE（栈里就是这一行在解引用）。
-    if (!snapPtrIntact(infoPtr)) {
-        SnapState& stB = snapState(this);
-        {
-            QMutexLocker lkB(&stB.mutex);
-            stB.ptrBadCount++;
-        }
-        return;
-    }
     frame = infoPtr->GameFrame;
 
     // ★★★ 2026-09-29 评测机心跳（纯 libc）★★★
@@ -3185,12 +3116,12 @@ void UsrAI::assignIdleSimple() {
         }
         if (blacklist) {
             stuckResourceUntil[tree->SN] = frame + TREE_REASSIGN_BLACKLIST_FRAMES;
-            villLastTreeSN.erase(f.SN);
+            villLastResourceSN.erase(f.SN);
             DebugText(QString("[TREE-BLACKLIST f=%1] farmer=%2 tree=%3").arg(frame).arg(f.SN).arg(tree->SN));
             return false;
         }
         HumanAction(f.SN, tree->SN);
-        villLastTreeSN[f.SN] = tree->SN;
+        villLastResourceSN[f.SN] = tree->SN;
         return true;
     };
     // ★ 伐木工目标动态化（2026-09-01）：缺木(<120)时拉到 10 人抢木，常态 6 人。
@@ -3347,7 +3278,11 @@ void UsrAI::assignIdleSimple() {
     for (auto &f : infoPtr->farmers) {
         if (f.FarmerSort != FARMERTYPE_FARMER) continue;
         if (f.Resource > 0) continue;
-        if (f.NowState != HUMAN_STATE_IDLE) continue;
+        // ★★★ 卡死重派（2026-10-03 修「浆果采集者一直不动」）：detectStuckGatherers 判定寻路卡死后把村民
+        //   注入 pendingRedispatch，这里【无视 IDLE】优先重派一次。根因：本循环只服务 HUMAN_STATE_IDLE，
+        //   而卡死村民既非 IDLE 又无有效目标（Idle 计数里看不见 ⇒ 永久不会被捞回）⇒ 打断动作必须真正换目标。
+        const bool redispatch = (pendingRedispatch.erase(f.SN) > 0);
+        if (!redispatch && f.NowState != HUMAN_STATE_IDLE) continue;
         if (elephantPartyPending.count(f.SN)) continue;   // ★ 本帧已编入猎象队，禁止同帧改派
 
         // ★ 木头达停采上限(日常≥150 / WAVE3后≥250)则不再派新伐木工，人力优先留作食物
@@ -3364,6 +3299,7 @@ void UsrAI::assignIdleSimple() {
             auto gold = findNearestResource(RESOURCE_GOLD, f.DR, f.UR);
             if (gold) {
                 HumanAction(f.SN, gold->SN);
+                villLastResourceSN[f.SN] = gold->SN;   // ★ 记录目标，供卡死兜底拉黑（原只覆盖树 ⇒ 浆果卡死时拉黑的是旧树）
                 goldWorkers++;
                 continue;
             }
@@ -3377,6 +3313,7 @@ void UsrAI::assignIdleSimple() {
             auto stoneR = findNearestResource(RESOURCE_STONE, f.DR, f.UR);
             if (stoneR) {
                 HumanAction(f.SN, stoneR->SN);
+                villLastResourceSN[f.SN] = stoneR->SN;   // ★ 记录目标，供卡死兜底拉黑
                 stoneWorkers++;
                 continue;
             }
@@ -3396,6 +3333,7 @@ void UsrAI::assignIdleSimple() {
         double bestBushScore = 1e12;
         for (auto &r : infoPtr->resources) {
             if (r.Type != RESOURCE_BUSH || r.Cnt <= 0) continue;
+            if (stuckResourceUntil.count(r.SN)) continue;   // ★★★ 2026-10-03 修「浆果采集者一直不动」：本主路径原先【不查】黑名单（只有冷路径 tryAssignFood 查）⇒ 被拉黑的丛每帧照样被重选、村民反复往回卡。对齐树/findBestWoodTree 的闭环。
             // ★ 2026-09-07 放宽：原"距 TC >20 格即跳过"会让远距浆果群(已在其旁建第二谷仓)无人采集。 现在：距 TC ≤20 格 **或** 距任一【已建成】谷仓 ≤BUSH_NEAR_GRANARY_DIST(20) 格 → 可派。
             if (calDistance(tcDR, tcUR, r.DR, r.UR) > 20 * BL) {
                 bool nearGranary = false;
@@ -3414,6 +3352,7 @@ void UsrAI::assignIdleSimple() {
         }
         if (bestBush) {
             HumanAction(f.SN, bestBush->SN);
+            villLastResourceSN[f.SN] = bestBush->SN;   // ★ 记录目标（浆果），供卡死兜底拉黑
             assignedBush[bestBush->SN]++;
             frameBushCount[bestBush->SN]++;
             continue;
@@ -3423,6 +3362,7 @@ void UsrAI::assignIdleSimple() {
         double bestGazelleDist = 1e12;
         for (auto &r : infoPtr->resources) {
             if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) continue;
+            if (stuckResourceUntil.count(r.SN)) continue;   // ★★★ 2026-10-03 同上：主路径补黑名单检查（原只在冷路径 tryAssignFood 查）
             // ★ 2026-09-04 范围放宽：30→GAZELLE_HUNT_RANGE(50) 格，覆盖远距未建仓库的瞪羚群
             if (calDistance(tcDR, tcUR, r.DR, r.UR) > GAZELLE_HUNT_RANGE * BL) continue;
             int onGazelle = countFarmersOnTarget(r.SN);
@@ -3433,6 +3373,7 @@ void UsrAI::assignIdleSimple() {
         // ★ 2026-09-12「先建仓库再打猎」：交付仓库没就位就本帧不派猎人（continue 到下一资源类型/兜底）， 仓库块已在 manageBuildings 最前面以最高优先级抢建。
         if (bestGazelle && gazelleDropoffReady(bestGazelle)) {
             HumanAction(f.SN, bestGazelle->SN);
+            villLastResourceSN[f.SN] = bestGazelle->SN;   // ★ 记录目标（瞪羚），供卡死兜底拉黑
             assignedGazelle[bestGazelle->SN]++;
             frameGazelleCount[bestGazelle->SN]++;
             continue;
@@ -4803,20 +4744,6 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
 // ★ 2026-09-16 修正：原先打印的 towers= 是 scanTowerThreat【祭司周边】塔数，与"塔全拆"这个【全局】判据不是同一个量
 // ⇒ 极易误读（历史教训：`[LC-DBG] towers=0` @f=33300 被判成"塔已全拆"，实为未探明伪影，塔是 0→1→2 逐个探明的）。
 // 现同时打印两个口径：gT=全局已探明敌箭塔数（判据真源）／seen=已探明敌建筑总数（保险项）／nearT+loc=祭司周边。
-        // ★★★ 2026-09-29 用户需求：「农民吸火 ⇒ 祭司跟随农民直接感化武器厂」的判据（本函数内自算）★★★
-        //   为什么自算：农民总攻段在 manageCounterAttack() 的【另一处】，与本函数原先零耦合；自算可做到
-        //   【不改 .h、不引入跨函数状态、不新增成员变量】⇒ 加固面最小（同 §0 金丝雀的纪律）。
-        //   判据语义见文件头 COUNTER_FARMER_WAVE_MIN 处注释；铁律 53：该量在下行 LC-DBG 里可打印。
-        int farmerWaveN = 0;
-        if (frame >= COUNTER_FARMER_ATTACK_FRAME) {
-            for (auto &f : infoPtr->farmers) {
-                if (f.FarmerSort != FARMERTYPE_FARMER || f.WorkObjectSN < 0) continue;
-                for (auto &b : infoPtr->enemy_buildings)
-                    if (b.SN == f.WorkObjectSN) { farmerWaveN++; break; }
-            }
-        }
-        const bool farmerWaveOn = (farmerWaveN >= COUNTER_FARMER_WAVE_MIN);
-
         if (frame % 300 == 0) {
             double nearTowerD = 1e9; int towerCnt = 0;
             scanTowerThreat(nearTowerD, towerCnt);   // 祭司周边的塔（态势用，非判据）
@@ -4825,10 +4752,10 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 seen++;
                 if (b.Type == BUILDING_ARROWTOWER) gT++;
             }
-            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 gT=%10 seen=%11 nearT=%12 loc=%13 fW=%14").arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
+            DebugText(QString("[LC-DBG f=%1] siegeSN=%2 mem=(%3,%4) dS=%5 hp=%6 ccd=%7 st=%8 mvcd=%9 gT=%10 seen=%11 nearT=%12 loc=%13").arg(frame).arg(enemySiegeSN).arg(rallyDR).arg(rallyUR)
                       .arg(calDistance(priest->DR, priest->UR, (rallyDR + 1.0) * BL, (rallyUR + 1.0) * BL) / BL, 0, 'f', 1)
                       .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2).arg(priest->ConvertCooldown).arg(priest->NowState).arg(priestMoveCooldown)
-                      .arg(gT).arg(seen).arg((nearTowerD > 1e8) ? -1.0 : nearTowerD / BL, 0, 'f', 1).arg(towerCnt).arg(farmerWaveN));
+                      .arg(gT).arg(seen).arg((nearTowerD > 1e8) ? -1.0 : nearTowerD / BL, 0, 'f', 1).arg(towerCnt));
         }
 
         // ★★★ 2026-09-16 用户需求：祭司感化武器厂的【唯一】限制 = 敌方全部箭塔拆完 ★★★
@@ -4855,23 +4782,7 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
         const bool towersClearEnough = (enemyTowerN <= PRIEST_TOWERS_CLEAR_MAX)
                                 && (enemySiegeSN != -1)
                                 && (enemyBldSeenN >= PRIEST_TOWERS_CLEAR_MIN_SEEN);
-        const bool clearOk = (PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR ? towersClearEnough : localClear)
-                             || (farmerWaveOn && localClear);
-        // ★ 2026-09-29 用户拍板：农民波已投入 ⇒ 闸放行。**但必须叠加 localClear 保命条件**（下面是被实测逼出来的）：
-        //   ⚠⚠ 实测（fw1 批，8 局冒烟）：无条件放行版 `|| farmerWaveOn` 在 2/2 咬合局都把祭司【送死】——
-        //     · fw103：f=40500 `gT=4 dS=30.5 hp=0.80` ⇒ 祭司一路 ADVANCE 到 d=11.4（`nearT` 从 24.5 缩到 7.6）起手，
-        //       37 帧后 `dS=5.4 nearT=3.0` ⇒ hp 0.80→0.68→0.20 ⇒ f=41233 `DEFEAT: Priest killed`。整局 41264 结束（原本会拖到 45000 UND）。
-        //     · fw108：`towers=3` 下走到 d=11.9 起手，384 帧后同为 `Priest killed`。
-        //   ⇒ **「农民吸引火力」对【箭塔】不成立**：塔是静态远程，谁最近打谁 —— 祭司为了进 12 格感化射程必然走进塔环，
-        //     于是自己成了塔的目标（fw103 起手时 `nearT=7.6`，施法中被射死）。塔不靠"仇恨"选目标，诱饵换不来豁免。
-        //   ⚠ 更严重的回归面：h309（历史胜局）f=41700 时 `gT=3 dS=11.0 hp=0.68 nearT=4.4`，被闸拦 7 次、等到 `towers=2`（f=42174）
-        //     才起手成功；无条件放行会让它在 `nearT=4.4` 就起手 ⇒ 几乎必死 ⇒ **把一个胜局翻成败局**。
-        //   ⇒ 故保留 `localClear`（= 祭司周边 8 格无敌兵 且 14 格内无塔）作为二次条件：放行只在【确实安全】时生效。
-        //     若要回到"无条件放行"，把上面这行的 `(farmerWaveOn && localClear)` 改回 `farmerWaveOn` 即可（但不建议，见上）。
-        // ⚠ 口径冲突备忘：本条与 2026-09-16 用户需求「祭司感化的【唯一】限制条件 = 敌方全部箭塔拆完」冲突；
-        //   2026-09-29 用户选择「农民波投入后放行」，此处以 `&& localClear` 折中（放行但保命）。
-        //   依据（h2+h3 共 48 局）：有 5 局（h214/h224/h303/h311/h324）拖到 45000 帧上限仍未决，末态 =「双方军队都打光、
-        //   我 Mil 0~4、敌 E 0~4，但敌塔残留 2~5 座」⇒ gT > PRIEST_TOWERS_CLEAR_MAX ⇒ clearOk 恒假 ⇒ 祭司被永久锁死。
+        const bool clearOk = PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR ? towersClearEnough : localClear;
 
 // ★★★ 2026-09-14 关键修复：武器厂感化【提前到状态/移动闸之前】★★★ 铁证：[LC-DBG] 8 局仅命中 1 次 ⇒ 下方整段执行率 <1%（被 NowState 闸 + priestMoveCooldown 闸挡住）。
 // 而【感化是 HumanAction，与 priestMoveCooldown(移动节流) 无关】—— 引擎侧转换冷却由 ConvertCooldown 管。
@@ -4909,8 +4820,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                     HumanAction(priestSN, enemySiegeSN);
                     priestCounterCooldown = PRIEST_SIEGE_CONVERT_LOCKOUT;
                     // 每次发令必打（原为 frame%50 采样 ⇒ 起手过程不可观测）；发令本身已被 lockout 节流到 <=1/400 帧
-                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 hp=%3 nearT=%4 towers=%5 path=early fW=%6").arg(frame).arg(sD0 / BL, 0, 'f', 1).arg(pHp0, 0, 'f', 2)
-                              .arg((nearT0 > 1e8) ? -1.0 : nearT0 / BL, 0, 'f', 1).arg(towerN0).arg(farmerWaveN));
+                    DebugText(QString(">> Priest converting Siege Workshop! f=%1 d=%2 hp=%3 nearT=%4 towers=%5 path=early").arg(frame).arg(sD0 / BL, 0, 'f', 1).arg(pHp0, 0, 'f', 2)
+                              .arg((nearT0 > 1e8) ? -1.0 : nearT0 / BL, 0, 'f', 1).arg(towerN0));
                 }
                 priestMoveCooldown = 60;   // 钉住：施法期禁止后撤/移动打断（移动会清空 WorkObjectSN）
                 return;
@@ -4966,9 +4877,6 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
         // ★ 2026-09-13：局部清场成立时安全距离约束失效（否则 18 格安全 > 12 格感化射程 ⇒ 永远够不到）。
         // ★ 2026-09-14 副作用修复：只有【确实存在武器厂目标】才解除。旧写法 `if (allowConvertSiege)` 在未发现 武器厂时也会解除 ⇒ 祭司不进后撤分支、停在原地挨打（lc8 f=36980 死 / lc4 f=36100 死）。
         if (allowConvertSiege && enemySiegeSN != -1) priestTooClose = false;
-        // ★ 2026-09-29（农民吸火口径）：农民波已投入时同样解除"太靠前 ⇒ 后撤"。否则下方 rear 分支的
-        //   `PRIEST_MIN_DIST_TARGET` 夹持会从另一条路径把祭司拉回后方，抵消掉"跟随农民"的效果（两条路径互斥，铁律 21/26）。
-        if (farmerWaveOn) priestTooClose = false;
 
         // ★★★ 2026-09-13 用户需求：敌方军队全灭 + 箭塔全拆 → 祭司主动前出感化武器厂 ★★★ 优先级高于"后撤保命"（清场后无威胁，前出不会送命）。
         if (allowConvertSiege && enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
@@ -5065,8 +4973,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                     if (!escaping) {
                         double nearT2 = 1e9; int towerN2 = 0;
                         scanTowerThreat(nearT2, towerN2);
-                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared fW=%5").arg(frame).arg(dSiege / BL, 0, 'f', 1)
-                                  .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2).arg(farmerWaveN));
+                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared").arg(frame).arg(dSiege / BL, 0, 'f', 1)
+                                  .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2));
                     }
                 }
             }
@@ -5083,21 +4991,10 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             // ★ 2026-09-12（用户需求"祭司反攻不要太靠前"）：旧版把祭司推到 target(敌基地)-5格(仅沿 DR 轴)， 几乎与大军一起冲到敌方基地外 5 格，前线一崩就暴露在敌塔/敌兵火力下 = 立即失败。
             // 新：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格， 且与反攻目标保持 ≥ PRIEST_MIN_DIST_TARGET 格。上方感化段保留但改为【被动】。
             double tcDR = rallyCtrDR, tcUR = rallyCtrUR;   // ★ 后方锚点 = 集结 TC（己方基地方向），祭司朝此方向退
-            // ★★★ 2026-09-29 用户需求：农民波已投入 ⇒ 跟随锚从【大军重心】换成【农民重心】★★★
-            //   理由：农民是吸火的那一波、走在大军前面（`[FARMER-ATK] 已投入=19` 实测）；祭司跟农民才会被带到武器厂近旁。
-            //   ⚠ 仅当本帧确实统计到农民时才切换（`nArmy > 0` 已兜底），否则回退大军重心 —— 空重心会把祭司拉回 TC。
-            //   ⚠ 变量名保留 armyDR/armyUR（下游 4 处引用），但此处的语义已变为"跟随锚重心"。
             double sumDR = 0, sumUR = 0; int nArmy = 0;
-            if (farmerWaveOn) {
-                for (auto &f : infoPtr->farmers) {
-                    if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-                    sumDR += f.DR; sumUR += f.UR; nArmy++;
-                }
-            } else {
-                for (auto &a : infoPtr->armies) {
-                    if (a.SN == priestSN) continue;       // 重心不算祭司自己
-                    sumDR += a.DR; sumUR += a.UR; nArmy++;
-                }
+            for (auto &a : infoPtr->armies) {
+                if (a.SN == priestSN) continue;       // 重心不算祭司自己
+                sumDR += a.DR; sumUR += a.UR; nArmy++;
             }
             double armyDR = (nArmy > 0) ? sumDR / nArmy : tcDR;
             double armyUR = (nArmy > 0) ? sumUR / nArmy : tcUR;
@@ -5109,12 +5006,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             double px = armyDR + ux * PRIEST_SAFE_BEHIND * BL;
             double py = armyUR + uy * PRIEST_SAFE_BEHIND * BL;
             // 安全距离约束：距反攻目标 ≥ MIN_DIST_TARGET（不满足则沿身后方向继续退，直到满足）
-            // ★★★ 2026-09-29 用户拍板：农民波已投入 ⇒ 解除 18 格夹持 ★★★
-            //   实证（h311 末段逐帧）：祭司每 30 帧重发 HumanMove，目标只在小数位变
-            //   （(2328.45,2512.74)→(2320.14,2502.3)→(2317.55,2509.19)→(2329.47,2514.23)）⇒ 净位移≈0，
-            //   且 `[PRST-REAR] dTgt 恒 18.1` == PRIEST_MIN_DIST_TARGET ⇒ 正是本夹持把祭司钉在环上、永远够不到武器厂。
             double dTgt = calDistance(px, py, targetDR, targetUR);
-            if (!farmerWaveOn && dTgt < PRIEST_MIN_DIST_TARGET * BL) {
+            if (dTgt < PRIEST_MIN_DIST_TARGET * BL) {
                 double need = (PRIEST_MIN_DIST_TARGET * BL - dTgt) + 2.0 * BL;
                 px += ux * need; py += uy * need;
             }
@@ -5123,9 +5016,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             if (isPassableAt(px, py, forestGrid))
                 HumanMove(priestSN, px, py);
             if (frame % 100 == 0)
-                DebugText(QString("[PRST-REAR f=%1] army=(%2,%3) tgt=(%4,%5) dTgt=%6 tooClose=%7 anchor=%8 fW=%9").arg(frame).arg(armyDR / BL, 0, 'f', 0).arg(armyUR / BL, 0, 'f', 0)
-                          .arg(targetDR / BL, 0, 'f', 0).arg(targetUR / BL, 0, 'f', 0).arg(dTgt / BL, 0, 'f', 1).arg(priestTooClose ? 1 : 0)
-                          .arg(farmerWaveOn ? "farmer" : "army").arg(farmerWaveN));
+                DebugText(QString("[PRST-REAR f=%1] army=(%2,%3) tgt=(%4,%5) dTgt=%6 tooClose=%7").arg(frame).arg(armyDR / BL, 0, 'f', 0).arg(armyUR / BL, 0, 'f', 0)
+                          .arg(targetDR / BL, 0, 'f', 0).arg(targetUR / BL, 0, 'f', 0).arg(dTgt / BL, 0, 'f', 1).arg(priestTooClose ? 1 : 0));
             priestCounterCooldown = 30; priestMoveCooldown = 30;
         }
     }
@@ -6065,6 +5957,7 @@ tagResource* UsrAI::findNearestResource(int type, double dr, double ur) {
     double bestDist = 1e12;
     for (auto &r : infoPtr->resources) {
         if (r.Type == type && r.Cnt > 0) {
+            if (stuckResourceUntil.count(r.SN)) continue;   // ★ 2026-10-03：被判定不可达（拉黑）的资源不再被"最近"选中；对齐 findBestWoodTree / tryAssignFood
             double d = dist2(r.DR, r.UR, dr, ur);
             if (d < bestDist) { bestDist = d; best = &r; }
         }
@@ -7030,6 +6923,14 @@ void UsrAI::detectStuckGatherers() {
         if (it->second <= frame) it = stuckResourceUntil.erase(it);
         else ++it;
     }
+    // ★ 待重派集合清理：村民已不在场（死亡/被移除）则移除，防止集合无限增长
+    if (!pendingRedispatch.empty()) {
+        for (auto it = pendingRedispatch.begin(); it != pendingRedispatch.end(); ) {
+            bool alive = false;
+            for (auto &x : infoPtr->farmers) if (x.SN == *it) { alive = true; break; }
+            if (!alive) it = pendingRedispatch.erase(it); else ++it;
+        }
+    }
 
     auto center = findBuilding(BUILDING_CENTER);
     if (!center) return;
@@ -7038,24 +6939,37 @@ void UsrAI::detectStuckGatherers() {
         // 跳过：建造者 / 引诱者 / 探路者（本就非空闲+空手，不是采集卡死）
         if (buildingFarmerType.count(f.SN)) {
             gatherStuckFrame.erase(f.SN);
+            pendingRedispatch.erase(f.SN);
             continue;
         }
         // 已采到东西(Resource>0) 或 空闲(IDLE) → 正常，清空计时
         if (f.Resource > 0 || f.NowState == HUMAN_STATE_IDLE) {
             gatherStuckFrame.erase(f.SN);
+            pendingRedispatch.erase(f.SN);   // ★ 已恢复正常 ⇒ 撤销待重派标记
             continue;
         }
         // 空手 + 非空闲：累计时长，超时判定寻路卡死
         if (gatherStuckFrame.find(f.SN) == gatherStuckFrame.end()) {
             gatherStuckFrame[f.SN] = frame;
         } else if (frame - gatherStuckFrame[f.SN] > STUCK_GATHER_TIMEOUT) {
+            const int stuckFrames = frame - gatherStuckFrame[f.SN];
             int targetSN = f.WorkObjectSN;
-            // ★ WorkObjectSN 在寻路失败/目标丢失时已被引擎清零(-1)，无法据此拉黑不可达树 → 用 villLastTreeSN 兜底：取本村民最近一次被派去的树SN拉黑，避免同一棵不可达树被反复重选
-            if (targetSN <= 0 && villLastTreeSN.count(f.SN)) targetSN = villLastTreeSN[f.SN];
+            // ★ WorkObjectSN 在寻路失败/目标丢失时已被引擎清零(-1) ⇒ 用 villLastResourceSN 兜底：
+            //   取本村民最近一次被派去的【任意资源】SN（树/浆果/瞪羚/金/石），避免拉黑到张冠李戴的旧树
+            if (targetSN <= 0 && villLastResourceSN.count(f.SN)) targetSN = villLastResourceSN[f.SN];
             if (targetSN > 0) stuckResourceUntil[targetSN] = frame + STUCK_BLACKLIST_FRAMES;
-            HumanAction(f.SN, center->SN);  // 打断卡死关系，回TC重新待命
+            // ★★★ 2026-10-03 修「浆果采集者一直不动」的关键一步：打断必须【真正复位】。
+            //   旧实现只发一条 HumanAction(f.SN, center->SN)（派回 TC）⇒ 村民从"卡死原目标"变成"卡死去 TC"，
+            //   既非 IDLE（主派工捞不回）又无有效目标 ⇒ 1500 帧后原样复发（实测三次触发帧号严格等间隔 1502/1503）。
+            //   现在：注入 pendingRedispatch，让 assignIdleSimple 下一帧【无视 IDLE】给它换一个目标（黑名单已生效 ⇒ 必换）。
+            pendingRedispatch.insert(f.SN);
+            HumanAction(f.SN, center->SN);  // 先打断与坏目标的关系（下一帧被 pendingRedispatch 覆盖为新目标）
             gatherStuckFrame.erase(f.SN);
-            DebugText(QString("[STUCK f=%1] 村民SN=%2 寻路卡死, 目标资源SN=%3 已拉黑").arg(frame).arg(f.SN).arg(targetSN));
+            const double BL = (double)BLOCKSIDELENGTH;
+            DebugText(QString("[STUCK f=%1] 村民SN=%2 state=%3 空手%4帧 目标资源SN=%5 位置=(%6,%7) 距TC=%8格 已拉黑+待重派")
+                      .arg(frame).arg(f.SN).arg((int)f.NowState).arg(stuckFrames).arg(targetSN)
+                      .arg(f.DR, 0, 'f', 1).arg(f.UR, 0, 'f', 1)
+                      .arg(calDistance(f.DR, f.UR, (center->BlockDR + 1) * BL, (center->BlockUR + 1) * BL) / BL, 0, 'f', 1));
         }
     }
 }
