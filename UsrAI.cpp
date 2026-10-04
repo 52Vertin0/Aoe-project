@@ -564,7 +564,7 @@ bool UsrAICore::event(QEvent* e) {
 // ★★★ 2026-09-28 加固层实现（UsrAICore）★★★
 //   本区块收纳三类内容：
 //     ① 诊断心跳 [ENV] / [SNAP] / [DIRTY-SNAP]（原散落在 UsrAI::processData 顶部，逐字迁入）
-//     ② instruction 动态指针体检 instructionSelfOk()
+//     ② instruction 动态指针体检 resolveSelfCurrent()（2026-10-04 放宽为"以权威表当前值为准"）
 //     ③ 帧末唯一提交点 commitInstruction()
 // ============================================================================================
 
@@ -647,28 +647,52 @@ void UsrAICore::checkDirtySnapshot() {
 //   ⚠ g_Object 是引擎全局表（GlobalVariate.h:29 已声明），AI 线程本来就在碰它 ——
 //     instruction 构造里的 `g_Object[SN]` 就是在 AI 线程执行的 ⇒ 此处用 find() 只读，
 //     与既有访问同线程同容器，不引入新的竞争类别。
-static bool instructionSelfOk(const instruction& c) {
-    if (!c.self) return false;                     // SN 无效 ⇒ g_Object[SN] 取到 nullptr
+//   ★★★ 2026-10-04 OJ「指令全丢」修复：self 判据由"与构造时的副本逐字节一致"放宽为"以权威表当前值为准" ★★★
+//   现场（OJ 提交 6121 / engine=v3.0.7h）：[INS-BAD] 累计丢弃=67291 / 7512 帧 ≈ 每帧 9 条
+//     （8 村民 + 1 祭司）**全部**被丢，引擎侧 HumanAction 日志 0 条 ⇒ 资源 33 分钟一动不动、
+//     8 村民站桩、祭司被敌方打死（GameOver,Win:0）。
+//   同一份源码在本机 7g/7h × exam/非exam 四种组合下 [INS-BAD] 累计丢弃恒 0。
+//   旧判据 `it->second == c.self` 额外要求"帧末提交时的 g_Object[SN] 与构造指令那一刻取到的副本
+//   逐字节相同"。但引擎自己的存在性判据只看当前值 —— Core.cpp:1398
+//     `if (g_Object[cur.SN] == NULL || self->getPlayerRepresent() != id) { cur.ret = ACTION_INVALID_SN; ... }`
+//   ⇒ AI 这层自检**比引擎更严**。一旦评测机的 g_Object 在"构造 → 帧末提交"这个窗口内更新了同一 SN
+//   的指针（对象重建/替换），本帧**全部**指令会被判死 ⇒ AI 直接瘫痪，比放开更危险。
+//   新判据（与引擎同口径）：键不存在 ⇒ 丢（SN 无效）；键存在但当前值为 NULL ⇒ 丢（对象已死）；
+//   键存在且非空 ⇒ **采用当前指针**（引擎随后就是用这张表取对象执行；用陈旧副本反而更危险）。
+//   ⚠ 本机行为零变化：本机 dropIns 恒 0 ⇒ resolveSelfCurrent 从不改写 c.self
+//     （由 [INS-DIAG] 的 adopt=/noKey=/nullSelf= 三个计数自证）。
+static Coordinate* resolveSelfCurrent(const instruction& c) {
+    if (!c.self) return nullptr;                   // 构造时 SN 就取不到对象
     const std::map<int, Coordinate*>::const_iterator it = g_Object.find(c.SN);
-    if (it == g_Object.end()) return false;        // 引擎侧已无此对象
-    return it->second == c.self;                   // 指针与权威表一致（防悬垂 / SN 复用后的陈旧指针）
+    if (it == g_Object.end()) return nullptr;      // 引擎侧已无此 SN
+    return it->second;                             // ★ 以权威表当前值为准（为 NULL 亦返回 NULL ⇒ 丢弃）
 }
 
 void UsrAICore::commitInstruction() {
     if (InsPerFrame.empty()) return;               // 常见路径：本帧没下任何命令
 
-    int dropIns = 0;                               // self 无效 ⇒ 丢弃
+    int dropIns = 0;                               // self 解析失败 ⇒ 丢弃
     int nullObj = 0;                               // obj 未初始化野值 ⇒ 归零
+    // ★ 2026-10-04 判据输入自证（铁律：判据的输入集合必须可打印）：三类成因分开计数
+    int dropNullSelf = 0;                          // 构造时 g_Object[SN] 就取到 nullptr
+    int dropNoKey = 0;                             // self 非空但 SN 已不在 g_Object / 值为 NULL
+    int adoptPtr = 0;                              // 权威表当前指针 != 副本 ⇒ 改用当前值（本机应恒 0）
 
     ins& Ins = GetInsStruct();
     Ins.lock.lock();
     for (size_t i = 0; i < InsPerFrame.size(); ++i) {
         instruction& c = InsPerFrame[i];
 
-        // ① 动态指针 self：必须与引擎权威表 g_Object 一致，否则丢弃
-        if (!instructionSelfOk(c)) {
+        // ① 解析 self：以引擎权威表 g_Object 的**当前值**为准（与 Core.cpp:1398 同口径）
+        Coordinate* curSelf = resolveSelfCurrent(c);
+        if (!curSelf) {
             ++dropIns;
+            if (c.self) ++dropNoKey; else ++dropNullSelf;
             continue;
+        }
+        if (curSelf != c.self) {
+            ++adoptPtr;                            // 指针在构造→提交窗口内被更新 ⇒ 采用权威值
+            c.self = curSelf;
         }
 
         // ② 动态指针 obj：只有 HumanAction 语义上使用它
@@ -685,18 +709,37 @@ void UsrAICore::commitInstruction() {
         Ins.instructions.push(c);
     }
     Ins.lock.unlock();
+    const int insTotal = (int)InsPerFrame.size();
+    QString insList;                               // ★ 前 4 条的 (type,SN)：反推 AI 到底在给谁下命令
+    for (size_t i = 0; i < InsPerFrame.size() && i < 4; ++i)
+        insList += QString("(%1,%2)").arg(InsPerFrame[i].type).arg(InsPerFrame[i].SN);
     InsPerFrame.clear();
 
     // 计数与日志（static 局部量；本函数只在 AI 线程跑 ⇒ 无需加锁）
     static int g_dropInsTotal = 0;
     static int g_nullObjTotal = 0;
+    static int g_adoptTotal = 0;
     static int g_lastInsBeat = -1;
+    static int g_lastInsDiagBeat = -1;
     g_dropInsTotal += dropIns;
     g_nullObjTotal += nullObj;
+    g_adoptTotal += adoptPtr;
     if ((dropIns > 0 || nullObj > 0) && frame / 1500 != g_lastInsBeat) {
         g_lastInsBeat = frame / 1500;
-        DebugText(QString("[INS-BAD f=%1] 本帧丢弃=%2 本帧 obj 归零=%3 累计丢弃=%4 累计归零=%5")
-                  .arg(frame).arg(dropIns).arg(nullObj).arg(g_dropInsTotal).arg(g_nullObjTotal));
+        DebugText(QString("[INS-BAD f=%1] 本帧丢弃=%2 本帧 obj 归零=%3 累计丢弃=%4 累计归零=%5 累计改用当前指针=%6")
+                  .arg(frame).arg(dropIns).arg(nullObj).arg(g_dropInsTotal).arg(g_nullObjTotal).arg(g_adoptTotal));
+    }
+    // ★★★ 2026-10-04 [INS-DIAG] self 判据自证：**无论有没有丢弃**都每 1500 帧打一行。
+    //   用途：在评测机上把三种世界一刀切开 ——
+    //     noKey/nullSelf>0 ⇒ SN 本身在引擎表里查不到（要查 SN 的来源）
+    //     adopt>0          ⇒ 指针在"构造→提交"窗口内被更新（本版已改为采用当前值 ⇒ 不再瘫痪）
+    //     三者全 0         ⇒ 判据健康（本机基线就是这个形态）
+    if (frame / 1500 != g_lastInsDiagBeat) {
+        g_lastInsDiagBeat = frame / 1500;
+        DebugText(QString("[INS-DIAG f=%1] n=%2 gObj=%3 drop=%4(noKey=%5 nullSelf=%6) adopt=%7 objNull=%8 前4=%9")
+                  .arg(frame).arg(insTotal).arg((qulonglong)g_Object.size())
+                  .arg(dropIns).arg(dropNoKey).arg(dropNullSelf).arg(adoptPtr).arg(nullObj)
+                  .arg(insList.isEmpty() ? QString("--") : insList));
     }
 }
 
@@ -721,7 +764,7 @@ void UsrAICore::commitInstruction() {
 //   UsrAI.cpp/.h ⇒ 不能新增引擎符号）⇒ 只能**消除 AI 侧的全部写操作**：先用 find() 只读
 //   确认 SN 存在，再转发给引擎的 Human*；此后构造里的 `g_Object[key]` 命中的是已存在的键
 //   ⇒ 退化为纯查找，不再插入、不再旋转 ⇒ 树结构只由主线程单方修改。
-//   ⚠ 残留的 g_Object 访问只有 find()（本组函数 + instructionSelfOk + commitInstruction
+//   ⚠ 残留的 g_Object 访问只有 find()（本组函数 + resolveSelfCurrent + commitInstruction
 //     校验），全为只读；只读与主线程写并发的最坏后果是"读到旋转中的节点"⇒ 返回无效指针
 //     ⇒ 本组判为 nullptr 并丢弃该指令（等价于引擎原本会判的 ACTION_INVALID_SN，
 //     Core.cpp:1355），**不会损坏内存** ⇒ 把"必然崩溃"降为"最多丢一条指令"。
