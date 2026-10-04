@@ -3111,6 +3111,15 @@ void UsrAI::assignIdleSimple() {
     //   （冷路径写的是 frameBushCount，主路径看不见）⇒ 浆果超派。已删除，统一用 frameBushCount（铁律 26 同语义只写一遍）。
     std::map<int,int> assignedGazelle;
     std::map<int,int> assignedFarm;   // ★ 本帧已派往农场的 <farmSN, workerSN>，防同场重复派工导致>1人
+    // ★★★ 2026-10-04 修「经济改派覆盖攻塔令」—— 统一判据（铁律 26：同语义只写一遍）。
+    //   ⚠⚠ 本函数有【三条各自独立的挪岗路径】：①主循环（下方）②GOLD-REBAL（food→gold 再平衡）③资源达上限回撤。
+    //   第一版只给 ① 加了豁免 ⇒ 实测 `_qf_9` 里 22 个受令农民仍有 9 个被 ②抢回金矿（f40512 起、9~213 帧后）
+    //   ⇒ 真凶是 ②：农民被派去攻箭塔后 `ResourceSort` 仍保留旧的食物分类 ⇒ 被判成食物工抢走。三处必须同闸。
+    auto counterAtkExempt = [&](const tagFarmer &f) -> bool {
+        if (!COUNTER_FARMER_ATTACK || frame < COUNTER_FARMER_ATTACK_FRAME) return false;
+        auto it = g_farmerAtkFrame.find(f.SN);
+        return (it != g_farmerAtkFrame.end() && frame - it->second < FARMER_ATK_EXEMPT_FRAMES);
+    };
     double BL = (double)BLOCKSIDELENGTH;
 
     // 2026-09-26 fix: stop repeated orders to the same unreachable tree.
@@ -3311,14 +3320,8 @@ void UsrAI::assignIdleSimple() {
         const bool redispatch = (pendingRedispatch.erase(f.SN) > 0);
         if (!redispatch && f.NowState != HUMAN_STATE_IDLE) continue;
         if (elephantPartyPending.count(f.SN)) continue;   // ★ 本帧已编入猎象队，禁止同帧改派
-        // ★★★ 2026-10-04 修「经济改派覆盖攻塔令」：反攻期已下发攻击/行军令的农民，在豁免窗口内禁止被经济派工改派。
-        //   实测：同帧/相邻帧下发「工作目标 金矿」覆盖「攻击目标 箭塔」9 次，每次覆盖 = COUNTER_FARMER_ATTACK_GAP(90 帧) 失能
-        //   ⇒ 农民反攻诱饵被自家经济逻辑取消。台账 g_farmerAtkFrame 由 counterFarmerAttack 写入（跨函数单一真源）。
-        //   ⚠ 卡死重派(redispatch)优先于本豁免 —— 否则真正卡死的农民会被本豁免挡住、永不复位。
-        if (!redispatch && COUNTER_FARMER_ATTACK && frame >= COUNTER_FARMER_ATTACK_FRAME) {
-            auto ait = g_farmerAtkFrame.find(f.SN);
-            if (ait != g_farmerAtkFrame.end() && frame - ait->second < FARMER_ATK_EXEMPT_FRAMES) continue;
-        }
+        // ★ 反攻期攻击令豁免（判据见函数头 counterAtkExempt）；⚠ 卡死重派(redispatch)优先 ⇒ 真卡死的农民仍能复位
+        if (!redispatch && counterAtkExempt(f)) continue;
 
         // ★ 木头达停采上限(日常≥150 / WAVE3后≥250)则不再派新伐木工，人力优先留作食物
         if (!woodStop && woodWorkers < woodTarget) {
@@ -3475,6 +3478,7 @@ void UsrAI::assignIdleSimple() {
             //   ⚠ 与其余 6 处（本函数猎象整队 / manageHunting / findIdleFarmer×2 / findAnyFarmer /
             //   detectStuckGatherers）对齐（铁律 26）。
             if (buildingFarmerType.count(f.SN)) continue;
+            if (counterAtkExempt(f)) continue;   // ★★★ 2026-10-04 真凶在此：农民攻塔后 ResourceSort 仍留旧食物分类 ⇒ 被判食物工抢去采金
 
             bool isFood = (f.ResourceSort == HUMAN_GRANARYFOOD || f.ResourceSort == HUMAN_STOCKFOOD);
             bool onFarm = false;
@@ -3515,6 +3519,7 @@ void UsrAI::assignIdleSimple() {
             // ★★★ 2026-09-27 同 GOLD-REBAL：建造登记中的村民不得被本「资源达上限回撤」块抢走
             //   （同为"把人挪岗"路径，同样用 WALKING + WorkObjectSN 判定 ⇒ 同一形态缺口，铁律 26）。
             if (buildingFarmerType.count(f.SN)) continue;
+            if (counterAtkExempt(f)) continue;   // ★ 2026-10-04：反攻期攻击令豁免（第三条"挪岗"路径，三处同闸，铁律 26）
             bool isStone = (f.ResourceSort == HUMAN_STONE);
             bool isWood  = (f.ResourceSort == HUMAN_WOOD);
             bool isGold  = (f.ResourceSort == HUMAN_GOLD);
