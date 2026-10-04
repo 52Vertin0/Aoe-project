@@ -314,6 +314,9 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // ⚠ 与 COUNTER_ATTACK_FORCE_TIME(33000/22分) 配合：22 分军队强制反攻，27 分农民跟上。 ⚠ 不排除 buildingFarmerType 里的农民（用户要求"所有"）⇒ 未完工建筑会烂尾。
 #define COUNTER_FARMER_ATTACK true
 #define COUNTER_FARMER_ATTACK_FRAME 40500   // 27 分钟 × 1500 帧/分钟
+#define BUSH_MAX_PER_PATCH 2         // ★ 2026-10-04：浆果每丛人数上限（引擎实际只容 2 人）。
+                                     // ⚠ 原【主路径硬编码 3、冷路径硬编码 2】两处不一致 ⇒ 主路径超派 ⇒ 第 3 人被挤到丛边卡死
+                                     //   （[STUCK] 实证：41360 被派往已有 2 人的丛 21196 ⇒ 在采2人/距TC=1.7格 卡死，铁律 26 同语义只写一遍）。
 #define COUNTER_FARMER_ATTACK_GAP 90        // 同一农民的重复下发节流(帧)：防幂等判据失效时刷屏，
                                             // 重发会 reset 引擎攻击关系并打断动作(铁律 14)
 // ★ 祭司护驾三级半径(格)：祭司死=立刻失败，故护驾优先于士兵自卫/守家/前出等一切军事行为
@@ -3096,10 +3099,16 @@ struct TreeReassignState {
 };
 std::mutex g_treeReassignMutex;
 std::map<const UsrAI*, std::map<int, TreeReassignState>> g_treeReassign;
+// ★ 2026-10-04：反攻期农民攻击令台账 —— counterFarmerAttack 写、assignIdleSimple 读（用于豁免经济改派覆盖）。
+//   原为 counterFarmerAttack 的【函数内 static】⇒ 经济派工读不到 ⇒ 同帧「工作目标 金矿」覆盖「攻击目标 箭塔」实测 9 次，
+//   每次覆盖 = COUNTER_FARMER_ATTACK_GAP(90 帧) 失能 ⇒ 诱饵被自家逻辑取消（铁律 21：同语义只写一遍 / 单一真源）。
+std::map<int,int> g_farmerAtkFrame;              // 农民 SN → 上次下发攻击/行军令的帧
+const int FARMER_ATK_EXEMPT_FRAMES = 300;        // 反攻期下发后 N 帧内，经济派工不得改派该农民（> GAP 90，留 3 倍冗余）
 }
 
 void UsrAI::assignIdleSimple() {
-    std::map<int,int> assignedBush;
+    // ★ 2026-10-04：原此处有独立 assignedBush（与成员 frameBushCount 双份实现）⇒ 主路径判据【低估】已派人数
+    //   （冷路径写的是 frameBushCount，主路径看不见）⇒ 浆果超派。已删除，统一用 frameBushCount（铁律 26 同语义只写一遍）。
     std::map<int,int> assignedGazelle;
     std::map<int,int> assignedFarm;   // ★ 本帧已派往农场的 <farmSN, workerSN>，防同场重复派工导致>1人
     double BL = (double)BLOCKSIDELENGTH;
@@ -3302,6 +3311,14 @@ void UsrAI::assignIdleSimple() {
         const bool redispatch = (pendingRedispatch.erase(f.SN) > 0);
         if (!redispatch && f.NowState != HUMAN_STATE_IDLE) continue;
         if (elephantPartyPending.count(f.SN)) continue;   // ★ 本帧已编入猎象队，禁止同帧改派
+        // ★★★ 2026-10-04 修「经济改派覆盖攻塔令」：反攻期已下发攻击/行军令的农民，在豁免窗口内禁止被经济派工改派。
+        //   实测：同帧/相邻帧下发「工作目标 金矿」覆盖「攻击目标 箭塔」9 次，每次覆盖 = COUNTER_FARMER_ATTACK_GAP(90 帧) 失能
+        //   ⇒ 农民反攻诱饵被自家经济逻辑取消。台账 g_farmerAtkFrame 由 counterFarmerAttack 写入（跨函数单一真源）。
+        //   ⚠ 卡死重派(redispatch)优先于本豁免 —— 否则真正卡死的农民会被本豁免挡住、永不复位。
+        if (!redispatch && COUNTER_FARMER_ATTACK && frame >= COUNTER_FARMER_ATTACK_FRAME) {
+            auto ait = g_farmerAtkFrame.find(f.SN);
+            if (ait != g_farmerAtkFrame.end() && frame - ait->second < FARMER_ATK_EXEMPT_FRAMES) continue;
+        }
 
         // ★ 木头达停采上限(日常≥150 / WAVE3后≥250)则不再派新伐木工，人力优先留作食物
         if (!woodStop && woodWorkers < woodTarget) {
@@ -3362,8 +3379,8 @@ void UsrAI::assignIdleSimple() {
                 if (!nearGranary) continue;
             }
             int onBush = countFarmersOnTarget(r.SN);
-            int totalOnBush = onBush + assignedBush[r.SN];
-            if (totalOnBush >= 3) continue;
+            int totalOnBush = onBush + frameBushCount[r.SN];   // ★ 2026-10-04：与冷路径共用 frameBushCount（原用本处独立 assignedBush ⇒ 双份实现、判据低估已派人）
+            if (totalOnBush >= BUSH_MAX_PER_PATCH) continue;   // 上限 2：引擎每丛实际只容 2 人（原写死 3 ⇒ 超派后被挤卡死）
             double d = dist2(r.DR, r.UR, f.DR, f.UR);
             double score = d * (1.0 + totalOnBush * 0.8);
             if (score < bestBushScore) { bestBushScore = score; bestBush = &r; }
@@ -3371,8 +3388,7 @@ void UsrAI::assignIdleSimple() {
         if (bestBush) {
             HumanAction(f.SN, bestBush->SN);
             villLastResourceSN[f.SN] = bestBush->SN;   // ★ 记录目标（浆果），供卡死兜底拉黑
-            assignedBush[bestBush->SN]++;
-            frameBushCount[bestBush->SN]++;
+            frameBushCount[bestBush->SN]++;   // ★ 2026-10-04：去掉重复的 assignedBush 累加，只留共享台账
             continue;
         }
 
@@ -4594,7 +4610,8 @@ void UsrAI::counterFarmerAttack(double BL, double targetDR, double targetUR) {
     //   ⚠ 箭塔【必须】留在候选里：本图敌方没有 TC，其基地结构只有箭塔 + 武器厂；把箭塔也排除则目标恒为 -1、整段静默失效。
     //     （旧注释曾写"不含箭塔：农民撑不住塔火力"—— 该口径在 fa 批被实测推翻，代码从未按它实现，此处已更正。）
     if (COUNTER_FARMER_ATTACK && frame >= COUNTER_FARMER_ATTACK_FRAME) {
-        static std::map<int, int> farmerAtkFrame;   // 农民 SN → 上次下发帧（节流）
+        // ★ 2026-10-04：台账已提升为文件级 g_farmerAtkFrame（见 assignIdleSimple 前的匿名 namespace），
+        //   原为【函数内 static】⇒ 经济派工读不到 ⇒ 攻塔令被「工作目标」覆盖。此处不再本地声明。
 // ★ 目标选取三级 + 兜底行军（2026-09-19 fa 批修正）：① 敌方 TC（"基地"本体）；② 最近的【软目标】敌建筑（非箭塔/非武器厂）；
 // ③ 最近的【箭塔】—— 必须保留：本图敌方【没有 TC】，其基地结构只有箭塔 + 武器厂，若把箭塔也排除则目标恒为 -1、
 // 整个功能静默失效（fa 批实证：14 局触发、0 条指令下发）。④ ①②③ 全空（敌建筑全部失去视野）→ 行军到
@@ -4623,18 +4640,18 @@ void UsrAI::counterFarmerAttack(double BL, double targetDR, double targetUR) {
             for (auto &f : infoPtr->farmers) {
                 if (f.FarmerSort != FARMERTYPE_FARMER) continue;
                 if (f.WorkObjectSN == farmerTgtSN) { nEngaged++; continue; }
-                if (farmerAtkFrame.count(f.SN) && frame - farmerAtkFrame[f.SN] < COUNTER_FARMER_ATTACK_GAP) continue;
+                if (g_farmerAtkFrame.count(f.SN) && frame - g_farmerAtkFrame[f.SN] < COUNTER_FARMER_ATTACK_GAP) continue;
                 HumanAction(f.SN, farmerTgtSN);
-                farmerAtkFrame[f.SN] = frame;
+                g_farmerAtkFrame[f.SN] = frame;
                 nSent++;
             }
         } else if (enemyBaseScouted) {
             tgtKind = 4;
             for (auto &f : infoPtr->farmers) {
                 if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-                if (farmerAtkFrame.count(f.SN) && frame - farmerAtkFrame[f.SN] < COUNTER_FARMER_ATTACK_GAP) continue;
+                if (g_farmerAtkFrame.count(f.SN) && frame - g_farmerAtkFrame[f.SN] < COUNTER_FARMER_ATTACK_GAP) continue;
                 HumanMove(f.SN, enemyBaseDR, enemyBaseUR);
-                farmerAtkFrame[f.SN] = frame;
+                g_farmerAtkFrame[f.SN] = frame;
                 nSent++;
             }
         }
@@ -5018,24 +5035,56 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 if (a.SN == priestSN) continue;       // 重心不算祭司自己
                 sumDR += a.DR; sumUR += a.UR; nArmy++;
             }
-            double armyDR = (nArmy > 0) ? sumDR / nArmy : tcDR;
-            double armyUR = (nArmy > 0) ? sumUR / nArmy : tcUR;
-            // 大队→TC 方向单位向量（即"大队身后"方向）
-            double ux = tcDR - armyDR, uy = tcUR - armyUR;
-            double ul = std::sqrt(ux * ux + uy * uy) + 1e-6;
-            ux /= ul; uy /= ul;
-            // 祭司目标 = 大队重心 朝 TC 退 SAFE_BEHIND 格
-            double px = armyDR + ux * PRIEST_SAFE_BEHIND * BL;
-            double py = armyUR + uy * PRIEST_SAFE_BEHIND * BL;
-            // 安全距离约束：距反攻目标 ≥ MIN_DIST_TARGET（不满足则沿身后方向继续退，直到满足）
-            double dTgt = calDistance(px, py, targetDR, targetUR);
-            if (dTgt < PRIEST_MIN_DIST_TARGET * BL) {
-                double need = (PRIEST_MIN_DIST_TARGET * BL - dTgt) + 2.0 * BL;
-                px += ux * need; py += uy * need;
+            // ★★★ 2026-10-04 修「末段钉死不动（锚点退化）」：旧实现 nArmy==0 时锚退化为基地 TC，
+            //   而 (tcDR - armyDR) 此时恰为 0 ⇒ 单位向量退化 ⇒ 祭司每帧被派向【同一个固定坐标】⇒ 零位移到局末
+            //   （实测：祭司自 f43139 起零位移 1860 帧；与「h311 Mil:4 自 f40529 零位移 4200 帧」同源 ——
+            //    锚点消失 ⇒ 退回固定坐标 ⇒ 永久空转）。
+            //   新：无己方军队可跟随时不再回基地，改为【继续朝反攻目标推进】到感化射程内 1 格。
+            //   ⚠ 同时豁免 PRIEST_MIN_DIST_TARGET —— 该约束语义是"别比大队更靠前"，没有大队时无从谈起，
+            //     继续遵守只会把祭司钉在 18 格外（感化射程仅 12 ⇒ 永远够不到，正是"到不了"的第一层）。
+            //   ⚠ 保命闸：若祭司 PRIEST_GUARD_ALERT 格内有活敌 ⇒ 原地待命（绝不把无护卫的祭司送进敌阵）。
+            double px, py, dTgt = 0.0, armyDR = targetDR, armyUR = targetUR;
+            bool hold = false;                                   // true = 原地待命（本帧不发移动令）
+            if (nArmy == 0) {
+                double nearE = 1e9;
+                for (auto &e : infoPtr->enemy_armies)
+                    if (e.Blood > 0) {
+                        double dE = calDistance(priest->DR, priest->UR, e.DR, e.UR);
+                        if (dE < nearE) nearE = dE;
+                    }
+                double ddx = targetDR - priest->DR, ddy = targetUR - priest->UR;
+                double ddl = std::sqrt(ddx * ddx + ddy * ddy) + 1e-6;
+                const double stopD = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;   // 停在感化射程内 1 格
+                dTgt = calDistance(priest->DR, priest->UR, targetDR, targetUR);
+                if (nearE < PRIEST_GUARD_ALERT * BL || ddl <= stopD + 0.5 * BL) {
+                    hold = true; px = priest->DR; py = priest->UR;   // 近敌在侧 / 已进射程 ⇒ 原地（交给感化段或护驾段）
+                } else {
+                    px = targetDR - ddx / ddl * stopD;
+                    py = targetUR - ddy / ddl * stopD;
+                    if (frame % 100 == 0)
+                        DebugText(QString("[PRST-NOARMY f=%1] 无友军→直推目标 tgt=(%2,%3) 距目标=%4格 nearE=%5").arg(frame)
+                                  .arg(targetDR / BL, 0, 'f', 0).arg(targetUR / BL, 0, 'f', 0)
+                                  .arg(dTgt / BL, 0, 'f', 1).arg((nearE > 1e8) ? -1.0 : nearE / BL, 0, 'f', 1));
+                }
+            } else {
+                armyDR = sumDR / nArmy; armyUR = sumUR / nArmy;
+                // 大队→TC 方向单位向量（即"大队身后"方向）
+                double ux = tcDR - armyDR, uy = tcUR - armyUR;
+                double ul = std::sqrt(ux * ux + uy * uy) + 1e-6;
+                ux /= ul; uy /= ul;
+                // 祭司目标 = 大队重心 朝 TC 退 SAFE_BEHIND 格
+                px = armyDR + ux * PRIEST_SAFE_BEHIND * BL;
+                py = armyUR + uy * PRIEST_SAFE_BEHIND * BL;
+                // 安全距离约束：距反攻目标 ≥ MIN_DIST_TARGET（不满足则沿身后方向继续退，直到满足）
+                dTgt = calDistance(px, py, targetDR, targetUR);
+                if (dTgt < PRIEST_MIN_DIST_TARGET * BL) {
+                    double need = (PRIEST_MIN_DIST_TARGET * BL - dTgt) + 2.0 * BL;
+                    px += ux * need; py += uy * need;
+                }
             }
             px = max(0.0, min((double)MAP_L * BL, px));
             py = max(0.0, min((double)MAP_U * BL, py));
-            if (isPassableAt(px, py, forestGrid))
+            if (!hold && isPassableAt(px, py, forestGrid))
                 HumanMove(priestSN, px, py);
             if (frame % 100 == 0)
                 DebugText(QString("[PRST-REAR f=%1] army=(%2,%3) tgt=(%4,%5) dTgt=%6 tooClose=%7").arg(frame).arg(armyDR / BL, 0, 'f', 0).arg(armyUR / BL, 0, 'f', 0)
@@ -6964,6 +7013,24 @@ void UsrAI::detectStuckGatherers() {
             pendingRedispatch.erase(f.SN);
             continue;
         }
+        // ★★★ 2026-10-04 修「反攻期农民被误判采集卡死」：农民围攻敌方建筑时是【空手 + state=2(工作)】，
+        //   恰好落进下方"空手 + 非空闲"判据 ⇒ 被判寻路卡死 ⇒ 拉黑目标 + 注入待重派。
+        //   后果：一次误判 = 拉黑 + 重派，而 counterFarmerAttack 的节流是 COUNTER_FARMER_ATTACK_GAP(90 帧)
+        //   ⇒ 攻塔令最长 90 帧不补发 ⇒ 诱饵被自家逻辑取消（实测 [FARMER-ATK] 与 [STUCK] 同帧并存）。
+        //   判据：当前工作目标指向【敌方单位/建筑】⇒ 这是战斗行为，不是采集。仅在反攻期做该检查（前期零开销）。
+        if (COUNTER_FARMER_ATTACK && frame >= COUNTER_FARMER_ATTACK_FRAME && f.WorkObjectSN > 0) {
+            bool foeTarget = false;
+            for (auto &b : infoPtr->enemy_buildings)
+                if (b.SN == f.WorkObjectSN) { foeTarget = true; break; }
+            if (!foeTarget)
+                for (auto &e : infoPtr->enemy_armies)
+                    if (e.SN == f.WorkObjectSN) { foeTarget = true; break; }
+            if (foeTarget) {
+                gatherStuckFrame.erase(f.SN);
+                pendingRedispatch.erase(f.SN);
+                continue;
+            }
+        }
         // 已采到东西(Resource>0) 或 空闲(IDLE) → 正常，清空计时
         if (f.Resource > 0 || f.NowState == HUMAN_STATE_IDLE) {
             gatherStuckFrame.erase(f.SN);
@@ -7073,7 +7140,7 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
             if (!nearGranary) continue;
         }
         int realCount = countFarmersOnTarget(r.SN);
-        if (realCount + frameBushCount[r.SN] >= 2) continue;  // 每丛≤2人（含本帧已分，满2人转其他事）
+        if (realCount + frameBushCount[r.SN] >= BUSH_MAX_PER_PATCH) continue;  // 每丛≤2人（含本帧已分，满2人转其他事）
         double d = dist2(r.DR, r.UR, f->DR, f->UR);
         if (d < bestBDist) { bestBDist = d; bestBush = &r; }
     }
