@@ -668,8 +668,25 @@ static Coordinate* resolveSelfCurrent(const instruction& c) {
     return it->second;                             // ★ 以权威表当前值为准（为 NULL 亦返回 NULL ⇒ 丢弃）
 }
 
+// ============================================================================================
+// ★★★ 2026-10-05 [BEAT] 逐帧行为摘要心跳 —— OJ ↔ 本地 对拍专用 ★★★
+//   动机：OJ 与本地「跑得差多少」以前只能靠零散 tag 猜。这里把**每帧 AI 决策的输入与输出**
+//   压成一行固定格式，让两边的日志可以按 frame 直接做逐行 diff。
+//   ⚠ 这四个量由 commitInstruction() 写、由 processFrame() 的 [BEAT] 读 ⇒ 读到的恒是**上一帧**的提交结果。
+//   ⚠ 本文件只在 AI 线程跑 ⇒ 无需加锁（同 g_farmerAtkFrame 的先例）。
+//   ⚠ 开关：把本文件里 defines 的 BEAT_PERIOD 改成 0 即可整体静音（只留状态跃迁行）。
+// ============================================================================================
+#define BEAT_PERIOD 150                       // 采样周期（帧）；25fps ⇒ 150 帧 = 6 秒游戏时间
+static int g_beatLastIns    = 0;              // 上一帧提交的指令条数
+static int g_beatLastDrop   = 0;              // 上一帧被丢弃的指令条数
+static int g_beatLastAdopt  = 0;              // 上一帧"改用当前权威指针"的条数
+static int g_beatLastObjMv  = 0;              // 上一帧 obj 指针被更新的条数
+
 void UsrAICore::commitInstruction() {
-    if (InsPerFrame.empty()) return;               // 常见路径：本帧没下任何命令
+    if (InsPerFrame.empty()) {                 // 常见路径：本帧没下任何命令
+        g_beatLastIns = 0; g_beatLastDrop = 0; g_beatLastAdopt = 0; g_beatLastObjMv = 0;
+        return;
+    }
 
     int dropIns = 0;                               // self 解析失败 ⇒ 丢弃
     int nullObj = 0;                               // obj 未初始化野值 ⇒ 归零
@@ -768,6 +785,11 @@ void UsrAICore::commitInstruction() {
     g_dropInsTotal += dropIns;
     g_nullObjTotal += nullObj;
     g_adoptTotal += adoptPtr;
+    // ★ 2026-10-05 [BEAT] 把本帧提交结果留给 processFrame() 的帧摘要心跳（恒为"上一帧"值）
+    g_beatLastIns   = insTotal;
+    g_beatLastDrop  = dropIns;
+    g_beatLastAdopt = adoptPtr;
+    g_beatLastObjMv = objMoved;
     if ((dropIns > 0 || nullObj > 0) && frame / 1500 != g_lastInsBeat) {
         g_lastInsBeat = frame / 1500;
         DebugText(QString("[INS-BAD f=%1] 本帧丢弃=%2 本帧 obj 归零=%3 累计丢弃=%4 累计归零=%5 累计改用当前指针=%6")
@@ -915,6 +937,107 @@ void UsrAI::processFrame() {
     }
 
     logSnapBeat();                         // ★ [SNAP] 快照机制量心跳（实现见 UsrAICore::logSnapBeat）
+
+    // ★★★ 2026-10-05 [BEAT] 逐帧行为摘要心跳 —— OJ ↔ 本地「跑得差多少」的直接对拍口 ★★★
+    //   为什么要它：以前判 OJ 与本地差异只能靠零散 tag 拼，且「指令条数正常 ≠ 行为正常」。
+    //   这里把**每帧 AI 看到的输入侧 + 它发出的输出侧**压成一行固定格式，两边可按 frame 逐行 diff。
+    //   采样点 = 帧首（快照已就绪、本帧逻辑尚未执行）⇒ 打印的是"这一帧开始时世界的状态"，两边同口径。
+    //   节流：每 BEAT_PERIOD(150) 帧一行；**状态跃迁额外立即打一行**（用于对齐"何时进入反攻 ATK"）。
+    //   ⚠ 只在 AI 线程跑，无锁；⚠ 不引用任何引擎新增符号（提交安全性）。
+    {
+        static int g_beatPrevState = -1000;
+        static int g_beatLastFrame = -1000000;
+        if (state != g_beatPrevState || frame - g_beatLastFrame >= BEAT_PERIOD) {
+            const bool stChg = (state != g_beatPrevState);
+            g_beatLastFrame = frame;
+            g_beatPrevState = state;
+
+            const char* stName = "?";
+            switch (state) {
+            case INIT:           stName = "INIT"; break;
+            case EARLY_ECONOMY:  stName = "ECO";  break;
+            case UPGRADING:      stName = "UPG";  break;
+            case DEFENSE_PREP:   stName = "PREP"; break;
+            case DEFENSE_WAVE1:  stName = "W1";   break;
+            case DEFENSE_WAVE2:  stName = "W2";   break;
+            case DEFENSE_WAVE3:  stName = "W3";   break;
+            case COUNTERATTACK:  stName = "ATK";  break;
+            case VICTORY:        stName = "WIN";  break;
+            case DEFEAT:         stName = "LOSE"; break;
+            }
+
+            // —— 经济/村民：口径与 doDebugOutput() 的 ECO 行完全一致（便于两边交叉验证）——
+            int fCount = 0, idleF = 0, walkF = 0, workF = 0, atkF = 0;
+            for (auto &f : infoPtr->farmers) {
+                if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+                ++fCount;
+                if      (f.NowState == HUMAN_STATE_IDLE)      ++idleF;
+                else if (f.NowState == HUMAN_STATE_WALKING)   ++walkF;
+                else if (f.NowState == HUMAN_STATE_WORKING)   ++workF;
+                else if (f.NowState == HUMAN_STATE_ATTACKING) ++atkF;
+            }
+            const int mil = countAllMilitary();
+
+            // —— 军事：兵种分组 + 祭司实况（反攻能否成立的三个硬量：hop 数量 / 祭司 hp / 祭司位置）——
+            int nArmy = 0, nHop = 0, nArch = 0, nOth = 0;
+            int prSN = -1, prHp = -1, prMax = -1, prSt = -1, prCcd = -1;
+            double prDR = 0.0, prUR = 0.0;
+            for (auto &a : infoPtr->armies) {
+                ++nArmy;
+                if      (a.Sort == AT_HOPLITE)           ++nHop;
+                else if (a.Sort == AT_COMPOSITE_BOWMAN)  ++nArch;
+                else if (a.Sort != AT_PRIEST)            ++nOth;
+                if (a.Sort == AT_PRIEST) {
+                    prSN = a.SN; prHp = a.Blood; prMax = a.MaxBlood;
+                    prSt = a.NowState; prCcd = a.ConvertCooldown;
+                    prDR = a.DR; prUR = a.UR;
+                }
+            }
+
+            // —— 空间：我方包围盒（格）+ 敌方可见量。判"部队到底出没出发"就靠这个 ——
+            const double BB = (double)BLOCKSIDELENGTH;
+            double mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9;
+            int nMy = 0;
+            for (auto &a : infoPtr->armies) {
+                if (a.DR < mnx) mnx = a.DR; if (a.DR > mxx) mxx = a.DR;
+                if (a.UR < mny) mny = a.UR; if (a.UR > mxy) mxy = a.UR; ++nMy;
+            }
+            for (auto &f : infoPtr->farmers) {
+                if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+                if (f.DR < mnx) mnx = f.DR; if (f.DR > mxx) mxx = f.DR;
+                if (f.UR < mny) mny = f.UR; if (f.UR > mxy) mxy = f.UR; ++nMy;
+            }
+            const int nEB = (int)infoPtr->enemy_buildings.size();
+            const int nEA = (int)infoPtr->enemy_armies.size()
+                          + (int)infoPtr->enemy_farmers.size();
+
+            QString sEco = QString("st=%1%2 Frm=%3 Idle=%4 Walk=%5 Work=%6 Atk=%7 Mil=%8")
+                           .arg(stName).arg(stChg ? "*" : "")
+                           .arg(fCount).arg(idleF).arg(walkF).arg(workF).arg(atkF).arg(mil);
+            QString sRes = QString("Fd=%1 Wd=%2 St=%3 Gd=%4")
+                           .arg((int)infoPtr->Meat).arg((int)infoPtr->Wood)
+                           .arg((int)infoPtr->Stone).arg((int)infoPtr->Gold);
+            QString sMil = QString("a=%1 hop=%2 arch=%3 oth=%4 pr=(sn%5 st%6 hp%7/%8 ccd%9)")
+                           .arg(nArmy).arg(nHop).arg(nArch).arg(nOth)
+                           .arg(prSN).arg(prSt).arg(prHp).arg(prMax).arg(prCcd);
+            QString sGeo = QString("nEB=%1 nEA=%2 nMy=%3 bbox=(%4..%5,%6..%7) pr@=(%8,%9)")
+                           .arg(nEB).arg(nEA).arg(nMy)
+                           .arg(QString::number(mnx / BB, 'f', 1))
+                           .arg(QString::number(mny / BB, 'f', 1))
+                           .arg(QString::number(mxx / BB, 'f', 1))
+                           .arg(QString::number(mxy / BB, 'f', 1))
+                           .arg(QString::number(prDR / BB, 'f', 1))
+                           .arg(QString::number(prUR / BB, 'f', 1));
+            QString sIns = QString("ins=%1 drop=%2 adopt=%3 objMv=%4 gObj=%5(上帧)")
+                           .arg(g_beatLastIns).arg(g_beatLastDrop).arg(g_beatLastAdopt)
+                           .arg(g_beatLastObjMv).arg((qulonglong)g_Object.size());
+
+            // ⚠ 单条 QString 的占位符必须 ≤9（%1 vs %10 会互相抢）⇒ 子串各自 arg() 完再当 1 个占位符传入
+            DebugText(QString("[BEAT f=%1] %2 | %3 | %4 | %5 | %6")
+                      .arg(frame).arg(sEco).arg(sRes).arg(sMil).arg(sGeo).arg(sIns));
+        }
+    }
+
 
     checkDirtySnapshot();                  // ★ [DIRTY-SNAP] 脏快照累计拦截（实现见 UsrAICore::checkDirtySnapshot）
 
@@ -5468,8 +5591,19 @@ void UsrAI::manageCounterAttack() {
         issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue, tier2SN);   // 无建筑/已在打→继续推进
     };
 
-    const int maxMarchCmds = readyToAttack ? 8 : (armyCount + 4);
-    for (int pass = 0; pass < 2 && marchCmds < maxMarchCmds; ++pass) {
+    // ★★★ 2026-10-05 修「近战被远程饿死」★★★
+    // 原实现 = `maxMarchCmds = readyToAttack ? 8 : (armyCount+4)`，且外层循环条件 `marchCmds < maxMarchCmds` 【跨两遍共享】同一份预算；
+    // 而循环体内 pass 0 只跑远程/投石车（`if (pass == 0 && !ranged) continue;`）、pass 1 才跑近战 ⇒
+    // **远程单位数 ≥ 8 时，pass 0 独自把预算吃光 ⇒ 外层条件恒假 ⇒ pass 1（近战）一整段永不执行**。
+    // 铁证（OJ 提交 6263，map.njust，`[HOPLITE-LATE] comp=9~13 > 8`）：
+    //   方阵兵 1027/1066 条 HumanMove 落点在自己基地（≈TC 外 12 格）、`[TOWER-TGT] 近战` 0 条、
+    //   `[TOWER-APPROACH]` 14 条全是"复合弓兵/远程" ⇒ 近战从未进入推进段 ⇒ 反攻只有弓兵在打。
+    // 修：① 预算【按遍独立】（恢复"远程先走 / 近战补位"两遍设计的本意）；② 上限改为 armyCount+4，
+    // 使每个单位在各自那一遍里都能轮到（原 readyToAttack 时硬编码 8 小于远程单位数）。
+    // 注：`marchCmds` 仅在本循环内使用（声明于 :5345，循环外无引用）⇒ 每遍清零不影响其它语义。
+    const int maxMarchCmds = armyCount + 4;
+    for (int pass = 0; pass < 2; ++pass) {
+        marchCmds = 0;                       // ★ 每遍独立预算（原实现跨遍共享 ⇒ 近战整段被跳过）
         for (auto &a : infoPtr->armies) {
             if (a.Sort == AT_PRIEST) { priest = &a; continue; }
 
