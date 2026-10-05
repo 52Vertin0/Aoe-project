@@ -677,11 +677,24 @@ void UsrAICore::commitInstruction() {
     int dropNullSelf = 0;                          // 构造时 g_Object[SN] 就取到 nullptr
     int dropNoKey = 0;                             // self 非空但 SN 已不在 g_Object / 值为 NULL
     int adoptPtr = 0;                              // 权威表当前指针 != 副本 ⇒ 改用当前值（本机应恒 0）
+    // ★ 2026-10-04 OJ 第二层：HumanAction 的 obj（工作目标指针）三分类 —— 与 ① 完全同口径
+    //   现场（OJ 提交 6204）：[INS-DIAG] n=12 drop=12(noKey=0 nullSelf=0) adopt=12 objNull=0
+    //   ⇒ 12 条 self 全部"指针被更新"（① 已改为采用当前值），同时 12 条 obj 全部被判不一致
+    //   ⇒ 说明是**同一现象**打在 self 与 obj 两个字段上，② 必须与 ① 同口径才不会再拦。
+    int dropObjNull = 0;                           // 构造时 g_Object[obSN] 就取到 nullptr
+    int objNoKey = 0;                              // obSN 已不在 g_Object
+    int objIsNull = 0;                             // obSN 在表但当前值为 NULL（对象已销毁）
+    int objMoved = 0;                              // obSN 在表且非空但指针已更新 ⇒ 改用当前值
+    QString objMissList;                           // 采样：obj 取不到的前 4 条 (SN>obSN)
+    int objMissCnt = 0;
+    QString objPtrSample;                          // 采样：前 2 条 HumanAction 的 self/obj 与权威当前值（十六进制地址）
+    int objPtrCnt = 0;
 
     ins& Ins = GetInsStruct();
     Ins.lock.lock();
     for (size_t i = 0; i < InsPerFrame.size(); ++i) {
         instruction& c = InsPerFrame[i];
+        Coordinate* rawSelf = c.self;              // ★ 采样用：① 可能改写 c.self ⇒ 先存构造时的原值
 
         // ① 解析 self：以引擎权威表 g_Object 的**当前值**为准（与 Core.cpp:1398 同口径）
         Coordinate* curSelf = resolveSelfCurrent(c);
@@ -696,10 +709,41 @@ void UsrAICore::commitInstruction() {
         }
 
         // ② 动态指针 obj：只有 HumanAction 语义上使用它
+        //   ★ 2026-10-04 OJ 第二层修复：与 ① 同口径 —— 键存在且非空即"采用当前权威指针"。
+        //   依据：引擎执行 INS_HUMANACTION 时用的是 `Coordinate* obj = cur.obj;`（Core.cpp:1394），
+        //     而存在性闸只有 `obj == NULL || g_Object[cur.obSN] == NULL`（Core.cpp:1395）。
+        //     ⇒ 把当前权威指针填进 c.obj，引擎拿到的就是"现在活着的那个对象"；用陈旧副本反而更危险。
         if (c.type == INS_HUMANACTION) {
-            if (!c.obj) { ++dropIns; continue; }   // 目标对象已不在
+            if (objPtrCnt < 2) {                   // ★ 指针实值采样（十六进制地址，直接比对是否同一对象）
+                ++objPtrCnt;
+                const std::map<int, Coordinate*>::const_iterator itSample = g_Object.find(c.obSN);
+                Coordinate* nowObj = (itSample == g_Object.end()) ? nullptr : itSample->second;
+                objPtrSample += QString(" [SN=%1 self=%2 now=%3 | obSN=%4 obj=%5 nowO=%6]")
+                                .arg(c.SN).arg((qulonglong)(quintptr)rawSelf, 0, 16)
+                                .arg((qulonglong)(quintptr)curSelf, 0, 16)
+                                .arg(c.obSN).arg((qulonglong)(quintptr)c.obj, 0, 16)
+                                .arg((qulonglong)(quintptr)nowObj, 0, 16);
+            }
+            if (!c.obj) {                          // 构造时目标就取不到（SN 无效/值为 NULL）
+                ++dropIns; ++dropObjNull;
+                if (objMissCnt < 4) { objMissList += QString("(%1>%2)").arg(c.SN).arg(c.obSN); ++objMissCnt; }
+                continue;
+            }
             const std::map<int, Coordinate*>::const_iterator it = g_Object.find(c.obSN);
-            if (it == g_Object.end() || it->second != c.obj) { ++dropIns; continue; }
+            if (it == g_Object.end()) {            // obSN 已不在引擎表
+                ++dropIns; ++objNoKey;
+                if (objMissCnt < 4) { objMissList += QString("(%1>%2)").arg(c.SN).arg(c.obSN); ++objMissCnt; }
+                continue;
+            }
+            if (it->second == nullptr) {           // 对象已销毁（引擎同样会判 ACTION_INVALID_OBSN）
+                ++dropIns; ++objIsNull;
+                if (objMissCnt < 4) { objMissList += QString("(%1>%2)").arg(c.SN).arg(c.obSN); ++objMissCnt; }
+                continue;
+            }
+            if (it->second != c.obj) {             // 指针在"构造→提交"窗口内被更新 ⇒ 采用当前值
+                ++objMoved;
+                c.obj = it->second;
+            }
         } else if (c.obj != nullptr) {
             // 其余类型（HumanMove/HumanBuild/BuildingAction/PinPointStrike/Cancel）构造时未赋 obj
             c.obj = nullptr;
@@ -710,9 +754,9 @@ void UsrAICore::commitInstruction() {
     }
     Ins.lock.unlock();
     const int insTotal = (int)InsPerFrame.size();
-    QString insList;                               // ★ 前 4 条的 (type,SN)：反推 AI 到底在给谁下命令
+    QString insList;                               // ★ 前 4 条的 (type,SN>obSN)：反推 AI 到底在给谁下命令
     for (size_t i = 0; i < InsPerFrame.size() && i < 4; ++i)
-        insList += QString("(%1,%2)").arg(InsPerFrame[i].type).arg(InsPerFrame[i].SN);
+        insList += QString("(%1,%2>%3)").arg(InsPerFrame[i].type).arg(InsPerFrame[i].SN).arg(InsPerFrame[i].obSN);
     InsPerFrame.clear();
 
     // 计数与日志（static 局部量；本函数只在 AI 线程跑 ⇒ 无需加锁）
@@ -740,6 +784,29 @@ void UsrAICore::commitInstruction() {
                   .arg(frame).arg(insTotal).arg((qulonglong)g_Object.size())
                   .arg(dropIns).arg(dropNoKey).arg(dropNullSelf).arg(adoptPtr).arg(nullObj)
                   .arg(insList.isEmpty() ? QString("--") : insList));
+        // ★ 2026-10-04 [INS-SEG] g_Object 分段探针：一刀切开「表里没有树」vs「树值为 NULL」
+        //   分段口径 = globalNum/10000（Animal/StaticRes 构造即 10000*getSort()+g_globalNum）：
+        //     4=我方村民/单位 | 5=树/动物 | 2=浆果金矿石矿 | 9=我方军事 | 1=敌建筑/兵 | 0=其它
+        int segNull = 0, seg4 = 0, seg5 = 0, seg2 = 0, seg9 = 0, seg1 = 0, segO = 0;
+        for (std::map<int, Coordinate*>::const_iterator it = g_Object.begin(); it != g_Object.end(); ++it) {
+            if (it->second == NULL) { ++segNull; continue; }
+            switch (it->first / 10000) {
+                case 4: ++seg4; break;
+                case 5: ++seg5; break;
+                case 2: ++seg2; break;
+                case 9: ++seg9; break;
+                case 1: ++seg1; break;
+                default: ++segO; break;
+            }
+        }
+        DebugText(QString("[INS-SEG f=%1] null=%2 4=%3 5=%4 2=%5 9=%6 1=%7 O=%8 objMiss=%9")
+                  .arg(frame).arg(segNull).arg(seg4).arg(seg5).arg(seg2).arg(seg9).arg(seg1).arg(segO)
+                  .arg(objMissList.isEmpty() ? QString("--") : objMissList));
+        // ★ 2026-10-04 [INS-PTR] 指针实值采样：直接看 self/obj 与权威当前值是否同一地址
+        if (!objPtrSample.isEmpty())
+            DebugText(QString("[INS-PTR f=%1] objMoved=%2 objNoKey=%3 objIsNull=%4 objDropNull=%5%6")
+                      .arg(frame).arg(objMoved).arg(objNoKey).arg(objIsNull).arg(dropObjNull)
+                      .arg(objPtrSample));
     }
 }
 
