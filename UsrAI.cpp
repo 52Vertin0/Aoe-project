@@ -1812,20 +1812,30 @@ void UsrAI::managePriest() {
                     DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
                 return;
             } else {
-                // ★★★ 2026-10-06 Fix D：反攻期【不追敌小兵】——解开推进段的饿死 ★★★
-                //   铁证（96 局全量）：`counterPriestConvert` 的跨块互斥闸 `if (priestMoveCooldown > 0) return;` 被本档
-                //   的 20 帧节流（`priestApproachMove` 是全文件唯一把 priestMoveCooldown 设成 20 的地方）【永久饿死】：
-                //   `[LC-DBG]` 的 mvcd 列在几乎每个采样点都是 21~23 ⇒ 推进段整段只发出 11~26 条令 ⇒
-                //   祭司永远走不到武器厂 12 格内 ⇒ 连起手机会都没有。
-                //   而 96 局二维表（结局 × 是否起手 × 距武器厂最近距离）：
+                // ★★★ 2026-10-06 Fix E：反攻期把「靠近」的目标从【敌方小兵】换成【武器厂记忆坐标】★★★
+                //   —— 保留"每 20 帧一条移动令"这个动作本身，只换目的地。
+                //
+                //   为什么不能像 fix4 那样"干脆不追"：实测 fix4 把本档整段 return 掉之后，
+                //   「找到敌方武器厂」的局比例从 base0 83% / fix1 79% **掉到 60%**，
+                //   最终胜率也没起来（map.njust 7/24=29%）。⇒ 本档的"追敌"顺带承担了**侦察**职能：
+                //   祭司被小兵牵着往敌基地走，正好把敌方建筑探明（`infoPtr->enemy_buildings` 受
+                //   `explored||visible` 约束）。掐掉它 = 连敌方基地都探不到 ⇒ 目标 SN 恒 -1。
+                //
+                //   为什么必须换目的地：96 局二维表（结局 × 是否起手 × 距武器厂最近距离）给出**唯一分界**——
                 //     起手 & dmin<12 → 66 局 → **76% 胜**；  从未起手 → 29 局 → **0% 胜**。
-                //   ⇒ **「走到 12 格内并举手」是唯一的胜负分界**，而饿死正是它不能举手的原因。
-                //   修法：反攻期且已发现武器厂时，本档【只在射程内转、不做靠近追击】⇒ 不占移动冷却
-                //   ⇒ 同帧稍后（managePriest 在 :1135、counterPriestConvert 在 :6191，后者在后）推进段拿到话语权。
-                //   ⚠ 不放宽"能感化直接感化"（用户铁律）：只要敌单位进 12 格，上方分支照转不误。
-                //   ⚠ 与已否决的 fix2「Fix A」的区别：Fix A 把 return 放在**无处可去的档位**上（推进段仍被 clearOk
-                //     挡住时祭司就地静止 ⇒ ESCAPE 8.7）；这里只在**推进段确实可用**（武器厂已发现）时让位。
-                if (state == COUNTERATTACK && enemySiegeSN != -1) return;
+                //   而"没起手"的 60 局里有 **62% 是"从头到尾没发现武器厂"**（有起手局 100% 都发现了）。
+                //   ⇒ 追小兵只是**碰巧**把祭司带近武器厂；胜率的全部赌注在"走到 12 格内"。
+                //   故：目标改为持久记忆的武器厂块坐标 `rallyDR/rallyUR`（UsrAI.h:292，`enemySiegeSN` 一旦探到
+                //   只设不重置，见 :5499/:5514），停点用既有写法 `PRIEST_CONVERT_SIEGE_RANGE - 1.0`
+                //   （与推进段 :5384 同源，铁律 21/26）。
+                //   ⚠ 不放宽"能感化直接感化"（用户铁律）：敌单位进 12 格时上方分支照转不误。
+                //   ⚠ `enemySiegeSN != -1` 而非判断坐标：SN 是"是否已知武器厂"的既有唯一判据，
+                //     未探到时 rallyDR/rallyUR 仍是初值 0 ⇒ 不能当有效性判据。
+                if (state == COUNTERATTACK && enemySiegeSN != -1) {
+                    double wsDR = (rallyDR + 1.0) * BL, wsUR = (rallyUR + 1.0) * BL;
+                    priestApproachMove(wsDR, wsUR, PRIEST_CONVERT_SIEGE_RANGE - 1.0);
+                    return;
+                }
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
                 priestApproachMove(convDR, convUR, stopDist); return;
             }
