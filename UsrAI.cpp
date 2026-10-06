@@ -4660,9 +4660,14 @@ void UsrAI::manageMilitary() {
     // 检测祭司是否受威胁
     bool priestThreatened = false;
     int priestEnemySN2 = -1;
+    // ★★★ 2026-10-06 fixL：护驾对象的"排除投石车"版本，每帧算一次（原来只在分支内按需算）★★★
+    //   用途见下方优先级2：非反攻期(W3 及更早)改用它 ⇒ 把投石车留给祭司感化。
+    //   ⚠ 与 priestEnemySN2【同范围同口径】(15 格)，只有"是否跳过 AT_STONE_THROWER"一处差别（铁律 9：同源量同源取）。
+    int priestEnemyNoStoneSN = -1;
     if (priestAlive) {
         priestEnemySN2 = findNearestEnemySN(priestDR, priestUR, 15 * BL);
         priestThreatened = (priestEnemySN2 >= 0);
+        priestEnemyNoStoneSN = findNearestEnemyNoStone(priestDR, priestUR, 15 * BL);
     }
 
     // --- D-1: 祭司护驾（★最高优先级，先于士兵自卫/守家/前出；祭司死=立刻失败） ---   三级：紧急(敌≤8格)→所有兵回防(可打断战斗)；预警(敌≤15格)→空闲/行军兵前往护驾。
@@ -4772,8 +4777,19 @@ void UsrAI::manageMilitary() {
             if (priestThreatened) {
                 bool tooFarInCounter = (state == COUNTERATTACK) &&
                     (calDistance(a.DR, a.UR, priestDR, priestUR) > PRIEST_GUARD_RECALL * BL);
-                if (!tooFarInCounter && a.WorkObjectSN != priestEnemySN2) {    // 已在打它→不重发，防打断输出
-                    HumanAction(a.SN, priestEnemySN2);
+                // ★★★ 2026-10-06 fixL：非反攻期护驾对象【排除投石车】—— 投石车留给祭司感化 ★★★
+                //   用户需求：第三波(W3)不要让士兵打敌方投石车、把感化机会留给祭司；反攻期维持原样（不限制）。
+                //   现状：priestEnemySN2 = findNearestEnemySN(...) 含投石车 = 祭司 15 格内"最近敌人"；
+                //         本分支(优先级2)据此下令 ⇒ W3 一开波全军改打投石车。
+                //   实测 fixI 96 局（引擎动作日志，flag=0=我方）：我方对投石车下攻击令 21038 条，
+                //     首帧 f=21550(=14.4 分，W3 起点)；复合弓兵 64%(13444)、棍棒兵 15%、方阵兵 12%；
+                //     W3/反攻前段 9839 条、反攻期 11199 条。本分支是 W3 段的主要来源。
+                //   改法：非反攻期只把"最近的非投石车敌人"当护驾对象；15 格内【只有】投石车 ⇒ 本帧不派兵。
+                //     ⚠ 安全性：此刻投石车【并未在攻击祭司】—— 若在攻击，上方优先级1(priestAttackerSN)已接管并 continue。
+                //     ⚠ 不动优先级1：敌已锁祭司 = 立刻失败风险，保命优先于感化收益（铁律优先）。
+                int guardTarget = (state != COUNTERATTACK) ? priestEnemyNoStoneSN : priestEnemySN2;
+                if (guardTarget >= 0 && !tooFarInCounter && a.WorkObjectSN != guardTarget) {    // 已在打它→不重发，防打断输出
+                    HumanAction(a.SN, guardTarget);
                     attackCmds++;
                 }
                 continue;
