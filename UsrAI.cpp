@@ -183,15 +183,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //   priestAdvStuck 恒真 ⇒ 永远走脱困分支、【永不进入正常推进】⇒ 活锁到 30 分钟超时。
 //   （原注释只防了"基准被自救动作带着走"，漏了"自救动作本身不产生进展"这条同源路径。）
 #define PRIEST_ADV_ESCAPE_MAX   3
-// ★★★ 2026-10-06 脱困【总预算】（fixJ）：内层 PRIEST_ADV_ESCAPE_MAX 是"每 3 次冲一下"的短期节奏，
-//   但它在两种情况下会被【反复归零】⇒ 内层永远升不上去、活锁照旧：
-//     ① 内层自身在 BREAK 后归零（设计如此）；② 场景重锚（dSiege 远出 PRIEST_ADV_RESET_BL）也归零计数。
-//   实测（fixI 96 局）：胜局脱困次数 max=10/P50=1，而 escA+B ≥ 12 的 6 局【100% 超时】（P50=19、max=62，
-//   其中 3 局 adv≤13 ⇒ 整届反攻期一次"正常推进"都没发出去）⇒ 分界干净、余量充足。
-//   ⇒ 外层累计此数且期间【从无真进展】⇒ 永久放弃脱困、本帧起改走正常推进落点直冲。
-//   ⚠ 只在"真进展"时归零（场景重锚不归零）——否则活锁局每轮远出又被清空，预算永远攒不满。
-//   ⚠ 直冲也只是"可能撞墙"，但超时局 100% 必输（胜利条件唯一 = 祭司感化武器厂）⇒ 风险面为零。
-#define PRIEST_ADV_ESCAPE_BUDGET 16
 // ★ 打猎瞪羚选取范围（2026-09-04 用户要求"扩大一些"）：30→50 格，覆盖远距未建仓库的瞪羚群。 仓库覆盖判断（1547/1705 nearStock）也用此常量同步，避免猎人跑出去 50 格打、仓库仍卡 30 格内。
 #define GAZELLE_HUNT_RANGE  50
 // ★★★ 2026-09-12 用户需求：「在村民开始狩猎瞪羚前尽量先建仓库，仓库可以比其他建筑先建」★★★ 参考录像 build order：抵达猎场 01:35 → 就地建仓库 → 02:05 落成 → 之后才是市场/兵营/靶场。
@@ -5102,10 +5093,6 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
     // ★ 2026-10-06 脱困活锁断路器计数（函数内 static：跨帧持状态，无需改 .h ⇒ 不触发全量重编；
     //   ⚠ 前提是"一局一进程"，本工程跑局脚本正是如此 ⇒ 每局从 0 开始，不会跨局串扰。）
     static int s_priestEscapeStreak = 0;
-    // ★ 2026-10-06 fixJ：脱困【总预算】累计数（只在"真进展"时归零；场景重锚不清零，见常量注释）
-    static int s_priestEscapeTotal = 0;
-    // ★ 2026-10-06 fixJ：预算耗尽 ⇒ 永久放弃脱困（一旦出现真进展即自动解除）
-    static bool s_priestAdvGiveUp = false;
     // ★ 2026-10-06 推进段「最小保持期」的进入帧（只读诊断 + 反振荡用；同样一局一进程 ⇒ 安全）
     static int s_siegeApproachHold = -999999;
     // ====== 祭司推进 / 转化武器厂（三处下发点：early / front / legacy）======
@@ -5295,11 +5282,6 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 priestAdvBest = dSiege;          // 真进展
                 priestAdvBestFrame = frame; priestEscapeStage = 0;   // 档位归零：回到正常推进
                 s_priestEscapeStreak = 0;        // ★ 2026-10-06：有真进展 ⇒ 脱困计数清零
-                s_priestEscapeTotal = 0;         // ★ 2026-10-06 fixJ：脱困【总预算】一并归零（额度恢复）
-                if (s_priestAdvGiveUp) {         // ★ 真推进回来了 ⇒ 解除"放弃脱困"（自愈，非单向锁死）
-                    s_priestAdvGiveUp = false;
-                    DebugText(QString("[PRIEST-ESCAPE-RESUME f=%1] 真进展 d=%2 → 恢复脱困额度").arg(frame).arg(dSiege / BL, 0, 'f', 1));
-                }
             } else if (dSiege < priestAdvBest) {
                 priestAdvBest = dSiege;          // 缓慢变近：更新基准但【不】重置计时（慢速蠕动不算进展）
             }
@@ -5325,7 +5307,7 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 const double sx = -uy2, sy = ux2;    // 接近方向的侧向单位向量（逆时针 90°）
                 double tx, ty;
                 bool escaping = false;
-                if (priestAdvStuck && priestEscapeCd <= 0 && !s_priestAdvGiveUp) {
+                if (priestAdvStuck && priestEscapeCd <= 0) {
                     if (priestEscapeStage == 0) priestEscapeStage = 1;
                     if (priestEscapeStage == 1) {
                         // ---- A 档：侧移 PRIEST_ADV_SIDESTEP 格绕开堵点；左右交替，避免总撞同一边 ----
@@ -5369,20 +5351,6 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                     escaping = true;
                     priestAdvBestFrame = frame;      // 只重置"卡死计时"，【不】动 priestAdvBest（铁律 9：脱困不算进展）
                     priestEscapeCd = PRIEST_ADV_ESCAPE_CD;
-                    // ★★★ 2026-10-06 fixJ 外层【总预算】断路器 ★★★
-                    //   内层 PRIEST_ADV_ESCAPE_MAX 会被"BREAK 归零"与"场景重锚归零"两条路径反复清空 ⇒
-                    //   单靠它无法拦住"场景重锚 ⇄ 脱困"这类活锁。此处独立累计，只在"真进展"时归零。
-                    //   耗尽 ⇒ 永久放弃脱困（本帧即覆盖落点为直冲，与本帧侧移令不同时下发）。
-                    if (++s_priestEscapeTotal >= PRIEST_ADV_ESCAPE_BUDGET) {
-                        s_priestAdvGiveUp = true;
-                        s_priestEscapeStreak = 0;
-                        priestEscapeStage = 0;
-                        const double stopDG = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;
-                        tx = sMemDR - ux2 * stopDG;
-                        ty = sMemUR - uy2 * stopDG;
-                        DebugText(QString("[PRIEST-ESCAPE-GIVEUP f=%1] 累计脱困%2次无真进展 → 永久改直冲落点 (%3,%4) d=%5")
-                                  .arg(frame).arg(PRIEST_ADV_ESCAPE_BUDGET).arg(tx / BL, 0, 'f', 1).arg(ty / BL, 0, 'f', 1).arg(dSiege / BL, 0, 'f', 1));
-                    }
                     // ★★★ 2026-10-06 脱困活锁断路器 ★★★
                     //   连续 PRIEST_ADV_ESCAPE_MAX 次脱困（A⇄B 各若干轮）都没换来一次"真进展" ⇒ 说明这套
                     //   【纯侧移】在当前位置根本推不动 ⇒ 直接放弃脱困、本帧改回【正常推进落点】朝武器厂走。
@@ -5404,6 +5372,32 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 }
                 tx = max(0.0, min((double)MAP_L * BL, tx));
                 ty = max(0.0, min((double)MAP_U * BL, ty));
+                // ★★★ 2026-10-06 fixK 落点【可达性分级退化】—— 活锁的真病根（fixJ A/B 反证得出）★★★
+                //   证据（fixJ 96 局 vs fixI 96 局）：fixJ 里取消侧移后，7 局出现
+                //   【祭司移动令 = 0 / pr@ 坐标逐桶冻结 / pm 五列全 0 / [LC-DBG] dS 恒定到局末】
+                //   ⇒ 直冲落点 isPassableAt 恒假 ⇒ 连一条 HumanMove 都发不出去（比"侧移打转"更静止）。
+                //   fixI 的 map_r0_4 独立互证同形态（adv=0 / escA+B=38 / cnt=134）。
+                //   机制：理想落点 = 距武器厂 11 格的圆周点；它一旦落在树林/建筑上，整段推进【永久失能】，
+                //   而此时唯一发得出去的令是"相对当前位置挪 PRIEST_ADV_SIDESTEP 格"的侧移
+                //   ⇒ 侧移垂直于接近方向、dS 恒不变 ⇒ 活锁到 30 分钟超时（超时=必然输，胜利条件唯一）。
+                //   修：不可达时沿"祭司 → 理想落点"连线按 0.8/0.6/0.4/0.2 四级回退，取最近可达点 ⇒
+                //   至少能朝武器厂挪一步 ⇒ 产生【真进展】⇒ 卡死计时归零、逐步逼近、最终进 12 格射程。
+                //   ⚠ 回退点与理想落点【同轴】（沿接近方向）⇒ 算"真进展"，不属铁律 9 的"脱困充数"。
+                //   ⚠ 四级全不可达 ⇒ 保持原落点（下方 if 判失败、本帧不发令），仍由侧移档兜底。
+                if (!isPassableAt(tx, ty, forestGrid)) {
+                    const double advOx = priest->DR, advOy = priest->UR;
+                    for (int k = 1; k <= 4; k++) {
+                        const double fracD = 1.0 - 0.2 * k;       // 0.8 / 0.6 / 0.4 / 0.2（从最远开始试）
+                        const double advCx = advOx + (tx - advOx) * fracD;
+                        const double advCy = advOy + (ty - advOy) * fracD;
+                        if (isPassableAt(advCx, advCy, forestGrid)) {
+                            tx = advCx; ty = advCy;
+                            DebugText(QString("[PRIEST-ADV-DEGRADE f=%1] 理想落点不可达 → 回退%2%% 至 (%3,%4) d=%5")
+                                      .arg(frame).arg((int)(100 * fracD)).arg(tx / BL, 0, 'f', 1).arg(ty / BL, 0, 'f', 1).arg(dSiege / BL, 0, 'f', 1));
+                            break;
+                        }
+                    }
+                }
                 if (isPassableAt(tx, ty, forestGrid)) {
                     g_pmCounter++;
                     g_pmLastX = (int)(tx / BL * 10.0); g_pmLastY = (int)(ty / BL * 10.0);
