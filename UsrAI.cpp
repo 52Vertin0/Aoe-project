@@ -349,6 +349,8 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define PRIEST_SIEGE_CLEAR_TOWER_R 14.0  // 清场判据：敌【箭塔】须距祭司 < 此值才算"未清场"（塔是静态远程，留更大余量）
 #define PRIEST_SIEGE_ABORT_R       4.5   // 迟滞锁解除阈值：敌贴到祭司此半径内 ⇒ 视为真危险，解除前出
 #define PRIEST_SIEGE_ABORT_HP      0.35  // 迟滞锁解除阈值：祭司血量低于此值 ⇒ 解除前出（交给保命逻辑）
+// ★ 2026-10-06 推进段【最小保持期】(帧)：clearOk 逐帧翻转时不再立刻退出推进段（防「推进 ⇄ 后撤」极限环）
+#define PRIEST_SIEGE_APPROACH_MIN  600   // 600 帧 = 24 秒；期内仅硬失败（近敌贴脸/血低/武器厂失效）可退出
 // ★★★ 2026-09-15「起手保护」：低血 + 敌塔压近 ⇒ 暂不起手 ★★★ 证据（fc/dm/sba/sb 四批 32 局）：祭司共 10 次起手，7 次成功、3 次死于施法期；起手→收编需 ~333~343 帧(≈14 秒)。
 // 同批：10 次起手里 9 次敌方箭塔正在射击祭司，且塔基本拆不完 ⇒ "等塔清完再感化" = 永不感化（死锁），
 // 故**不设"有塔就不去"的硬闸**（towerlock 轮已证伪两次）。本闸只拦最没希望的一种：**已残血 + 塔就在 14 格内**。
@@ -688,6 +690,18 @@ static int g_beatLastIns    = 0;              // 上一帧提交的指令条数
 static int g_beatLastDrop   = 0;              // 上一帧被丢弃的指令条数
 static int g_beatLastAdopt  = 0;              // 上一帧"改用当前权威指针"的条数
 static int g_beatLastObjMv  = 0;              // 上一帧 obj 指针被更新的条数
+// ★★★ 2026-10-06 祭司移动令【来源计数】（只读诊断，不改任何判据）★★★
+//   动机：实测 map.njust 上祭司在一对**相反**落点之间以 18~30 帧周期交替
+//   （(81.7,12.7) ⇄ (78.8,30.5)，各出现数十次）⇒ 每一步都被下一条令改向 ⇒ 净位移≈0 ⇒ 被围杀。
+//   要区分「两个来源交替」还是「单档绕圈换扇区」，必须量化 **谁在发令**。
+//   本桶计数，在 [BEAT] 打完即清零 ⇒ 每行读到的都是"本 150 帧内的发令构成"。
+//   ⚠ 与 [BEAT] 同线程（AI 线程）⇒ 无需加锁。
+static int g_pmFlee    = 0;   // priestFlee() 发的移动令
+static int g_pmConvApp = 0;   // 靠近感化目标的移动令（priestApproachMove）
+static int g_pmHeal    = 0;   // 趋近治疗的移动令（moveAdjacentToAlly）
+static int g_pmCounter = 0;   // counterPriestConvert 的推进/侧移移动令
+static int g_pmOther   = 0;   // 其它（候命/跟随等）
+static int g_pmLastX = -100000, g_pmLastY = -100000;   // 上一条祭司移动令落点（块坐标 ×10 取整）
 
 void UsrAICore::commitInstruction() {
     if (InsPerFrame.empty()) {                 // 常见路径：本帧没下任何命令
@@ -1049,10 +1063,18 @@ void UsrAI::processFrame() {
                            .arg(g_beatLastIns).arg(g_beatLastDrop).arg(g_beatLastAdopt)
                            .arg(g_beatLastObjMv).arg((qulonglong)g_Object.size());
 
+            // ★★ 2026-10-06 祭司移动令来源（本桶构成）+ 最后一条落点（块坐标）★★
+            //   判 "抖动" 的直读量：若 f/ca/h/cnt 中出现两个量接近 1:1 ⇒ 两档交替抢发 ⇒ 净位移≈0。
+            QString sPm = QString("pm f%1 ca%2 h%3 cnt%4 o%5 last=(%6,%7)")
+                          .arg(g_pmFlee).arg(g_pmConvApp).arg(g_pmHeal).arg(g_pmCounter).arg(g_pmOther)
+                          .arg(g_pmLastX / 10.0, 0, 'f', 1).arg(g_pmLastY / 10.0, 0, 'f', 1);
+            // 只在【桶边界】清零：状态跃迁行可能落在桶内，清在那里会漏计本桶后半段。
+            if (bucketHit) { g_pmFlee = g_pmConvApp = g_pmHeal = g_pmCounter = g_pmOther = 0; }
+
             // ⚠ 单条 QString 的占位符必须 ≤9（%1 vs %10 会互相抢）⇒ 子串各自 arg() 完再当 1 个占位符传入
             //   b = 采样桶号（frame/BEAT_PERIOD）—— **对拍时按 b 对齐，不要按 f**（f 在桶内有几帧抖动）
-            DebugText(QString("[BEAT f=%1 b=%2] %3 | %4 | %5 | %6 | %7")
-                      .arg(frame).arg(buk).arg(sEco).arg(sRes).arg(sMil).arg(sGeo).arg(sIns));
+            DebugText(QString("[BEAT f=%1 b=%2] %3 | %4 | %5 | %6 | %7 | %8")
+                      .arg(frame).arg(buk).arg(sEco).arg(sRes).arg(sMil).arg(sGeo).arg(sIns).arg(sPm));
         }
     }
 
@@ -1448,7 +1470,7 @@ void UsrAI::managePriest() {
             double cy = allyY - uy * 0.6 * BL + ux * OFF[o] * BL;
             cx = max(0.0, min((double)MAP_L * BL, cx));
             cy = max(0.0, min((double)MAP_U * BL, cy));
-            if (healLandingOk(cx, cy)) { HumanMove(priestSN, cx, cy); return true; }
+            if (healLandingOk(cx, cy)) { g_pmHeal++; HumanMove(priestSN, cx, cy); return true; }
             if (!allowFallback) continue;
             double clear = 1e12;
             for (auto &e : infoPtr->enemy_armies)
@@ -1461,6 +1483,7 @@ void UsrAI::managePriest() {
         double cy = allyY - uy * 0.6 * BL + ux * OFF[bestO] * BL;
         cx = max(0.0, min((double)MAP_L * BL, cx));
         cy = max(0.0, min((double)MAP_U * BL, cy));
+        g_pmHeal++;
         HumanMove(priestSN, cx, cy);
         return true;
     };
@@ -1539,6 +1562,8 @@ void UsrAI::managePriest() {
             if (!occupiedLanding(cx, cy)) { candX = cx; candY = cy; ok = true; break; }
         }
         if (!ok) return false;   // 全部侧向偏移都不可达→本帧不发令,下帧再试,杜绝刷屏
+        g_pmConvApp++;
+        g_pmLastX = (int)(candX / BL * 10.0); g_pmLastY = (int)(candY / BL * 10.0);
         HumanMove(priestSN, candX, candY);
         priestMoveCooldown = 20;
         return true;
@@ -1619,6 +1644,8 @@ void UsrAI::managePriest() {
                 for (int t = 0; t < nT; ++t)
                     if (calDistance(priestFleeLastX, priestFleeLastY, thX[t], thY[t]) < thR[t] + 1.0 * BL) { lastSafe = false; break; }
                 if (lastSafe && !occupiedLanding(priestFleeLastX, priestFleeLastY)) {
+                    g_pmFlee++;
+                    g_pmLastX = (int)(priestFleeLastX / BL * 10.0); g_pmLastY = (int)(priestFleeLastY / BL * 10.0);
                     HumanMove(priestSN, priestFleeLastX, priestFleeLastY);
                     priestMoveCooldown = 18;
                     return;   // 沿用旧落点：不再重算，杜绝方向翻转导致的原地抖动
@@ -1678,6 +1705,8 @@ void UsrAI::managePriest() {
             if (frame % 50 == 0) DebugText("Priest FLEE: 卡死->本帧静默");
             return;
         }
+        g_pmFlee++;
+        g_pmLastX = (int)(bestX / BL * 10.0); g_pmLastY = (int)(bestY / BL * 10.0);
         HumanMove(priestSN, bestX, bestY);
         priestFleeLastX = bestX; priestFleeLastY = bestY; priestFleeLastFrame = frame;
         priestMoveCooldown = 18;   // 威胁紧迫,缩短决策间隔
@@ -1939,6 +1968,8 @@ void UsrAI::managePriest() {
                     tx = candX; ty = candY;
                     if (!occupiedLanding(candX, candY)) break;
                 }
+                g_pmOther++;
+                g_pmLastX = (int)(tx / BL * 10.0); g_pmLastY = (int)(ty / BL * 10.0);
                 HumanMove(priestSN, tx, ty);
                 priestMoveCooldown = 15;
                 if (frame % 50 == 0)
@@ -4648,23 +4679,43 @@ void UsrAI::manageMilitary() {
             const bool lockedOn = (attackingPriestSN >= 0);   // 敌人已锁定祭司：最高紧急，不计召回距离
             const bool urgent = lockedOn || (urgentSN >= 0);
             int guardCmds = 0;
+            // ★★★ 2026-10-06 护驾"cmds=0"归因计数（只读诊断）★★★
+            //   实测 map.njust 上 `[PRIEST GUARD] urgent/LOCKED-ON ... cmds=0` 连打数十次，
+            //   即"锁定了威胁祭司的敌人，却一条令都发不出去" ⇒ 祭司被白打。
+            //   本循环有 5 条 continue ⇒ 必须逐条计数才能知道是哪一条吃掉了全部候选。
+            int gN = 0, gSkipWork = 0, gSkipObj = 0, gSkipAtk = 0, gSkipKite = 0, gSkipFar = 0;
             for (auto &a : infoPtr->armies) {
                 if (a.Sort == AT_PRIEST) continue;
+                ++gN;
                 if (guardCmds >= PRIEST_GUARD_MAX_CMDS) break;
-                if (a.NowState == HUMAN_STATE_WORKING) continue;
+                if (a.NowState == HUMAN_STATE_WORKING) { ++gSkipWork; continue; }
                 // 已接令/正在攻击该目标(引擎 Core.cpp:459 会把 WorkObjectSN 设为目标SN)→不重发， 否则每帧重复 HumanAction 会不断打断攻击动作→兵原地横跳、输出为零。
-                if (a.WorkObjectSN == guardSN) continue;
+                if (a.WorkObjectSN == guardSN) { ++gSkipObj; continue; }
                 // 预警级不打断正在战斗的兵；紧急级(敌已锁祭司/贴到8格内)一律召回
-                if (a.NowState == HUMAN_STATE_ATTACKING && !urgent) continue;
+                if (a.NowState == HUMAN_STATE_ATTACKING && !urgent) { ++gSkipAtk; continue; }
                 // ★ 2026-09-18 M5：拉扯撤退锁——预警级不得覆盖正在撤退的弓兵； 紧急级(敌已锁祭司/贴到祭司 8 格内)仍可覆盖（祭司保命优先于拉扯）。
-                if (!urgent && kiteRetreatLocked(a.SN)) continue;
-                if (!lockedOn && calDistance(a.DR, a.UR, priestDR, priestUR) > PRIEST_GUARD_RECALL * BL) continue;
+                if (!urgent && kiteRetreatLocked(a.SN)) { ++gSkipKite; continue; }
+                if (!lockedOn && calDistance(a.DR, a.UR, priestDR, priestUR) > PRIEST_GUARD_RECALL * BL) { ++gSkipFar; continue; }
                 HumanAction(a.SN, guardSN);
                 guardIssued[a.SN] = 1;
                 guardCmds++;
             }
-            if (urgent && frame % 50 == 0)
-                DebugText(QString("[PRIEST GUARD] %1 SN=%2 cmds=%3").arg(lockedOn ? "LOCKED-ON" : "urgent").arg(guardSN).arg(guardCmds));
+            if (urgent && frame % 50 == 0) {
+                // 单条 QString 占位符必须 ≤9 ⇒ 拆成两段再拼
+                QString gs1 = QString("[PRIEST GUARD] %1 SN=%2 cmds=%3 | N=%4 work=%5 obj=%6 atk=%7 kite=%8 far=%9")
+                              .arg(lockedOn ? "LOCKED-ON" : "urgent").arg(guardSN).arg(guardCmds)
+                              .arg(gN).arg(gSkipWork).arg(gSkipObj).arg(gSkipAtk).arg(gSkipKite).arg(gSkipFar);
+                QString gs2 = QString(" atkCmds=%1").arg(attackCmds);
+                int shown = 0;
+                for (auto &a : infoPtr->armies) {
+                    if (a.Sort == AT_PRIEST) continue;
+                    if (shown >= 3) break;
+                    gs2 += QString(" [sn%1 s%2 st%3 wo%4 d%5]").arg(a.SN).arg(a.Sort).arg(a.NowState).arg(a.WorkObjectSN)
+                           .arg(calDistance(a.DR, a.UR, priestDR, priestUR) / BL, 0, 'f', 1);
+                    ++shown;
+                }
+                DebugText(gs1 + gs2);
+            }
         }
     }
 
@@ -5022,6 +5073,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
     // ★ 2026-10-06 脱困活锁断路器计数（函数内 static：跨帧持状态，无需改 .h ⇒ 不触发全量重编；
     //   ⚠ 前提是"一局一进程"，本工程跑局脚本正是如此 ⇒ 每局从 0 开始，不会跨局串扰。）
     static int s_priestEscapeStreak = 0;
+    // ★ 2026-10-06 推进段「最小保持期」的进入帧（只读诊断 + 反振荡用；同样一局一进程 ⇒ 安全）
+    static int s_siegeApproachHold = -999999;
     // ====== 祭司推进 / 转化武器厂（三处下发点：early / front / legacy）======
     // 【修 2026-09-08】原 `if (NowState != IDLE) return;` 太严——祭司跟军时 WALKING 每帧触发 return ⇒ 整段 100% 走不到 ⇒ 祭司长期滞留后方、感化武器厂永不触发。改为 WALKING 也允许进入。
     if (priest) {
@@ -5156,14 +5209,22 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
         // ★★ 前出感化【迟滞锁】：防 localClear 在半径边界处逐帧翻转 —— 进入=清场成立+武器厂已发现； 退出=敌人真贴身(<=ABORT_R) 或 血量过低(<ABORT_HP)。
         if (PRIEST_CONVERT_SIEGE_WHEN_CLEAR && clearOk && enemySiegeSN != -1) {
             priestSiegeApproach = 1;
+            s_siegeApproachHold = frame;      // ★ 2026-10-06：记录"进入推进段"的帧，供最小保持期用
         } else if (priestSiegeApproach == 1) {
             bool hardAbort = false;
             for (auto &e : infoPtr->enemy_armies)
                 if (e.Blood > 0 && calDistance(priest->DR, priest->UR, e.DR, e.UR) < PRIEST_SIEGE_ABORT_R * BL) { hardAbort = true; break; }
             double pBRap = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;
             // ★ 2026-09-16：全局塔闸模式下，迟滞锁退出必须叠加 !clearOk——否则首次满足后永久放行，闸失效。
+            // ★★★ 2026-10-06 反攻段祭司极限环的第二个成因：`clearOk` 由【祭司周边塔数】算出，在塔群边界
+            //   逐帧翻转 ⇒ 旧条件 `!clearOk 即退` 没有任何惯性 ⇒ 推进段 ⇄ legacy 后撤 交替接管 ⇒
+            //   祭司两点往返、净位移≈0（diag_map_r0_2 f=35250~40050 实测 30 秒周期）。
+            //   修：进入后给 PRIEST_SIEGE_APPROACH_MIN(600帧=24秒) 的【最小保持期】，期内只有硬失败
+            //   （近敌贴脸 / 血过低 / 武器厂记忆失效）能退出；期满恢复原判据。
+            //   ⚠ 保持期内仍保留 0.35 血线 + 4.5 格硬贴身两条保命闸，不会"为推进送死"。
+            const bool holdExpired = (frame - s_siegeApproachHold) > PRIEST_SIEGE_APPROACH_MIN;
             if (hardAbort || pBRap < PRIEST_SIEGE_ABORT_HP || enemySiegeSN == -1
-                || (PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR && !clearOk)) priestSiegeApproach = 0;
+                || (holdExpired && PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR && !clearOk)) priestSiegeApproach = 0;
         }
         bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (clearOk || priestSiegeApproach == 1);
         // ★ 2026-09-15 清理：原"扩到 28 格后 priestEnemy>=0 return"是 WRONG-LAYER return——反攻期祭司前出后 28 格内**恒有敌** ⇒ 几乎每帧触发 ⇒ 祭司段永远跑不到 ⇒ 停在 TC 不动。该查询已彻底删除。
@@ -5177,7 +5238,15 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
         if (allowConvertSiege && enemySiegeSN != -1) priestTooClose = false;
 
         // ★★★ 2026-09-13 用户需求：敌方军队全灭 + 箭塔全拆 → 祭司主动前出感化武器厂 ★★★ 优先级高于"后撤保命"（清场后无威胁，前出不会送命）。
-        if (allowConvertSiege && enemySiegeSN != -1 && priest->ConvertCooldown <= 0) {
+        // ★★★ 2026-10-06 修「推进被感化冷却打断」= 反攻段祭司极限环的第一个成因 ★★★
+        //   旧判据把 `priest->ConvertCooldown <= 0` 放在【整段入口】⇒ 祭司只要感化了任意一个敌方小兵
+        //   （managePriest 的感化档，用户明确要求"能感化直接感化"），冷却期内【整段推进】被跳过 ⇒
+        //   落到下方 legacy 跟随（朝 TC 退、且距武器厂 ≥ PRIEST_MIN_DIST_TARGET 18 格）⇒ 冷却一结束
+        //   又回推进段 ⇒ 祭司在 (37,70) ⇄ (53,62) 之间以【感化冷却周期】往返、净位移≈0
+        //   （实测 diag_map_r0_2 f=35250~40050，im 列 f/ca 交替，ceiling 周期 ≡ ccd）。
+        //   移动与转换冷却本就无关（引擎只对【转换令】管冷却）⇒ 拆开：入口不再看冷却，
+        //   仅当【真要在射程内发感化令】时才判冷却（下方 dSiege<=RANGE 那一处）。
+        if (allowConvertSiege && enemySiegeSN != -1) {
             // ★ 2026-09-14：目标用【持久记忆】的武器厂 SN + 坐标(rallyDR/rallyUR)， 不再依赖 siege 指针（受实时可见性约束，失去视野即失效；且解引用会空指针崩溃）。
             const double sMemDR = (rallyDR + 1.0) * BL;
             const double sMemUR = (rallyUR + 1.0) * BL;
@@ -5198,8 +5267,10 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             }
             if (priestEscapeCd > 0) priestEscapeCd--;
             const bool priestAdvStuck = (frame - priestAdvBestFrame > PRIEST_ADV_STUCK_FRAMES);
-            if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL) {
+            if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL && priest->ConvertCooldown <= 0) {
                 // 已在感化射程内 → 直接感化武器厂
+                // （★ 2026-10-06：冷却判据从整段入口移到这里 —— 冷却中改为走下方推进/原地，
+                //   而不是整段跳过落到 legacy 后撤，见入口处注释）
                 HumanAction(priestSN, enemySiegeSN);
                 priestCounterCooldown = 60; priestMoveCooldown = 60;
                 // ★ 2026-09-15：去掉 frame%50 采样（每次发令必打），附敌塔态势
@@ -5282,6 +5353,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 tx = max(0.0, min((double)MAP_L * BL, tx));
                 ty = max(0.0, min((double)MAP_U * BL, ty));
                 if (isPassableAt(tx, ty, forestGrid)) {
+                    g_pmCounter++;
+                    g_pmLastX = (int)(tx / BL * 10.0); g_pmLastY = (int)(ty / BL * 10.0);
                     HumanMove(priestSN, tx, ty);
                     priestCounterCooldown = 30; priestMoveCooldown = 30;
                     if (!escaping) {
@@ -5359,8 +5432,11 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             }
             px = max(0.0, min((double)MAP_L * BL, px));
             py = max(0.0, min((double)MAP_U * BL, py));
-            if (!hold && isPassableAt(px, py, forestGrid))
+            if (!hold && isPassableAt(px, py, forestGrid)) {
+                g_pmCounter++;
+                g_pmLastX = (int)(px / BL * 10.0); g_pmLastY = (int)(py / BL * 10.0);
                 HumanMove(priestSN, px, py);
+            }
             if (frame % 100 == 0)
                 DebugText(QString("[PRST-REAR f=%1] army=(%2,%3) tgt=(%4,%5) dTgt=%6 tooClose=%7").arg(frame).arg(armyDR / BL, 0, 'f', 0).arg(armyUR / BL, 0, 'f', 0)
                           .arg(targetDR / BL, 0, 'f', 0).arg(targetUR / BL, 0, 'f', 0).arg(dTgt / BL, 0, 'f', 1).arg(priestTooClose ? 1 : 0));
