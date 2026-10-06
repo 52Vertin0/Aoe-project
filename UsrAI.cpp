@@ -946,10 +946,20 @@ void UsrAI::processFrame() {
     //   ⚠ 只在 AI 线程跑，无锁；⚠ 不引用任何引擎新增符号（提交安全性）。
     {
         static int g_beatPrevState = -1000;
-        static int g_beatLastFrame = -1000000;
-        if (state != g_beatPrevState || frame - g_beatLastFrame >= BEAT_PERIOD) {
-            const bool stChg = (state != g_beatPrevState);
-            g_beatLastFrame = frame;
+        static int g_beatPrintedFr = -1;
+        static int g_beatLastBuk   = -1;
+        // ⚠⚠ 采样口径（两版才定下来，别退回去）：
+        //   ① 不能用"距上次 ≥150 帧"—— 各局首帧偏移不同 ⇒ 采样帧集合完全不同（实测对齐率 3.3%）。
+        //   ② 也不能用 frame % 150 == 0 —— **AI 并非每帧都被调用**（实测 frame 会跳号，
+        //      所以 450/1200 这类网格点在不同局里命中与否不同，对齐率仍只有 48%）。
+        //   ③ 正解 = **按 150 帧分桶，每桶首次进入时打一行**。AI 一定穿过每个桶 ⇒ 每局恰好
+        //      ⌈末帧/150⌉ 个采样点，且 b 在任一局里都是同一组连续整数 ⇒ 可精确对齐。
+        const int buk       = (BEAT_PERIOD > 0) ? (frame / BEAT_PERIOD) : -1;
+        const bool bucketHit = (buk >= 0) && (buk != g_beatLastBuk);
+        const bool stChg     = (state != g_beatPrevState);
+        if ((bucketHit || stChg) && frame != g_beatPrintedFr) {
+            if (bucketHit) g_beatLastBuk = buk;
+            g_beatPrintedFr = frame;
             g_beatPrevState = state;
 
             const char* stName = "?";
@@ -1020,11 +1030,11 @@ void UsrAI::processFrame() {
             QString sMil = QString("a=%1 hop=%2 arch=%3 oth=%4 pr=(sn%5 st%6 hp%7/%8 ccd%9)")
                            .arg(nArmy).arg(nHop).arg(nArch).arg(nOth)
                            .arg(prSN).arg(prSt).arg(prHp).arg(prMax).arg(prCcd);
-            QString sGeo = QString("nEB=%1 nEA=%2 nMy=%3 bbox=(%4..%5,%6..%7) pr@=(%8,%9)")
+            QString sGeo = QString("nEB=%1 nEA=%2 nMy=%3 bbox=(x%4..%5,y%6..%7) pr@=(%8,%9)")
                            .arg(nEB).arg(nEA).arg(nMy)
                            .arg(QString::number(mnx / BB, 'f', 1))
-                           .arg(QString::number(mny / BB, 'f', 1))
                            .arg(QString::number(mxx / BB, 'f', 1))
+                           .arg(QString::number(mny / BB, 'f', 1))
                            .arg(QString::number(mxy / BB, 'f', 1))
                            .arg(QString::number(prDR / BB, 'f', 1))
                            .arg(QString::number(prUR / BB, 'f', 1));
@@ -1033,8 +1043,9 @@ void UsrAI::processFrame() {
                            .arg(g_beatLastObjMv).arg((qulonglong)g_Object.size());
 
             // ⚠ 单条 QString 的占位符必须 ≤9（%1 vs %10 会互相抢）⇒ 子串各自 arg() 完再当 1 个占位符传入
-            DebugText(QString("[BEAT f=%1] %2 | %3 | %4 | %5 | %6")
-                      .arg(frame).arg(sEco).arg(sRes).arg(sMil).arg(sGeo).arg(sIns));
+            //   b = 采样桶号（frame/BEAT_PERIOD）—— **对拍时按 b 对齐，不要按 f**（f 在桶内有几帧抖动）
+            DebugText(QString("[BEAT f=%1 b=%2] %3 | %4 | %5 | %6 | %7")
+                      .arg(frame).arg(buk).arg(sEco).arg(sRes).arg(sMil).arg(sGeo).arg(sIns));
         }
     }
 
