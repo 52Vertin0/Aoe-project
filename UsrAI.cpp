@@ -351,6 +351,18 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define PRIEST_SIEGE_ABORT_HP      0.35  // 迟滞锁解除阈值：祭司血量低于此值 ⇒ 解除前出（交给保命逻辑）
 // ★ 2026-10-06 推进段【最小保持期】(帧)：clearOk 逐帧翻转时不再立刻退出推进段（防「推进 ⇄ 后撤」极限环）
 #define PRIEST_SIEGE_APPROACH_MIN  600   // 600 帧 = 24 秒；期内仅硬失败（近敌贴脸/血低/武器厂失效）可退出
+// ★★★ 2026-10-06 Fix G：推进前置闸 —— 【祭司周边有活敌则不推进】★★★
+//   依据（`_enroute.py` 桶采样，日 log §13.8）：成功起手的局，末桶 `nEA=0`（敌兵已清空）、祭司直接站到武器厂上
+//   （dS=2.6）；「找到武器厂却从未起手」的局 `nEA=3.5`、卡在 21.6 格外 ⇒ **成功形态 = 先清场、再进人**。
+//   而 `PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR=true` 时 `clearOk` 只数【敌箭塔】(≤5，几乎恒真)，把 `localClear` 里
+//   另一半「敌【军队】距祭司 < PRIEST_SIEGE_CLEAR_ARMY_R」整个绕过了 ⇒ 祭司被送进活敌群挨打
+//   （早死 12.5% + 晚死 28% 的直接现场）。
+//   ⚠ 只拦【推进 / 脱困移动】的落点下发，**不碰感化动作**（守用户"能感化直接感化"），
+//     也**不碰 `managePriest` 的"追敌靠近感化"档** —— 那一档顺带承担侦察职能
+//     （fix4 掐掉它 ⇒「发现敌方武器厂」从 83% 掉到 60%，见日 log §12.2）⇒ 本闸不影响侦察。
+//   ⚠ 自然释放阀：`managePriest` 会感化 28 格内的敌单位 ⇒ 贴脸的敌兵被转走 ⇒ 本闸自动放行。
+//   ⚠ 断路器窗口：等待超过此帧数仍不放行 ⇒ 放弃等待、照常推进（宁可去撞一次，也不能原地干坐到 30 分钟超时）。
+#define PRIEST_SIEGE_WAIT_ENEMY_MAX 2700  // 2700 帧 = 108 秒，远长于一次正常交火
 // ★★★ 2026-09-15「起手保护」：低血 + 敌塔压近 ⇒ 暂不起手 ★★★ 证据（fc/dm/sba/sb 四批 32 局）：祭司共 10 次起手，7 次成功、3 次死于施法期；起手→收编需 ~333~343 帧(≈14 秒)。
 // 同批：10 次起手里 9 次敌方箭塔正在射击祭司，且塔基本拆不完 ⇒ "等塔清完再感化" = 永不感化（死锁），
 // 故**不设"有塔就不去"的硬闸**（towerlock 轮已证伪两次）。本闸只拦最没希望的一种：**已残血 + 塔就在 14 格内**。
@@ -1812,30 +1824,6 @@ void UsrAI::managePriest() {
                     DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
                 return;
             } else {
-                // ★★★ 2026-10-06 Fix E：反攻期把「靠近」的目标从【敌方小兵】换成【武器厂记忆坐标】★★★
-                //   —— 保留"每 20 帧一条移动令"这个动作本身，只换目的地。
-                //
-                //   为什么不能像 fix4 那样"干脆不追"：实测 fix4 把本档整段 return 掉之后，
-                //   「找到敌方武器厂」的局比例从 base0 83% / fix1 79% **掉到 60%**，
-                //   最终胜率也没起来（map.njust 7/24=29%）。⇒ 本档的"追敌"顺带承担了**侦察**职能：
-                //   祭司被小兵牵着往敌基地走，正好把敌方建筑探明（`infoPtr->enemy_buildings` 受
-                //   `explored||visible` 约束）。掐掉它 = 连敌方基地都探不到 ⇒ 目标 SN 恒 -1。
-                //
-                //   为什么必须换目的地：96 局二维表（结局 × 是否起手 × 距武器厂最近距离）给出**唯一分界**——
-                //     起手 & dmin<12 → 66 局 → **76% 胜**；  从未起手 → 29 局 → **0% 胜**。
-                //   而"没起手"的 60 局里有 **62% 是"从头到尾没发现武器厂"**（有起手局 100% 都发现了）。
-                //   ⇒ 追小兵只是**碰巧**把祭司带近武器厂；胜率的全部赌注在"走到 12 格内"。
-                //   故：目标改为持久记忆的武器厂块坐标 `rallyDR/rallyUR`（UsrAI.h:292，`enemySiegeSN` 一旦探到
-                //   只设不重置，见 :5499/:5514），停点用既有写法 `PRIEST_CONVERT_SIEGE_RANGE - 1.0`
-                //   （与推进段 :5384 同源，铁律 21/26）。
-                //   ⚠ 不放宽"能感化直接感化"（用户铁律）：敌单位进 12 格时上方分支照转不误。
-                //   ⚠ `enemySiegeSN != -1` 而非判断坐标：SN 是"是否已知武器厂"的既有唯一判据，
-                //     未探到时 rallyDR/rallyUR 仍是初值 0 ⇒ 不能当有效性判据。
-                if (state == COUNTERATTACK && enemySiegeSN != -1) {
-                    double wsDR = (rallyDR + 1.0) * BL, wsUR = (rallyUR + 1.0) * BL;
-                    priestApproachMove(wsDR, wsUR, PRIEST_CONVERT_SIEGE_RANGE - 1.0);
-                    return;
-                }
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
                 priestApproachMove(convDR, convUR, stopDist); return;
             }
@@ -5099,6 +5087,8 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
     static int s_priestEscapeStreak = 0;
     // ★ 2026-10-06 推进段「最小保持期」的进入帧（只读诊断 + 反振荡用；同样一局一进程 ⇒ 安全）
     static int s_siegeApproachHold = -999999;
+    // ★★★ 2026-10-06 Fix G：本次「祭司周边有活敌 ⇒ 暂缓推进」的起始帧（-1 = 当前不在等待）
+    static int s_siegeWaitEnemySince = -1;
     // ====== 祭司推进 / 转化武器厂（三处下发点：early / front / legacy）======
     // 【修 2026-09-08】原 `if (NowState != IDLE) return;` 太严——祭司跟军时 WALKING 每帧触发 return ⇒ 整段 100% 走不到 ⇒ 祭司长期滞留后方、感化武器厂永不触发。改为 WALKING 也允许进入。
     if (priest) {
@@ -5304,6 +5294,38 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                           .arg((priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0, 0, 'f', 2).arg((nearT1 > 1e8) ? -1.0 : nearT1 / BL, 0, 'f', 1).arg(towerN1));
             } else if (priestCounterCooldown <= 0) {
                 // 在射程外 → 主动朝武器厂【记忆坐标】推进
+                // ★★★ 2026-10-06 Fix G：推进前置闸 —— 祭司周边有活敌则本帧不推进（先清场、再进人）★★★
+                //   为什么放在这里（而不是上面的 clearOk）：REQUIRE_TOWERS_CLEAR=true 时 clearOk 只数敌箭塔，
+                //   把 localClear 的「敌军队距祭司 < PRIEST_SIEGE_CLEAR_ARMY_R」整半绕过了。本闸把它补回来，
+                //   但**只作用于推进**（感化动作在上一分支，已 return，不受影响 ⇒ 守"能感化直接感化"）。
+                //   ⚠ 同时拦掉本分支下方的【脱困阶梯】：等待 ≠ 卡死；否则等待期间 priestAdvBest 不刷新，
+                //     会误触发 A/B 侧移把祭司绕着推进（反而可能侧进敌群）。
+                double nearEnemyU = 1e9;
+                int nEnemyNearU = 0;
+                for (auto &e : infoPtr->enemy_armies) {
+                    if (e.Blood <= 0) continue;
+                    double dE = calDistance(priest->DR, priest->UR, e.DR, e.UR);
+                    if (dE < nearEnemyU) nearEnemyU = dE;
+                    if (dE <= PRIEST_SIEGE_CLEAR_ARMY_R * BL) nEnemyNearU++;
+                }
+                if (nEnemyNearU > 0) {
+                    if (s_siegeWaitEnemySince < 0) {          // 进入等待：打一次入口日志（边沿触发，免疫 frame 跳号）
+                        s_siegeWaitEnemySince = frame;
+                        DebugText(QString("[SIEGE-WAIT-ENEMY f=%1] 祭司%2格内有活敌%3个(最近%4格) ⇒ 本帧不推进 d=%5")
+                                  .arg(frame).arg(PRIEST_SIEGE_CLEAR_ARMY_R, 0, 'f', 0).arg(nEnemyNearU)
+                                  .arg(nearEnemyU / BL, 0, 'f', 1).arg(dSiege / BL, 0, 'f', 1));
+                    }
+                    if (frame - s_siegeWaitEnemySince < PRIEST_SIEGE_WAIT_ENEMY_MAX) {
+                        // ★ 铁律 9：主动等待不是"卡死" ⇒ 只刷计时基准，【不动】 priestAdvBest（不冒充进展）
+                        priestAdvBestFrame = frame;
+                        return;
+                    }
+                    // 等待超窗 ⇒ 放弃等待、本帧照常推进（断路器：避免新增一类"干坐到超时"）
+                } else if (s_siegeWaitEnemySince >= 0) {      // 离开等待：边沿触发
+                    DebugText(QString("[SIEGE-WAIT-ENEMY-END f=%1] 周边已无活敌 ⇒ 恢复推进 d=%2 (共等待%3帧)")
+                              .arg(frame).arg(dSiege / BL, 0, 'f', 1).arg(frame - s_siegeWaitEnemySince));
+                    s_siegeWaitEnemySince = -1;
+                }
                 // ★★★ 2026-09-27：若判卡死则改走【两段脱困阶梯】——A 侧移绕开堵点 ⇄ B 挪开贴脸友军清障（交替）。
                 double ux2 = (sMemDR - priest->DR), uy2 = (sMemUR - priest->UR);
                 double ul2 = std::sqrt(ux2 * ux2 + uy2 * uy2) + 1e-6;
@@ -5384,8 +5406,11 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                     if (!escaping) {
                         double nearT2 = 1e9; int towerN2 = 0;
                         scanTowerThreat(nearT2, towerN2);
-                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared").arg(frame).arg(dSiege / BL, 0, 'f', 1)
-                                  .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2));
+                        // ★ 2026-10-06：原第 5 个占位符是【字面量】"enemy_cleared"（从不带值）⇒ 日志自描述失效，
+                        //   事后无法复现"当时到底清没清场"。现补真值：enemy_cleared=（8 格内活敌数）＋ nearE=（最近活敌格数）。
+                        DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared=%5 nearE=%6").arg(frame).arg(dSiege / BL, 0, 'f', 1)
+                                  .arg((nearT2 > 1e8) ? -1.0 : nearT2 / BL, 0, 'f', 1).arg(towerN2).arg(nEnemyNearU)
+                                  .arg((nearEnemyU > 1e8) ? -1.0 : nearEnemyU / BL, 0, 'f', 1));
                     }
                 }
             }
