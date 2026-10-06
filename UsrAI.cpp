@@ -176,6 +176,13 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define PRIEST_ADV_CLEAR_R      2.0   // B 档清障半径(格)：只有贴到这个距离内的友军才算"堵路的"
 #define PRIEST_ADV_CLEAR_PUSH   6.0   // B 档清障推离距离(格)：沿侧向推开，不朝我方/敌方纵向推（避免又排成一列）
 #define PRIEST_ADV_CLEAR_MAX    3     // B 档单次最多挪走的友军数（保命：留其余护卫）
+// ★★★ 2026-10-06 脱困活锁断路器：连续脱困此次数仍无进展 ⇒ 强制改回【正常推进落点】★★★
+//   现场（map3.njust/rotate0，超时局 m3b_3/m3b_6/m3b_4）：`[PRIEST-ESCAPE]` 触发 39/57/52 次，以 121 帧
+//   为节拍 A⇄B 无限交替，`dS`(距武器厂) 从 21.7 单调涨到 35.3；胜局 m3_1 只触发 2 次即推进到 14.2 格。
+//   机制：A/B 两档都是【纯侧移】，不产生"朝武器厂逼近 > 0.5 格" ⇒ priestAdvBest 永不刷新 ⇒
+//   priestAdvStuck 恒真 ⇒ 永远走脱困分支、【永不进入正常推进】⇒ 活锁到 30 分钟超时。
+//   （原注释只防了"基准被自救动作带着走"，漏了"自救动作本身不产生进展"这条同源路径。）
+#define PRIEST_ADV_ESCAPE_MAX   3
 // ★ 打猎瞪羚选取范围（2026-09-04 用户要求"扩大一些"）：30→50 格，覆盖远距未建仓库的瞪羚群。 仓库覆盖判断（1547/1705 nearStock）也用此常量同步，避免猎人跑出去 50 格打、仓库仍卡 30 格内。
 #define GAZELLE_HUNT_RANGE  50
 // ★★★ 2026-09-12 用户需求：「在村民开始狩猎瞪羚前尽量先建仓库，仓库可以比其他建筑先建」★★★ 参考录像 build order：抵达猎场 01:35 → 就地建仓库 → 02:05 落成 → 之后才是市场/兵营/靶场。
@@ -5012,6 +5019,9 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
     for (auto &a : infoPtr->armies) if (a.Sort == AT_PRIEST) priest = &a;
     tagBuilding* siege = nullptr;
     if (enemySiegeSN != -1) siege = findEnemyBuilding(BUILDING_SIEGE);
+    // ★ 2026-10-06 脱困活锁断路器计数（函数内 static：跨帧持状态，无需改 .h ⇒ 不触发全量重编；
+    //   ⚠ 前提是"一局一进程"，本工程跑局脚本正是如此 ⇒ 每局从 0 开始，不会跨局串扰。）
+    static int s_priestEscapeStreak = 0;
     // ====== 祭司推进 / 转化武器厂（三处下发点：early / front / legacy）======
     // 【修 2026-09-08】原 `if (NowState != IDLE) return;` 太严——祭司跟军时 WALKING 每帧触发 return ⇒ 整段 100% 走不到 ⇒ 祭司长期滞留后方、感化武器厂永不触发。改为 WALKING 也允许进入。
     if (priest) {
@@ -5178,9 +5188,11 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             if (dSiege > priestAdvBest + PRIEST_ADV_RESET_BL * BL) {
                 priestAdvBest = dSiege;          // 反而远出很多 ⇒ 场景已变（后撤/换目标），基准重锚
                 priestAdvBestFrame = frame; priestEscapeStage = 0;
+                s_priestEscapeStreak = 0;        // ★ 2026-10-06：场景已变 ⇒ 脱困计数清零
             } else if (dSiege < priestAdvBest - 0.5 * BL) {
                 priestAdvBest = dSiege;          // 真进展
                 priestAdvBestFrame = frame; priestEscapeStage = 0;   // 档位归零：回到正常推进
+                s_priestEscapeStreak = 0;        // ★ 2026-10-06：有真进展 ⇒ 脱困计数清零
             } else if (dSiege < priestAdvBest) {
                 priestAdvBest = dSiege;          // 缓慢变近：更新基准但【不】重置计时（慢速蠕动不算进展）
             }
@@ -5248,6 +5260,20 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                     escaping = true;
                     priestAdvBestFrame = frame;      // 只重置"卡死计时"，【不】动 priestAdvBest（铁律 9：脱困不算进展）
                     priestEscapeCd = PRIEST_ADV_ESCAPE_CD;
+                    // ★★★ 2026-10-06 脱困活锁断路器 ★★★
+                    //   连续 PRIEST_ADV_ESCAPE_MAX 次脱困（A⇄B 各若干轮）都没换来一次"真进展" ⇒ 说明这套
+                    //   【纯侧移】在当前位置根本推不动 ⇒ 直接放弃脱困、本帧改回【正常推进落点】朝武器厂走。
+                    //   宁可去撞一次堵点，也不能原地打转到 30 分钟超时（超时 = 必然输）。
+                    //   触发后计数与档位一并归零，给下一轮脱困重新计数（不会退化成永久侧移，也不会永久直冲）。
+                    if (++s_priestEscapeStreak >= PRIEST_ADV_ESCAPE_MAX) {
+                        s_priestEscapeStreak = 0;
+                        priestEscapeStage = 0;
+                        const double stopDB = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;
+                        tx = sMemDR - ux2 * stopDB;   // ★ 覆盖掉上面的侧移点，改回"停到感化射程内 1 格"
+                        ty = sMemUR - uy2 * stopDB;
+                        DebugText(QString("[PRIEST-ESCAPE-BREAK f=%1] 连续脱困%2次无进展 → 强制回推进落点 (%3,%4)").arg(frame)
+                                  .arg(PRIEST_ADV_ESCAPE_MAX).arg(tx / BL, 0, 'f', 1).arg(ty / BL, 0, 'f', 1));
+                    }
                 } else {
                     double stopD = (PRIEST_CONVERT_SIEGE_RANGE - 1.0) * BL;   // 停在感化射程内 1 格处
                     tx = sMemDR - ux2 * stopD;
