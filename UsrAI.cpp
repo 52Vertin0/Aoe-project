@@ -1592,25 +1592,6 @@ void UsrAI::managePriest() {
                 double d = calDistance(pDR, pUR, bx, by);
                 if (d <= 16.0 * BL) pushThreat(bx, by, 12.0 * BL);
             }
-        // ★★★ 2026-10-06 保祭司 ·「已安全 ⇒ 原地不动」★★★
-        // 病根（实测 arb1_map_r0_14/r0_15、fix1_map_r0_5 三局同形）：
-        //   落点选择【没有"我在这儿已经安全了"这个分支】。祭司一旦走到安全落点，
-        //   下方粘滞判据 `dLast > 3.0*BL` 立刻失效 ⇒ 每 18 帧重算一次落点 ⇒ 24 方向×7 半径的
-        //   最优解随敌人移动整体跳变 ⇒ 祭司在半径 3~6 格的环形上【来回踱步】、净位移≈0，
-        //   边走边被远程（战车弓兵/复合弓兵）消耗。
-        //   量化铁证：`arb1_map_r0_14` 整局 `Priest FLEE hp=.. safe=..` **一次都没打印** ⇒
-        //   说明主路径确实每 18 帧都在重算；同时 pr@ 逐桶在 (70.3..76.4, 12.5..20.7) 徘徊、
-        //   hp 79→39→2 直到死亡（deathF=16904）。落点已核实【不在水里】（map.njust 全图仅
-        //   1300 格 Type=14，这些落点全是 Type=1 草地）⇒ 排除地形不可达，确认是判据抖动。
-        //   修：当前位置已在【所有威胁射程之外】⇒ 本帧不发令（原地待命，不刷新任何移动令）。
-        //   判据与下方 badLanding / 落点余量 margin 完全同源（同一个 thR 集合，铁律 21/26）。
-        //   ⚠ 不改 priestMoveCooldown：让"下一帧若不再受威胁"能立刻被治疗/感化/推进档接管。
-        {
-            double curMargin = 1e9;
-            for (int t = 0; t < nT; ++t)
-                curMargin = std::min(curMargin, calDistance(pDR, pUR, thX[t], thY[t]) - thR[t]);
-            if (curMargin >= 0) return;   // 已在全部威胁射程之外 ⇒ 站着别动
-        }
         // 远离所有"能打到我"的威胁合力方向(主力轴)
         double pushX = 0, pushY = 0;
         for (int t = 0; t < nT; ++t) {
@@ -1831,22 +1812,20 @@ void UsrAI::managePriest() {
                     DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
                 return;
             } else {
-                // ★★★ 2026-10-06 反攻期【不再主动追逐】敌小兵 ★★★
-                // 病根（实测 fix1 四图 A/B，24 局/臂）：
-                //   本 else 分支调的 `priestApproachMove` 每 20 帧刷一次 `priestMoveCooldown = 20`
-                //   ⇒ 下游 `counterPriestConvert` 的 `if (priestMoveCooldown > 0) return;` **恒真**
-                //   ⇒ **推进武器厂（本局唯一胜利条件）0 次机会执行**。祭司改成追着敌小兵满地图跑。
-                //   铁证 A（饿死）：`fix1_map_r0_12` 的 [BEAT] `pm` 列连续 40+ 桶只有 `ca`、`cnt≡0`
-                //     ⇒ 拖到 45000 帧**超时**（超时 = 必然输）；`fix1_map_r0_9` f=35700~36450 同形，
-                //     祭司钉在距武器厂 27 格处被打死（deathF=36820）。
-                //   铁证 B（替换实验）：改成让推进段抢到话语权（arbiter-v1，24 局）后 `超时` 由
-                //     1~2 局升到 **6 局**、CA 段推进效率 eff 由 0.42 掉到 **0.26** ⇒ 「让祭司一路冲」
-                //     是另一个坑；正确解是**掐掉追逐**、而不是**提高推进的攻击性**。
-                // 本改动只砍掉「为感化而移动」这半个分支：
-                //   · 近身（≤12 格）的感化【动作】完全保留（上方分支）——不影响"能感化直接感化"；
-                //   · 反攻期 + 已发现敌武器厂 ⇒ 不再追杀，把移动话语权还给推进段；
-                //   · 非反攻期（守家/守波）行为逐字不变 —— 那时祭司感化敌兵就是最好的保命手段。
-                if (inCounter && enemySiegeSN != -1) return;
+                // ★★★ 2026-10-06 Fix D：反攻期【不追敌小兵】——解开推进段的饿死 ★★★
+                //   铁证（96 局全量）：`counterPriestConvert` 的跨块互斥闸 `if (priestMoveCooldown > 0) return;` 被本档
+                //   的 20 帧节流（`priestApproachMove` 是全文件唯一把 priestMoveCooldown 设成 20 的地方）【永久饿死】：
+                //   `[LC-DBG]` 的 mvcd 列在几乎每个采样点都是 21~23 ⇒ 推进段整段只发出 11~26 条令 ⇒
+                //   祭司永远走不到武器厂 12 格内 ⇒ 连起手机会都没有。
+                //   而 96 局二维表（结局 × 是否起手 × 距武器厂最近距离）：
+                //     起手 & dmin<12 → 66 局 → **76% 胜**；  从未起手 → 29 局 → **0% 胜**。
+                //   ⇒ **「走到 12 格内并举手」是唯一的胜负分界**，而饿死正是它不能举手的原因。
+                //   修法：反攻期且已发现武器厂时，本档【只在射程内转、不做靠近追击】⇒ 不占移动冷却
+                //   ⇒ 同帧稍后（managePriest 在 :1135、counterPriestConvert 在 :6191，后者在后）推进段拿到话语权。
+                //   ⚠ 不放宽"能感化直接感化"（用户铁律）：只要敌单位进 12 格，上方分支照转不误。
+                //   ⚠ 与已否决的 fix2「Fix A」的区别：Fix A 把 return 放在**无处可去的档位**上（推进段仍被 clearOk
+                //     挡住时祭司就地静止 ⇒ ESCAPE 8.7）；这里只在**推进段确实可用**（武器厂已发现）时让位。
+                if (state == COUNTERATTACK && enemySiegeSN != -1) return;
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
                 priestApproachMove(convDR, convUR, stopDist); return;
             }
