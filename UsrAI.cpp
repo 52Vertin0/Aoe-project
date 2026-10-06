@@ -315,21 +315,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
                                         // 实测（ce1~8）：发现武器厂中位 42743→40166（提前 1.7 分）；祭司死亡率 25%→25% 未恶化。
                                         // 反攻【唯一】触发路径是超时（40 局全 frame=36001，MIN_ARMY=12 从未达标）⇒ 改常量确定生效。
                                         // ⚠ 2026-09-14 lj 轮回滚曾误把本值连带撤回到 36000 ⇒ 今后回滚务必核对本常量。
-// ★★★ 2026-10-06「满编即出发」：军队规模达标即提前反攻（不再干等到 22 分）★★★
-//   依据（fixG map.njust 24 局，[BEAT] 桶采样，见 .workbuddy/memory/2026-10-06.md §14）：
-//   ① 祭司与全军【从 18 分到 22 分零位移】停在基地：r0_3/r0_4/r0_12 的 pr@ 逐桶完全相同，
-//      而 22 分 ATK 一开，1 分钟内位移 40+ 格 ⇒ 前出完全由 state==COUNTERATTACK 门控。
-//   ② Mil(=countAllMilitary()) 首次 ≥25 的中位帧 = 30001（20.0 分）；且实测【一旦达到就不回落】
-//      （delay 0/300/600/900/1500 帧的五档扫描逐局给出同一帧）⇒ 单帧判据即足够，不需要"持续窗口"。
-//   ③ 30 分钟是硬上限；祭司推进实测 ≈0.31 格/秒（r0_3 f=43829→44713 走 11 格用 884 帧），
-//      基地→敌武器厂 80~101 格 ⇒ 单程 4~5 分钟；武器厂被发现的中位帧 = 39000（26 分）
-//      ⇒「发现 + 推进」余量仅 ≈4 分钟，正好压在超时线上（超时占败因 42%，10/24）。
-//   ④ 同杠杆先例（本文件上方 :314-317）：FORCE_TIME 36000→33000 曾把发现中位提前 1.7 分且未伤祭司。
-//   ⚠ 必须【军队达标】才放行，不是无脑提前 —— 否则重蹈 :1369 记载的"18 分钟零散出击被集火送命"。
-//   ⚠ 与 COUNTER_ATTACK_MIN_ARMY(12) 的分工：那是"允许主动出击的门槛"，本值是"满编即出发的触发线"。
-//   ⚠ 触发瞬间实测 nEA=0（17/17 局）⇒ 与原有「三波已清」守卫天然等价，故仍复用同一份 eCount。
-#define COUNTER_ATTACK_READY_ARMY 25        // 军队规模触发线（Mil 顶格 = 27；实测 Mil≥25 ⟺ nMy≥48 同刻）
-#define COUNTER_ATTACK_ENEMY_CLEAR_MAX 3    // 三波已清的敌数上限（原为两处字面量 3，此处抽为一处 —— 铁律 26）
 // ★★★ 2026-09-19 用户需求：「反攻时 27 分钟派所有农民进攻敌方基地」⇒ FARMER_ATTACK_TIME = 40500 帧 ★★★
 // 目标三级：① 敌方 TC > ② 最近的【软目标】敌建筑 (非箭塔/非武器厂) > ③ 最近的【箭塔】（本图敌方无 TC，靠 ③ 才可达）； 全部不可见 → 行军到 enemyBaseScouted 记忆方位；仍无则不动。
 // ⚠ 绝不把武器厂当目标：exam 胜条件唯一 = 祭司感化敌方武器厂，农民拆了它 = 自毁胜因（同 ARMY_IGNORE_SIEGE_WORKSHOP）。
@@ -1362,20 +1347,9 @@ void UsrAI::updateState() {
 
     case DEFENSE_WAVE3:
         // 第三波必须全部消灭；【修正 2026-09-08】+ COUNTER_ATTACK_FORCE_TIME 对齐，下方两处强制反攻都用同阈值， 避免在 14~24 分钟(集结期)期间被敌数 < 3 假条件骗进 COUNTERATTACK。
-        {
-        // 敌数只算一次、两条触发路径复用（铁律 26：同一语义只写一遍）
-        const int eCount = (int)infoPtr->enemy_armies.size() + (int)infoPtr->enemy_farmers.size();
-        // ★★★ 2026-10-06「满编即出发」（完整依据见常量区 COUNTER_ATTACK_READY_ARMY）★★★
-        //   刻意放在原有两条触发路径【之前】：一旦改状态，下方 `frame > COUNTER_ATTACK_FORCE_TIME`
-        //   与 `state == DEFENSE_WAVE3` 两条守卫都不再成立 ⇒ 同一 case 内不会重复触发。
-        const int milReady = countAllMilitary();
-        if (milReady >= COUNTER_ATTACK_READY_ARMY && eCount < COUNTER_ATTACK_ENEMY_CLEAR_MAX) {
-            state = COUNTERATTACK;
-            DebugText(QString(">> 满编即出发! Counterattack! Frame=%1 mil=%2 (ForceTime=%3)")
-                      .arg(frame).arg(milReady).arg(COUNTER_ATTACK_FORCE_TIME));
-        }
         if (frame > COUNTER_ATTACK_FORCE_TIME) {
-            if (eCount < COUNTER_ATTACK_ENEMY_CLEAR_MAX || frame > COUNTER_ATTACK_FORCE_TIME + 6000) {
+            int eCount = infoPtr->enemy_armies.size() + infoPtr->enemy_farmers.size();
+            if (eCount < 3 || frame > COUNTER_ATTACK_FORCE_TIME + 6000) {
                 state = COUNTERATTACK;
                 DebugText(QString(">> ALL WAVES DEFEATED! Counterattack! Frame=%1").arg(frame));
             }
@@ -1385,7 +1359,6 @@ void UsrAI::updateState() {
         if (frame > COUNTER_ATTACK_FORCE_TIME && state == DEFENSE_WAVE3) {
             state = COUNTERATTACK;
             DebugText("!! Force COUNTERATTACK (timeout)");
-        }
         }
         break;
 
@@ -1840,7 +1813,27 @@ void UsrAI::managePriest() {
                 return;
             } else {
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
-                priestApproachMove(convDR, convUR, stopDist); return;
+                // ★★★ 2026-10-06 Fix I：反攻期 + 武器厂已发现 ⇒ 不主动追敌兵，把移动权让给推进段 ★★★
+                //   依据（base1 四图 96 局，`[BEAT] pm` 字段）：
+                //     反攻段「追敌靠近」令(ca=g_pmConvApp) 占比  map 54.3% / map1 44.7% / map2 34.9% / map3 40.0%
+                //     反攻段「推进武器厂」令(cnt=g_pmCounter)占比  map 28.8%(最低) / 46.2% / 49.1% / 48.6%
+                //     四图胜率 map 0/24（其余 8/24=33% / 15/24=68% / 14/24=58%）—— map 被"追敌"占满。
+                //   机制（r0_18 铁证）：priestApproachMove 每次发令都设 priestMoveCooldown=20(:1568)，
+                //     而 counterPriestConvert 的跨块互斥闸 `:5190 if (priestMoveCooldown>0) return;` 因此被
+                //     managePriest 的追敌令【永久占用】⇒ 推进段 1800 帧零执行（实测 f=35250~36900 连续 12 桶
+                //     cnt=0 / ca=7~8，祭司在 (31.5,58.5) 纹丝不动，而 last 落点一直在变 ⇒ 有令但被闸吞）。
+                //     ⇒ 这是 10-06「把 ConvertCooldown 移出推进段入口」修复的【孪生缺口】：入口不看了，
+                //       但 :5190 那把闸还在，而它被 managePriest 垄断（同一形态：闸换了变量，仍被上游占死）。
+                //   ★ 本修【服从既有设计意图】：:1927 注释已写明「反攻期祭司须跟随大军推进 … 移动完全交给
+                //     manageCounterAttack 的推进段」，只是 :1816 的提前 return 使该意图落空 —— 改的是"落空"，不是改意图。
+                //   ⚠ 只抑制「主动靠近」(cdist>12)；cdist<=12 的【被动感化保留】——守用户「能感化直接感化」。
+                //   ⚠ 只在【已发现武器厂】时生效 ⇒ 侦察（反攻前 / 未发现时）完全不受影响
+                //     （避开 fix4 教训：掐掉祭司追敌会连侦察一起掐掉，"发现武器厂"83%→60%）。
+                //   ⚠ 不 return：落到下方保命闸（濒死逃命 / 近战贴身逃 / 治疗）；本帧若无事则由
+                //     :1927 `if (inCounter) return;` 结束 —— 本帧不下任何移动令 ⇒ 推进段当帧拿回移动权。
+                if (!(state == COUNTERATTACK && enemySiegeSN != -1)) {
+                    priestApproachMove(convDR, convUR, stopDist); return;
+                }
             }
         }
 // ==== 以下均为"无法感化"(冷却中/视野内无目标)时才轮到的保命/待命逻辑 ==== 2) ★ 强制撤退闸：仅【残血 pBR≤0.25】才无条件逃命。
