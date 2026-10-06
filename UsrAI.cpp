@@ -351,15 +351,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define PRIEST_SIEGE_ABORT_HP      0.35  // 迟滞锁解除阈值：祭司血量低于此值 ⇒ 解除前出（交给保命逻辑）
 // ★ 2026-10-06 推进段【最小保持期】(帧)：clearOk 逐帧翻转时不再立刻退出推进段（防「推进 ⇄ 后撤」极限环）
 #define PRIEST_SIEGE_APPROACH_MIN  600   // 600 帧 = 24 秒；期内仅硬失败（近敌贴脸/血低/武器厂失效）可退出
-// ★★★ 2026-10-06 祭司移动令【唯一仲裁器】★★★（实现见文件下方 priestMoveOK/Claim/Release）
-//   承诺窗口：认领后这么多帧内，只有【更高优先级】能抢走祭司的移动令（同级可续期，低级一律否决）。
-//   90 帧 = 3.6 秒 ≈ 祭司走 11 格（速度≈0.126 格/帧）⇒ 足够走出"两点往返"的吸引域。
-#define PRIEST_MOVE_COMMIT  90
-// 优先级（数值越大越硬）—— 排序依据 = 「对"祭司不死"和"唯一胜利条件"的贡献」
-#define PRIEST_PRIO_FLEE     3   // 逃命：祭司死 = 立刻判负（铁律最高）
-#define PRIEST_PRIO_ADVANCE  2   // 反攻期推进敌方武器厂：本局唯一胜利条件
-#define PRIEST_PRIO_CONVAPP  1   // 靠近感化目标 / legacy 跟随保位
-#define PRIEST_PRIO_HEAL     0   // 趋近治疗 / 回己方箭塔待命 / 探路移动
 // ★★★ 2026-09-15「起手保护」：低血 + 敌塔压近 ⇒ 暂不起手 ★★★ 证据（fc/dm/sba/sb 四批 32 局）：祭司共 10 次起手，7 次成功、3 次死于施法期；起手→收编需 ~333~343 帧(≈14 秒)。
 // 同批：10 次起手里 9 次敌方箭塔正在射击祭司，且塔基本拆不完 ⇒ "等塔清完再感化" = 永不感化（死锁），
 // 故**不设"有塔就不去"的硬闸**（towerlock 轮已证伪两次）。本闸只拦最没希望的一种：**已残血 + 塔就在 14 格内**。
@@ -711,40 +702,6 @@ static int g_pmHeal    = 0;   // 趋近治疗的移动令（moveAdjacentToAlly�
 static int g_pmCounter = 0;   // counterPriestConvert 的推进/侧移移动令
 static int g_pmOther   = 0;   // 其它（候命/跟随等）
 static int g_pmLastX = -100000, g_pmLastY = -100000;   // 上一条祭司移动令落点（块坐标 ×10 取整）
-
-// ★★★ 2026-10-06 祭司移动令【唯一仲裁器】★★★
-// 【病根·实测铁证】给祭司下发移动令的调用方共有 8 处，分属【三个互不知情的函数】：
-//   ① managePriest()      ：priestFlee / moveAdjacentToAlly / priestApproachMove / 回己方箭塔待命
-//   ② counterPriestConvert()：推进武器厂 / legacy 跟随（反攻段）
-//   ③ managePriestScout() ：探路移动
-// 它们只靠【各自设置的 priestMoveCooldown】互相"碰运气"避让 ⇒ 同一段帧序列里【交替夺权】，
-// 两条已实测的极限环：
-//   · 防守期（WAVE2 军队被全歼、祭司孤身被追）：flee(往家) ⇄ heal-approach(往伤兵=往敌) 交替。
-//     实测 fix1_map_r0_5：f=14845~14959 每 18 帧翻转一次落点（(79.9,16.7)⇄(82.3,35.5)），
-//     [BEAT] 的 pm 计数呈 f3h3 / f1h4 / f8 交替，祭司 250 帧只挪了 5 格（本应 ~31 格），
-//     hp 100→75→48→0，deathF=15423（该死法在 12 局里出现 3 次，帧号 15423/15521/15829 高度确定）。
-//   · 反攻期：priestApproachMove 每 20 帧刷 priestMoveCooldown=20 ⇒ counterPriestConvert 的
-//     `if (priestMoveCooldown > 0) return;` 【永远成立】⇒ 推进段被彻底饿死，祭司改去追敌小兵。
-//     实测 fix1_map_r0_9：f=35700~36450 只有 ca 发令、cnt≡0，祭司钉在距武器厂 27 格处被打死。
-// 【修法】收口为单一仲裁：任何祭司移动令下发前必须"认领"；认领后 PRIEST_MOVE_COMMIT 帧内
-//   只有【更高优先级】能抢走（同级可续期 ⇒ 同一档能自行改落点；低级一律否决 ⇒ 本帧不发令，
-//   祭司继续走向已承诺落点）。这样"谁在开这一枪"就只有一个答案，不再有逐帧翻转。
-// 【为什么同级可续期】优先级只解决"跨档夺权"；同一档内的落点迭代（如 priestFlee 的 24 扇区
-//   换向、脱困阶梯）必须保留，否则会把"卡死换落点"这个既有自救机制一起锁死。
-static int s_prMovePrio  = -1;          // 当前承诺的优先级
-static int s_prMoveUntil = -999999;     // 承诺到期帧（不含）——一局一进程 ⇒ 无需按局重置
-
-// 只读检查：本帧 prio 级能否下发祭司移动令
-static bool priestMoveOK(int prio, int frame) {
-    return !(frame < s_prMoveUntil && prio < s_prMovePrio);
-}
-// 认领（真正要发令前调用一次）
-static void priestMoveClaim(int prio, int frame) {
-    s_prMovePrio  = prio;
-    s_prMoveUntil = frame + PRIEST_MOVE_COMMIT;
-}
-// 紧急解绑：落点被引擎拒收/彻底卡死时用 ⇒ 允许下一帧换落点（优先级降到最低，谁都能抢）
-static void priestMoveRelease() { s_prMovePrio = -1; s_prMoveUntil = -999999; }
 
 void UsrAICore::commitInstruction() {
     if (InsPerFrame.empty()) {                 // 常见路径：本帧没下任何命令
@@ -1504,10 +1461,6 @@ void UsrAI::managePriest() {
 // （治疗射程极短：引擎 Core_List.cpp 仅校验 isAttackable 标志、无距离判定 ⇒ 必须贴到 ≈0.6 格才发得出治疗令）。
 // allowFallback：5 档全被否时是否"强行贴近"——闲时档 true（伤兵总在交火线上，不贴上去治不到，且已保证非濒死）；趋近档 false。
     auto moveAdjacentToAlly = [&](double allyX, double allyY, double dist, bool allowFallback) -> bool {
-        // ★ 2026-10-06 仲裁：治疗趋近 = 【最低优先级】。逃命(3)/推进武器厂(2)/靠近感化(1) 已认领承诺时
-        //   本帧不发令（返回 false ⇒ 调用方落到下一步：通常是 flee 档）—— 这正是实测"flee⇄heal 交替
-        //   18 帧翻转、净位移≈0、祭司被打死"（fix1_map_r0_5, deathF=15423）的止血点。
-        if (!priestMoveOK(PRIEST_PRIO_HEAL, frame)) return false;
         double ux = (allyX - pDR) / dist;
         double uy = (allyY - pUR) / dist;
         const double OFF[5] = {0.0, 1.0, -1.0, 2.0, -2.0};
@@ -1517,7 +1470,7 @@ void UsrAI::managePriest() {
             double cy = allyY - uy * 0.6 * BL + ux * OFF[o] * BL;
             cx = max(0.0, min((double)MAP_L * BL, cx));
             cy = max(0.0, min((double)MAP_U * BL, cy));
-            if (healLandingOk(cx, cy)) { g_pmHeal++; priestMoveClaim(PRIEST_PRIO_HEAL, frame); HumanMove(priestSN, cx, cy); return true; }
+            if (healLandingOk(cx, cy)) { g_pmHeal++; HumanMove(priestSN, cx, cy); return true; }
             if (!allowFallback) continue;
             double clear = 1e12;
             for (auto &e : infoPtr->enemy_armies)
@@ -1530,7 +1483,7 @@ void UsrAI::managePriest() {
         double cy = allyY - uy * 0.6 * BL + ux * OFF[bestO] * BL;
         cx = max(0.0, min((double)MAP_L * BL, cx));
         cy = max(0.0, min((double)MAP_U * BL, cy));
-        g_pmHeal++; priestMoveClaim(PRIEST_PRIO_HEAL, frame);
+        g_pmHeal++;
         HumanMove(priestSN, cx, cy);
         return true;
     };
@@ -1593,9 +1546,6 @@ void UsrAI::managePriest() {
 
     auto priestApproachMove = [&](double eDR, double eUR, double stopDist) -> bool {
         if (priestMoveCooldown > 0) return false;   // 节流：冷却期内绝不重发(与 priestFlee 同闸)
-        // ★ 2026-10-06 仲裁：靠近感化 = 1 级。让位给 逃命(3) 与 反攻推进武器厂(2) ——
-        //   实测这是"推进段被 ca 饿死"的元凶（fix1_map_r0_9：f=35700~36450 只有 ca 发令）。
-        if (!priestMoveOK(PRIEST_PRIO_CONVAPP, frame)) return false;
         double dx = eDR - pDR, dy = eUR - pUR;
         double len = std::sqrt(dx*dx + dy*dy);
         if (len < 0.01) return false;
@@ -1614,7 +1564,6 @@ void UsrAI::managePriest() {
         if (!ok) return false;   // 全部侧向偏移都不可达→本帧不发令,下帧再试,杜绝刷屏
         g_pmConvApp++;
         g_pmLastX = (int)(candX / BL * 10.0); g_pmLastY = (int)(candY / BL * 10.0);
-        priestMoveClaim(PRIEST_PRIO_CONVAPP, frame);
         HumanMove(priestSN, candX, candY);
         priestMoveCooldown = 20;
         return true;
@@ -1643,6 +1592,25 @@ void UsrAI::managePriest() {
                 double d = calDistance(pDR, pUR, bx, by);
                 if (d <= 16.0 * BL) pushThreat(bx, by, 12.0 * BL);
             }
+        // ★★★ 2026-10-06 保祭司 ·「已安全 ⇒ 原地不动」★★★
+        // 病根（实测 arb1_map_r0_14/r0_15、fix1_map_r0_5 三局同形）：
+        //   落点选择【没有"我在这儿已经安全了"这个分支】。祭司一旦走到安全落点，
+        //   下方粘滞判据 `dLast > 3.0*BL` 立刻失效 ⇒ 每 18 帧重算一次落点 ⇒ 24 方向×7 半径的
+        //   最优解随敌人移动整体跳变 ⇒ 祭司在半径 3~6 格的环形上【来回踱步】、净位移≈0，
+        //   边走边被远程（战车弓兵/复合弓兵）消耗。
+        //   量化铁证：`arb1_map_r0_14` 整局 `Priest FLEE hp=.. safe=..` **一次都没打印** ⇒
+        //   说明主路径确实每 18 帧都在重算；同时 pr@ 逐桶在 (70.3..76.4, 12.5..20.7) 徘徊、
+        //   hp 79→39→2 直到死亡（deathF=16904）。落点已核实【不在水里】（map.njust 全图仅
+        //   1300 格 Type=14，这些落点全是 Type=1 草地）⇒ 排除地形不可达，确认是判据抖动。
+        //   修：当前位置已在【所有威胁射程之外】⇒ 本帧不发令（原地待命，不刷新任何移动令）。
+        //   判据与下方 badLanding / 落点余量 margin 完全同源（同一个 thR 集合，铁律 21/26）。
+        //   ⚠ 不改 priestMoveCooldown：让"下一帧若不再受威胁"能立刻被治疗/感化/推进档接管。
+        {
+            double curMargin = 1e9;
+            for (int t = 0; t < nT; ++t)
+                curMargin = std::min(curMargin, calDistance(pDR, pUR, thX[t], thY[t]) - thR[t]);
+            if (curMargin >= 0) return;   // 已在全部威胁射程之外 ⇒ 站着别动
+        }
         // 远离所有"能打到我"的威胁合力方向(主力轴)
         double pushX = 0, pushY = 0;
         for (int t = 0; t < nT; ++t) {
@@ -1697,7 +1665,6 @@ void UsrAI::managePriest() {
                 if (lastSafe && !occupiedLanding(priestFleeLastX, priestFleeLastY)) {
                     g_pmFlee++;
                     g_pmLastX = (int)(priestFleeLastX / BL * 10.0); g_pmLastY = (int)(priestFleeLastY / BL * 10.0);
-                    priestMoveClaim(PRIEST_PRIO_FLEE, frame);   // ★ 逃命 = 最高优先级，可抢走任何已认领的移动令
                     HumanMove(priestSN, priestFleeLastX, priestFleeLastY);
                     priestMoveCooldown = 18;
                     return;   // 沿用旧落点：不再重算，杜绝方向翻转导致的原地抖动
@@ -1754,14 +1721,11 @@ void UsrAI::managePriest() {
         if (priestFleeTry >= 24 && priest->NowState == HUMAN_STATE_IDLE &&
             calDistance(pDR, pUR, priestFleeLastX, priestFleeLastY) > 2.0 * BL) {
             priestMoveCooldown = 40;
-            // ★ 2026-10-06：承诺落点被引擎拒收（24 扇区全轮完仍 IDLE）⇒ 解绑，允许其它档/下一帧换落点。
-            priestMoveRelease();
             if (frame % 50 == 0) DebugText("Priest FLEE: 卡死->本帧静默");
             return;
         }
         g_pmFlee++;
         g_pmLastX = (int)(bestX / BL * 10.0); g_pmLastY = (int)(bestY / BL * 10.0);
-        priestMoveClaim(PRIEST_PRIO_FLEE, frame);   // ★ 逃命 = 最高优先级
         HumanMove(priestSN, bestX, bestY);
         priestFleeLastX = bestX; priestFleeLastY = bestY; priestFleeLastFrame = frame;
         priestMoveCooldown = 18;   // 威胁紧迫,缩短决策间隔
@@ -1867,6 +1831,22 @@ void UsrAI::managePriest() {
                     DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
                 return;
             } else {
+                // ★★★ 2026-10-06 反攻期【不再主动追逐】敌小兵 ★★★
+                // 病根（实测 fix1 四图 A/B，24 局/臂）：
+                //   本 else 分支调的 `priestApproachMove` 每 20 帧刷一次 `priestMoveCooldown = 20`
+                //   ⇒ 下游 `counterPriestConvert` 的 `if (priestMoveCooldown > 0) return;` **恒真**
+                //   ⇒ **推进武器厂（本局唯一胜利条件）0 次机会执行**。祭司改成追着敌小兵满地图跑。
+                //   铁证 A（饿死）：`fix1_map_r0_12` 的 [BEAT] `pm` 列连续 40+ 桶只有 `ca`、`cnt≡0`
+                //     ⇒ 拖到 45000 帧**超时**（超时 = 必然输）；`fix1_map_r0_9` f=35700~36450 同形，
+                //     祭司钉在距武器厂 27 格处被打死（deathF=36820）。
+                //   铁证 B（替换实验）：改成让推进段抢到话语权（arbiter-v1，24 局）后 `超时` 由
+                //     1~2 局升到 **6 局**、CA 段推进效率 eff 由 0.42 掉到 **0.26** ⇒ 「让祭司一路冲」
+                //     是另一个坑；正确解是**掐掉追逐**、而不是**提高推进的攻击性**。
+                // 本改动只砍掉「为感化而移动」这半个分支：
+                //   · 近身（≤12 格）的感化【动作】完全保留（上方分支）——不影响"能感化直接感化"；
+                //   · 反攻期 + 已发现敌武器厂 ⇒ 不再追杀，把移动话语权还给推进段；
+                //   · 非反攻期（守家/守波）行为逐字不变 —— 那时祭司感化敌兵就是最好的保命手段。
+                if (inCounter && enemySiegeSN != -1) return;
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
                 priestApproachMove(convDR, convUR, stopDist); return;
             }
@@ -2025,7 +2005,6 @@ void UsrAI::managePriest() {
                 }
                 g_pmOther++;
                 g_pmLastX = (int)(tx / BL * 10.0); g_pmLastY = (int)(ty / BL * 10.0);
-                priestMoveClaim(PRIEST_PRIO_HEAL, frame);   // 回己方箭塔待命 = 最低优先级（保位，非任务）
                 HumanMove(priestSN, tx, ty);
                 priestMoveCooldown = 15;
                 if (frame % 50 == 0)
@@ -3015,11 +2994,6 @@ void UsrAI::managePriestScout() {
     if (!isWar && state != COUNTERATTACK && scoutPhase < 16) {
         double BL = (double)BLOCKSIDELENGTH;
 
-        // ★ 2026-10-06 仲裁（最低优先级）：探路期间 managePriest（scoutPhase<20 直接 return）与
-        //   counterPriestConvert 都不运行 ⇒ 此处不会有争抢；认领纯粹是为了"祭司移动令只有一个出口"
-        //   （铁律 21/26：同一语义只写一遍）。见 priestMoveClaim() 处的总注释。
-        if (!priestMoveOK(PRIEST_PRIO_HEAL, frame)) return;
-
         // ★ 2026-09-15 去重：路径 (sDR,sUR)→(wx,wy) 的【前 8 格】内是否撞上狮/象（1.5 格容差）。
         // 两处共用（去程绕障判定 / 返程绕障判定）。原先各抄一份（铁律 26）。   口径：把资源点投影到路径线段上，t<0（在身后）或 t*pathLen>8格（远端）一律不管。
         auto beastOnPathAhead = [&](double sDR, double sUR, double wx, double wy) -> bool {
@@ -3095,7 +3069,6 @@ void UsrAI::managePriestScout() {
                 double ty = scout->UR + (dy / len) * 12 * BL;
                 tx = max(0.0, min((double)MAP_L * BL, tx));
                 ty = max(0.0, min((double)MAP_U * BL, ty));
-                priestMoveClaim(PRIEST_PRIO_HEAL, frame);
                 HumanMove(scout->SN, tx, ty);
                 scoutIssueDR = scout->DR; scoutIssueUR = scout->UR; scoutIssueFrame = frame;
                 scoutCooldown = 30;
@@ -3139,7 +3112,6 @@ void UsrAI::managePriestScout() {
                         // ★ 发现敌军→立刻回TC，跳过此方向（下一轮探另一方向） 遇敌返回：移到TC旁空地（避开建筑中心/石头），用多半径螺旋绕路
                         double rx = 0, ry = 0;
                         scoutReturnPoint(scoutReturnTry, tcDR, tcUR, rx, ry);
-                        priestMoveClaim(PRIEST_PRIO_HEAL, frame);
                         HumanMove(scout->SN, rx, ry);
                         scoutIssueDR = scout->DR; scoutIssueUR = scout->UR; scoutIssueFrame = frame;
                         scoutPhase++;
@@ -3347,7 +3319,6 @@ void UsrAI::managePriestScout() {
                                 double wy2 = sUR + std::sin(ang) * SCOUT_STEP * BL;
                                 wx2 = max(edgeWest, min(edgeEast, wx2));
                                 wy2 = max(edgeSouth, min(edgeNorth, wy2));
-                                priestMoveClaim(PRIEST_PRIO_HEAL, frame);
                                 HumanMove(scout->SN, wx2, wy2);
                                 // ★ 记录点/计时器只在祭司真正挪窝(>1格)后才刷新—— 原来每次重发指令(冷却15帧)都刷新 scoutIssueFrame 与 scoutLegStartFrame，
                                 // 导致 20 帧的 noProgress 窗口永远走不满、leg 超时也被不断重置→ 卡死永不识别，同一不可达落点无限重发（日志里同一坐标刷屏）。
@@ -3374,7 +3345,6 @@ void UsrAI::managePriestScout() {
                             if (scoutPhase >= 16) scoutPhase = 20;  // 全部探完→结束探路回TC待命
                             scoutCooldown = 10;
                         } else {
-                            priestMoveClaim(PRIEST_PRIO_HEAL, frame);
                             HumanMove(scout->SN, wx, wy);
                             // ★ 同样只在真正挪窝后才刷新记录点/计时器，否则 noProgress 与 leg 超时双双失效， 返回路径被堵时会无限重发同一个 scoutReturnPoint 落点。
                             if (calDistance(sDR, sUR, scoutIssueDR, scoutIssueUR) > 1.0 * BL) {
@@ -5250,18 +5220,9 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             return;
         }
 
-        // ★★ 2026-09-13 保祭司 · 跨块互斥闸（2026-10-06 升级为【优先级仲裁】）★★
-        // managePriest 与本函数同在主循环里先后调用，旧代码用【两套独立冷却】⇒ 同一帧可给祭司下发两个
-        // 相反的移动令（前出武器厂 vs 后撤）⇒ 原地抖动、净位移 0（实测 sg2 f=42668~42868 每 10 帧翻转）。
-        // 2026-09-13 曾改为 `if (priestMoveCooldown > 0) return;`（"managePriest 本帧已发过令就整体跳过"）。
-        // ★★★ 2026-10-06 实测该写法【把推进段永久饿死】★★★
-        //   元凶 = managePriest 的 priestApproachMove 每 20 帧刷一次 priestMoveCooldown=20 ⇒ 本行恒真 ⇒
-        //   推进段（唯一胜利条件的执行体）0 次机会；祭司改为追敌小兵。
-        //   铁证 fix1_map_r0_9（deathF=36820）：f=35700~36450 的 [BEAT] 里 pm 列 ca7~ca8、cnt≡0，
-        //   祭司钉在距武器厂 27 格处被打死；同批 map.njust 三局胜局的 cnt 命中都发生在 ca 空窗期。
-        // ⇒ 改为按【优先级】仲裁：推进(2) 压过 靠近感化(1)/治疗(0)，但仍让位给 逃命(3)。
-        //   ⚠ 保留"施法不打断"语义：祭司正在引导（非 IDLE/WALKING）已由上方 5183 行的状态闸拦掉。
-        if (!priestMoveOK(PRIEST_PRIO_ADVANCE, frame)) return;
+        // ★★ 2026-09-13 保祭司 · 跨块互斥闸 ★★ managePriest 与本函数同在主循环里先后调用，旧代码用【两套独立冷却】⇒ 同一帧可给祭司下发两个
+        // 相反的移动令（前出武器厂 vs 后撤）⇒ 原地抖动、净位移 0（实测 sg2 f=42668~42868 每 10 帧翻转）。 修：统一到同一闸 —— managePriest 本帧已发过令，本段整体跳过。
+        if (priestMoveCooldown > 0) return;
 
         // 有伤兵时把祭司留给 managePriest 治疗，推进下帧再继续
         bool anyInjuredAlly = false;
@@ -5429,7 +5390,6 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 if (isPassableAt(tx, ty, forestGrid)) {
                     g_pmCounter++;
                     g_pmLastX = (int)(tx / BL * 10.0); g_pmLastY = (int)(ty / BL * 10.0);
-                    priestMoveClaim(PRIEST_PRIO_ADVANCE, frame);   // ★ 推进武器厂 = 2 级（压过 靠近感化/治疗）
                     HumanMove(priestSN, tx, ty);
                     priestCounterCooldown = 30; priestMoveCooldown = 30;
                     if (!escaping) {
@@ -5510,7 +5470,6 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             if (!hold && isPassableAt(px, py, forestGrid)) {
                 g_pmCounter++;
                 g_pmLastX = (int)(px / BL * 10.0); g_pmLastY = (int)(py / BL * 10.0);
-                priestMoveClaim(PRIEST_PRIO_CONVAPP, frame);   // legacy 跟随保位 = 1 级（非任务，让位给推进）
                 HumanMove(priestSN, px, py);
             }
             if (frame % 100 == 0)
