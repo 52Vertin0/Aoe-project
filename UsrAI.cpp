@@ -136,6 +136,40 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define MAX_FARMERS 22          // 目标村民数量（PPT建议20-28）
 #define MAX_HOUSES 12           // +2：60人口=12房（2026-09-16，原 10→12）
 #define POP_HEADROOM_BUILD 2    // 人口余量≤此值即补房屋（即 人口达到 人口上限-2 时建房）
+
+// ★★★ 2026-10-06 反攻前【腾人口】：人口顶满时让农民自杀，把人口位让给军队 ★★★
+//   用户需求：「反攻前人口达到50人上限的话，让农民对自己SN作humanaction实行自杀，减少人口占用，训练新兵」
+//   背景（结构层）：人口是引擎硬常量 50 ⇒ 军队被算术锁死在 27（= 50 − 22 农民 − 1 祭司），
+//     `Mil` 首达 27 的中位帧 f≈30002，此后到局末军队规模冻死。唯一出路 = 从农民手里腾人口。
+//   机制（已逐层核对引擎源码，非推测）：
+//     HumanAction(农民SN, 农民SN) → Core.cpp:1389 按 self->getSort() 分派 → SORT_FARMER
+//       → Core::handleFarmerAction（Core.cpp:994）`if (self == obj) { ret = deleteSelf(self); }`
+//       → Core::deleteSelf（Core.cpp:1494）→ `updateBlood(getMaxBlood())`
+//       → BloodHaver::updateBlood 是【扣血】（Bloodhaver.cpp:16 `Blood -= damage/maxBlood`）
+//       ⇒ 血量归零 ⇒ 走引擎正常死亡/清理流程。
+//     前置 `deleteSelf` 要求 getPlayerRepresent()==0；[ENV] 实测 represent=0 ✓（config.json 同）
+//     UsrAI::HumanAction（:896）只做两次 lookupObjectRO 就转发，不拦 self==obj ✓
+//     checkDefeat（:6269）只看祭司存活 + TC 存活 ⇒ 自杀不会被误判为失败 ✓
+//   ⚠⚠ 必须同时压住「农民补练」，否则整个方案白干：
+//     processFrame 顺序是「…经济(:1155) > 军事(:1158)」，而农民生产条件
+//     （:2047 `farmerCount < currentMaxFarmers && totalPop < Human_MaxNum`）在 manageEconomy 内、
+//     **跑在 trainMilitaryUnits(:4352 同样受 humanPop < Human_MaxNum 约束) 之前** ⇒
+//     杀 1 个农民后，`farmerCount 21<22` 与 `totalPop 49<50` 同帧同时成立 ⇒ 农民【自己把位子抢回去】，
+//     军队一个兵都练不出来。⇒ 一旦置位就把农民上限永久降到 FLOOR（见 :2047 的 effectiveMaxFarmers）。
+//   ⚠ 人口顶必须用【引擎硬顶 50】，**不可**用 Human_MaxNum：后者 = getMaxHumanNum() = 房屋数×每屋人口
+//     （Development.h:63），**不含** humanNum_Top=50 这个硬顶 —— 房屋够多时它会 >50（判据永不成立），
+//     房屋不够时又会 <50 ⇒ 造成"假满"。首轮实测正栽在后者：11 分钟就有局 pop=28/28 判满，而军队才 6 个，
+//     农民被白砍到 16（Mil 23→6、win=0）；且"无自杀局 Mil 中位 30 > 有自杀局 26"——触发条件反而
+//     选中了房屋不足的局。真硬顶 = getHumanNumCanReach()=min(房屋,50)（Development.h:65）
+//     ⇒ 只有顶到 50，才证明"军队被人口锁死"，而不是"房子没盖够"（后者归 manageBuildings 管）。
+//   ⚠ 触发还要叠一条「农民已打满上限」——它证明"军队撞了人口天花板"，而不是"房屋不足的假满"
+//     （早期房屋少，Human_MaxNum 可能只有 20 出头；不设此条会在开局就把农民砍到 16）。
+//     ⚠ 副产品：W2 前农民上限本就是 16（:2046），所以"不限阶段"在早期天然无副作用。
+#define POP_SAC_ENABLE        true   // 总开关（回退只需置 false）
+#define POP_SAC_FARMER_FLOOR  16     // 农民降到 16 个为止（腾 6 人口 ⇒ 军队上限 27→33）
+#define POP_SAC_MAX           6      // 本局最多自杀数（与 FLOOR 互为保险，取小者生效）
+#define POP_SAC_INTERVAL      90     // 两次自杀最小间隔(帧)=3.6 秒（给引擎消化指令、让军事先吃掉位子）
+#define POP_SAC_HARD_TOP      50     // = Development::humanNum_Top（引擎硬人口顶；AI 侧读不到该成员，故硬编码）
 // ★ 农场上限：2026-09-01 二改 8 → 12；2026-09-24 用户要求 12 → 10。
 // 后期野生食物枯竭后，食物产能 = 农场座数 × 1人/座（代码强制"每座农场有且仅有一人"），   10 座 = 10 个食物工；上限过高会抢占木材/建造工位。
 // 农场间隔 1 格（isFarmAdjacent）仍需选址空间，若实测建不满 10 座可继续下调。
@@ -2020,6 +2054,13 @@ void UsrAI::manageEconomy() {
     static double ecoSum[5] = {0.0};
     static double ecoMax[5] = {0.0};
     static int ecoSamples = 0;
+    // ★★★ 2026-10-06 反攻前【腾人口】跨段状态（见文件顶部 POP_SAC_* 常量块的完整说明）★★★
+    //   为什么用函数内 static：不改 .h ⇒ 不触发 18 obj 全量重编（含 MainWidget.o）。
+    //   ⚠ 前提是"一局一进程"（本工程跑局脚本正是如此 ⇒ 每局从 0 开始，不跨局串扰）；
+    //     与祭司脱困的 s_priestEscapeStreak(:5122) 同一手法。
+    static bool s_popSacArmed     = false;   // 一次性置位：置位后农民上限永久降到 POP_SAC_FARMER_FLOOR
+    static int  s_popSacLastFrame = -999999; // 上次自杀帧（节流；首帧即满足 ⇒ 会用 -999999 直接开杀）
+    static int  s_popSacCount     = 0;       // 本局累计自杀数（与 POP_SAC_MAX 互为上限保险）
     auto ecoNow = []() { return EcoClock::now(); };
     auto ecoAdd = [](int idx, EcoClock::time_point a, EcoClock::time_point b) {
         double ms = std::chrono::duration<double, std::milli>(b - a).count();
@@ -2028,6 +2069,96 @@ void UsrAI::manageEconomy() {
     };
 #define ECO_PROF_STAGE(idx, call) do { auto _eco_t0 = ecoNow(); call; ecoAdd(idx, _eco_t0, ecoNow()); } while (0)
     auto ecoT0 = ecoNow();
+
+    // ★★★ 2026-10-06 反攻前【腾人口】：人口顶满时让农民自杀，把人口位让给军队 ★★★
+    //   需求 / 机制 / 坑位 的完整论证见文件顶部 POP_SAC_* 常量块。
+    //   ★ 执行点刻意放在「村民生产」之前：本段先杀，紧随其后的村民生产再按【降级后的上限】判，
+    //     两段同帧串行 ⇒ 不存在"先补后杀"的窗口。
+    if (POP_SAC_ENABLE) {
+        int nFarmNow = 0;
+        for (auto &f : infoPtr->farmers)
+            if (f.FarmerSort == FARMERTYPE_FARMER) ++nFarmNow;
+        const int totalPopNow  = (int)infoPtr->farmers.size() + (int)infoPtr->armies.size();
+        const int popCapNow    = (int)infoPtr->Human_MaxNum;   // 房屋上限（仅用于日志/诊断）
+        const bool preCounterNow = (state != COUNTERATTACK && state != VICTORY && state != DEFEAT);
+        const int curMaxFarmNow  = (frame < WAVE2_TIME) ? 16 : MAX_FARMERS;
+        // ★★ 人口必须顶到【引擎硬顶 50】，而**不是** min(Human_MaxNum, 50) ★★
+        //   —— 首轮实测教训（fixN 前 16 局）：用 min(房屋上限,50) 判 ⇒ 11 分钟就有局判"满"了
+        //      （日志 pop=28/28），但那是【房屋只提供 28 人口】的假满：军队才 6 个、根本没撞天花板，
+        //      农民被砍到 16 后军队也只涨到 12 ⇒ 纯亏 6 份采集力（map1_r0_1 全轨迹 Frm=16、
+        //      Mil 23→6、win=0）。房屋不足的正解是 manageBuildings 补房子（POP_HEADROOM_BUILD），
+        //      不是杀农民。⇒ 只有真顶到 50，才证明"军队被人口锁死"。
+        //      旁证：无自杀局 Mil 最大中位 30 > 有自杀局 26 —— 触发条件当时反而选中了房屋不足的局。
+        //   双口径取或：totalPop 是 AI 账（farmers+armies，不含训练中的单位）；
+        //   Human_Num 是引擎权威（Core.cpp:429 填充，含训练中）⇒ 漏判时由后者兜住。
+        const bool popAtHardTop = (totalPopNow >= POP_SAC_HARD_TOP)
+                               || ((double)infoPtr->Human_Num >= (double)POP_SAC_HARD_TOP);
+
+        // ---- 置位：反攻前 + 人口顶到引擎硬顶 + 农民已打满上限 ----
+        //   最后一条防"农民还没补齐就先腾"（配合 W2 前上限本就是 16 ⇒ 早期天然无副作用）。
+        if (preCounterNow && popAtHardTop && nFarmNow >= curMaxFarmNow)
+            s_popSacArmed = true;
+
+        // ---- 执行：降到 FLOOR 为止（每 POP_SAC_INTERVAL 帧放一个）----
+        //   ⚠ 刻意要求【此刻人口仍顶着硬顶 50】：由 popAtHardTop 保证。
+        //     语义 = "上一个腾出的位子已经被军队占住了，才腾下一个"（杀 1 个 ⇒ 人口 49 ⇒
+        //     军事练出 1 个兵把人口顶回 50 ⇒ 才允许杀第 2 个）。
+        //     若去掉这条，一次连杀 6 个 ⇒ 人口骤降到 44，而靶场产能有限（每座同时只能练 1 个），
+        //     空出来的位子没人接 ⇒ 纯亏 6 份采集力。⇒ 宁可少腾，不可白亏。
+        //   ⚠ `Meat >= FOOD_PAUSE_TECH_TRAIN` 是同一考虑的下限：粮食连一个兵都练不起时，
+        //     腾出的人口只会空着（trainMilitaryUnits 的闸就是 Meat >= trainMinFood）。
+        if (s_popSacArmed && preCounterNow
+            && popAtHardTop
+            && infoPtr->Meat >= FOOD_PAUSE_TECH_TRAIN
+            && nFarmNow > POP_SAC_FARMER_FLOOR && s_popSacCount < POP_SAC_MAX
+            && (frame - s_popSacLastFrame) >= POP_SAC_INTERVAL) {
+            // 选"损失最小"的农民：① 空闲(此刻不产资源) > ② 非采集态 > ③ 正在采集。
+            // 同级取【距 TC 最远】者（往返最费时、反攻期归队最慢）。⚠ 距离须同量纲 ⇒ 统一到像素。
+            double tcDR = 0.0, tcUR = 0.0; bool tcOk = false;
+            for (auto &b : infoPtr->buildings) {
+                if (b.Type == BUILDING_CENTER && b.Project == ACT_NULL) {
+                    tcDR = (b.BlockDR + 1.0) * BLOCKSIDELENGTH;
+                    tcUR = (b.BlockUR + 1.0) * BLOCKSIDELENGTH;
+                    tcOk = true; break;
+                }
+            }
+            int victimSN = -1, bestRank = -1; double bestD2 = -1.0;
+            for (auto &f : infoPtr->farmers) {
+                if (f.FarmerSort != FARMERTYPE_FARMER) continue;
+                if (f.Blood <= 0) continue;
+                const int rank = (f.NowState == HUMAN_STATE_IDLE)    ? 2
+                               : (f.NowState != HUMAN_STATE_WORKING) ? 1 : 0;
+                double d2 = 0.0;
+                if (tcOk) d2 = (f.DR - tcDR) * (f.DR - tcDR) + (f.UR - tcUR) * (f.UR - tcUR);
+                if (rank > bestRank || (rank == bestRank && d2 > bestD2)) {
+                    bestRank = rank; bestD2 = d2; victimSN = f.SN;
+                }
+            }
+            if (victimSN >= 0) {
+                // ★ 自杀：工作目标设为自己 ⇒ handleFarmerAction 的 `self == obj` 分支 ⇒ deleteSelf ⇒ 扣血到 0
+                HumanAction(victimSN, victimSN);
+                s_popSacLastFrame = frame;
+                ++s_popSacCount;
+                // 清死者在村民侧账本的残留。这些表只按 SN 记账、没有"单位已死"的回调，
+                // 尸体条目会一直留着；它们仅在遍历 infoPtr->farmers 时被查 ⇒ 死 SN 永不命中、
+                // 不影响决策，此处清理只为不留垃圾（含"该村民已死却仍被当成重派候选"的隐患）。
+                villLastResourceSN.erase(victimSN);
+                gatherStuckFrame.erase(victimSN);
+                huntingGroup.erase(victimSN);
+                pendingRedispatch.erase(victimSN);
+                depositFarmers.erase(victimSN);
+                depositStartFrame.erase(victimSN);
+                buildingFarmerType.erase(victimSN);
+                builderIdleFrame.erase(victimSN);
+                buildRedispatchFrame.erase(victimSN);
+                builderDispatchFrame.erase(victimSN);
+                DebugText(QString("[POP-SAC f=%1] 农民 SN=%2 自杀腾位 | 农民 %3→%4 pop=%5/%6 军队=%7 累计=%8")
+                          .arg(frame).arg(victimSN).arg(nFarmNow).arg(nFarmNow - 1)
+                          .arg(totalPopNow).arg(popCapNow).arg((int)infoPtr->armies.size()).arg(s_popSacCount));
+            }
+        }
+    }
+
     // 1. 村民生产：有50食物就造人，冲到目标数量    ★ 铜器升级条件已满足时优先升级：暂停造村民，把TC和食物留给升级指令
     auto center = findBuilding(BUILDING_CENTER);
     //   ★ 2026-09-13：新增两条 —— ①前置建筑就绪才"攒升级费"（否则食物够也升不了，     白停产、空转）；②UPGRADING 重试期同样停产，避免新村民吃掉 800 升级费。
@@ -2044,7 +2175,13 @@ void UsrAI::manageEconomy() {
 
         int totalPop = infoPtr->farmers.size() + infoPtr->armies.size();
         int currentMaxFarmers = (frame < 13500) ? 16 : MAX_FARMERS;  // W2前限16农，优先升级
-        if (farmerCount < currentMaxFarmers && totalPop < infoPtr->Human_MaxNum) {
+        // ★ 2026-10-06 腾人口：一旦本局已置位，农民上限【永久】降到 POP_SAC_FARMER_FLOOR。
+        //   这是"防农民抢回腾出的人口位"的唯一手段 —— manageEconomy 跑在 trainMilitaryUnits
+        //   (:6080 附近) 之前，若仍按 22 判，杀 1 个农民后下一帧 `farmerCount 21<22` 与
+        //   `totalPop 49<50` 同时成立 ⇒ 农民立刻补回来，军队一个兵都练不出来。
+        //   （完整论证见文件顶部 POP_SAC_* 常量块）
+        int effectiveMaxFarmers = s_popSacArmed ? POP_SAC_FARMER_FLOOR : currentMaxFarmers;
+        if (farmerCount < effectiveMaxFarmers && totalPop < infoPtr->Human_MaxNum) {
             // ★ 铜器后：检查军事科技是否真的在研究中（已扣资源），而非乐观布尔值 ★
             // 乐观布尔值在 BuildingAction 发出时就设为 true，但资源尚未扣除 必须查建筑的实际 Project 状态，确认科技已经"付款"正在执行
             bool postBronze = (infoPtr->civilizationStage >= CIVILIZATION_BRONZEAGE);
