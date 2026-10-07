@@ -5513,12 +5513,41 @@ void UsrAI::manageCounterAttack() {
     int marchCmds = 0;
     int armyCount = 0;
     for (auto &a : infoPtr->armies) if (a.Sort != AT_PRIEST) armyCount++;  // 非祭司军队总数(近战集结门槛用)
-    // 全体反攻门槛：军事单位(非祭司) ≥ COUNTER_ATTACK_MIN_ARMY 才一起反攻，或到 COUNTER_ATTACK_FORCE_TIME 强制进攻（避免人数不足零散冲出被集火）。
-    bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY) || (frame >= COUNTER_ATTACK_FORCE_TIME);
+    // 反攻门槛：见下方【集结闸】（≥GATHER_PCT 到位才开推；超时兜底）。
     // 集结中心：未达门槛时全军回己方 TC 附近集结待命(形成密集兵力，来敌也能抱团防守)
     tagBuilding* rallyTC = findBuilding(BUILDING_CENTER);
     double rallyCtrDR = rallyTC ? (rallyTC->BlockDR + 1) * BL : MAP_L * BL * 0.5;
     double rallyCtrUR = rallyTC ? (rallyTC->BlockUR + 1) * BL : MAP_U * BL * 0.5;
+
+    // ★★★ 2026-10-07【集结闸】★★★
+    //   病（map.njust 实测 48 局）：反攻首帧军队 bbox 已 55×50 格、散在全图，
+    //     分段推进的「≥ 70% 到齐」判据从未满足 ⇒ 每段都靠 600 帧超时硬推 ⇒ 靠海被切成两拨、祭司被集火死。
+    //   法：反攻必须以「已集结」为前提 —— ≥GATHER_PCT 的军队进入 TC 周边 GATHER_R 格才开推；
+    //     否则继续走下面 !readyToAttack 的「全军回 TC 收拢」分支。收拢上限 GATHER_MAXF 帧兜底，绝不无限等。
+    //   注：旧判据里的 force 阈 = 反攻首帧(33001)，会让闸门形同虚设，故兜底改用「进入反攻后计时」+ 绝对上限。
+    const double GATHER_R    = 25.0 * BL;   // 集结到位半径：TC 周边 25 格
+    const int    GATHER_MAXF = 1500;        // 收拢上限 60 秒（25fps），超时兜底强行开推
+    const int    GATHER_PCT  = 70;          // 到位百分比门槛(%)
+    static int   g_atkStartFrame = -1;
+    static int   g_atkLastFrame  = -1;
+    if (frame < g_atkLastFrame) g_atkStartFrame = -1;    // 帧号回退 = 新一局
+    g_atkLastFrame = frame;
+    if (g_atkStartFrame < 0) g_atkStartFrame = frame;
+    int nearRallyN = 0;
+    for (auto &a : infoPtr->armies) {
+        if (a.Sort == AT_PRIEST) continue;
+        if (calDistance(a.DR, a.UR, rallyCtrDR, rallyCtrUR) <= GATHER_R) ++nearRallyN;
+    }
+    bool gathered     = (armyCount > 0) && (nearRallyN * 100 >= armyCount * GATHER_PCT);
+    bool gatherExpire = (frame - g_atkStartFrame) >= GATHER_MAXF;
+    bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY && (gathered || gatherExpire))
+                         || (frame >= COUNTER_ATTACK_FORCE_TIME + GATHER_MAXF);
+    // 可观测性：每 1500 帧一行集结进度，供回归对比（纯打印，不参与决策）
+    if (armyCount > 0 && (frame % 1500) == 0) {
+        DebugText(QString("[GATHER f=%1] near=%2/%3 R=%4 gathered=%5 expire=%6 ready=%7")
+                  .arg(frame).arg(nearRallyN).arg(armyCount).arg((int)(GATHER_R / BL))
+                  .arg(gathered ? 1 : 0).arg(gatherExpire ? 1 : 0).arg(readyToAttack ? 1 : 0));
+    }
 
     // ★★★ 2026-10-07 方案A：分段推进（每段先汇合再走）★★★
     //   病：各自 HumanMove 到敌基地，靠海时被分成两拨，逐个被集火（祭司跟着散掉的重心 ⇒ 被杀）。
