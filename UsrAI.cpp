@@ -142,6 +142,16 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 复合弓科技未研究或排队时，农场为科技预留木材；到兜底帧后解除。
 #define FARM_WAIT_CB_FRAME 21000
 #define COMPOSITE_BOW_WOOD_RESERVE 100   // = BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD
+// ★★★ 2026-10-07 主远程兵种切换：复合弓兵 → 战车弓兵（用户点名）★★★
+//   战车弓兵 AT_CHARIOT_ARCHER：HP 70(复合弓 45)、速度 2(复合弓 1.2)、攻 4(复合弓 5)、射程 7(同)，
+//     造价 40 食 + 70 木（复合弓 40 食 + 20 金）；解锁科技 = 车轮（市场 150食+100木）。
+//   动机：① 血厚 +56%、速度 +67% ⇒ 拉扯/脱战/汇合更抗打，正对「反攻期被集火融化」；
+//         ② 造价不含金 ⇒ 避开反攻期黄金瓶颈（复合弓 20 金/个）；
+//         ③ 车轮另给村民 +30% 移速 ⇒ 经济顺带受益。
+//   ⚠ 战车弓兵也命中「高机动先锋探路」分支（manageCounterAttack），该分支已加数量上限 VANGUARD_MAX=2。
+#define MAIN_RANGED_SORT        AT_CHARIOT_ARCHER
+#define MAIN_RANGED_CREATE      BUILDING_RANGE_CREATE_CHARIOT_ARCHER
+#define MAIN_RANGED_TECH        BUILDING_MARKET_WHEEL_UPGRADE
 // ARMY_IGNORE_SIEGE_WORKSHOP：把武器厂从"军队建筑目标选择"里剔除，军队改打【箭塔 → 其它任意敌建筑】。
 // ⚠ 仍保留 siege 作为【反攻推进锚点】(targetDR/targetUR/rallyDR/rallyUR/directMarch)，否则 directMarch 失去依据。
 #define ARMY_IGNORE_SIEGE_WORKSHOP true
@@ -946,7 +956,7 @@ void UsrAI::processFrame() {
             for (auto &a : infoPtr->armies) {
                 ++nArmy;
                 if      (a.Sort == AT_HOPLITE)           ++nHop;
-                else if (a.Sort == AT_COMPOSITE_BOWMAN)  ++nArch;
+                else if (a.Sort == MAIN_RANGED_SORT)     ++nArch;
                 else if (a.Sort != AT_PRIEST)            ++nOth;
                 if (a.Sort == AT_PRIEST) {
                     prSN = a.SN; prHp = a.Blood; prMax = a.MaxBlood;
@@ -1994,7 +2004,7 @@ void UsrAI::manageEconomy() {
 
                 // 只有当真在研究中（已扣资源）才解锁农民生产
                 bool militaryTechPaid = broadswordRunning || compositeBowRunning
-                    || broadswordResearched || compositeBowResearched;
+                    || broadswordResearched || wheelResearched;
 
                 // 阔剑科技已封禁(DISABLE_BROADSWORD_TECH)，军事解锁由复合弓科技承担，食物预留额取复合弓科技真实食物成本 + 50 缓冲
                 if (!militaryTechPaid)
@@ -2002,12 +2012,12 @@ void UsrAI::manageEconomy() {
 
                 if (frame % 50 == 0) {
                     DebugText(QString("[FARMER f=%1] postBr=%2 paid=%3(brRun=%4 cbRun=%5 brd=%6 cmp=%7) minFd=%8 meat=%9 fCnt=%10").arg(frame).arg((int)postBronze).arg((int)militaryTechPaid)
-                        .arg((int)broadswordRunning).arg((int)compositeBowRunning).arg((int)broadswordResearched).arg((int)compositeBowResearched).arg(minFood).arg((int)infoPtr->Meat).arg(farmerCount));
+                        .arg((int)broadswordRunning).arg((int)compositeBowRunning).arg((int)broadswordResearched).arg((int)wheelResearched).arg(minFood).arg((int)infoPtr->Meat).arg(farmerCount));
                 }
             }
 
             bool canResearchCB = false;
-            if (postBronze && !compositeBowResearched && !compositeBowQueued) {
+            if (postBronze && !wheelResearched && !wheelQueued) {
                 auto rng = findBuilding(BUILDING_RANGE);
                 if (rng && rng->Project == ACT_NULL &&
                     infoPtr->Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD &&
@@ -2339,7 +2349,7 @@ void UsrAI::manageBuildings() {
     };
     // 农场"木材需求额"：postW1 / postW2 两处共用，口径必须同源。
     auto farmWoodNeedNow = [&]() {
-        bool cbPending = (postBronze && !compositeBowResearched && !compositeBowQueued && frame < FARM_WAIT_CB_FRAME);
+        bool cbPending = (postBronze && !wheelResearched && !wheelQueued && frame < FARM_WAIT_CB_FRAME);
         return FARM_WOOD_NEED(storageNearGazelleBuilt == 1) + (cbPending ? COMPOSITE_BOW_WOOD_RESERVE : 0);
     };
     auto farmerCountNow = [&]() {
@@ -2535,7 +2545,7 @@ void UsrAI::manageBuildings() {
         int farmWoodNeed2 = farmWoodNeedNow();
         if (!builtThisFrame && marketReady && storageNearGazelleBuilt == 1 &&
                 (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME) &&
-                (!postBronze || compositeBowResearched || compositeBowQueued || frame >= FARM_WAIT_CB_FRAME) &&
+                (!postBronze || wheelResearched || wheelQueued || frame >= FARM_WAIT_CB_FRAME) &&
                 infoPtr->Wood >= farmWoodNeed2 && infoPtr->Meat >= 100) {
             int currentFarms = countFarmsForCap();
                 int targetFarms = std::min(std::max(0, farmerCountNow() - 2), MAX_FARMS);
@@ -2813,7 +2823,7 @@ void UsrAI::manageBuildings() {
         // 另加两道闸：木材加工科技（FARM_WAIT_WOOD_TECH_FRAME）+ 复合弓科技未就绪时让出 COMPOSITE_BOW_WOOD_RESERVE；
         // farmWoodTechOk 与 farmBowWoodOk 并联，任一超时兜底触发即放行。
         bool farmWoodTechOk = (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME);
-        bool farmBowWoodOk = (!postBronze || compositeBowResearched || compositeBowQueued ||
+        bool farmBowWoodOk = (!postBronze || wheelResearched || wheelQueued ||
                               frame >= FARM_WAIT_CB_FRAME);
         int farmWoodNeed = farmWoodNeedNow();
         if (!builtThisFrame && storageNearGazelleBuilt == 1 && farmWoodTechOk && farmBowWoodOk) {
@@ -3942,7 +3952,7 @@ void UsrAI::manageTechUpgrade() {
     if (!DISABLE_MARKET_WOOD_TECH && !done && !marketWoodUpgraded) {
         auto mw = findBuilding(BUILDING_MARKET);
         if (mw && mw->Project == ACT_NULL && infoPtr->Meat >= 120 && infoPtr->Wood >= 75) {
-            bool bowPending = (!compositeBowResearched && !compositeBowQueued);
+            bool bowPending = (!wheelResearched && !wheelQueued);
             bool okToGo = true;
             if (bowPending && !WOOD_TECH_ABSOLUTE_FIRST) {
                 // 复合弓未就绪 → 要求"两项都负担得起"才允许伐木插队： 食物(伐木120 + 复合弓180) 与 木材(伐木75 + 复合弓100) 都不能被伐木吃掉，
@@ -3965,7 +3975,7 @@ void UsrAI::manageTechUpgrade() {
         int mktProj = -9;
         if (mwd) mktProj = (int)mwd->Project;
         DebugText(QString("[WP f=%1] mkt=%2 proj=%3 meat=%4 wood=%5 bowPend=%6 abs=%7").arg(frame).arg(mwd ? 1 : 0).arg(mktProj).arg((int)infoPtr->Meat).arg((int)infoPtr->Wood)
-            .arg((!compositeBowResearched && !compositeBowQueued) ? 1 : 0).arg(WOOD_TECH_ABSOLUTE_FIRST ? 1 : 0));
+            .arg((!wheelResearched && !wheelQueued) ? 1 : 0).arg(WOOD_TECH_ABSOLUTE_FIRST ? 1 : 0));
     }
 
 
@@ -4015,38 +4025,39 @@ void UsrAI::manageTechUpgrade() {
             broadswordResearched = true;
         }
     }
-    if (!compositeBowResearched) {
-        auto rng = findBuildingIncludingUnderConstruction(BUILDING_RANGE);
-        if (rng && rng->Project == BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) {
-            compositeBowResearched = true;
-        } else if (compositeBowQueued && rng && rng->Project == ACT_NULL) {
-            compositeBowQueued = false;   // 引擎未受理（时代/资源被拒）⇒ 允许重试，不能乐观判成已研究
+    // ★ 主远程兵种切换：解锁科技 = 车轮（市场 150食+100木），取代原“复合弓科技（靶场 180食+100木）”。
+    //   校验口径与原复合弓一致：看市场的 Project 真在跑才置位；未受理则清队允许重试。
+    if (!wheelResearched) {
+        auto mk = findBuildingIncludingUnderConstruction(BUILDING_MARKET);
+        if (mk && mk->Project == BUILDING_MARKET_WHEEL_UPGRADE) {
+            wheelResearched = true;                       // 真的在研究了
+        } else if (wheelQueued && mk && mk->Project == ACT_NULL) {
+            wheelQueued = false;                          // 引擎未受理（时代/资源被拒）⇒ 允许重试
         }
     }
 
     // 复合弓科技（解锁类）：与护甲链互不阻塞，但本帧已下其他科技令(done)则不抢同帧资源，下帧重试。
     //   引擎硬前置 CIVILIZATION_BRONZEAGE ⇒ 必须放在 `if (!postBronze) return;` 之后。
     //   真实成本只含铜器时代 + 木材 + 食物，不需黄金（引擎层无阔剑前置）。
-    if (!done && !compositeBowResearched && !compositeBowQueued) {
-        auto r = findBuilding(BUILDING_RANGE);
-        // 复合弓科技诊断：每 30 帧打印一次闸门状态
+    if (!done && !wheelResearched && !wheelQueued) {
+        auto mk = findBuilding(BUILDING_MARKET);
         if (frame % 30 == 0) {
-            int rngPct = -1, rngProj = -2;
-            auto rngAll = findBuildingIncludingUnderConstruction(BUILDING_RANGE);
-            if (rngAll) { rngPct = rngAll->Percent; rngProj = rngAll->Project; }
-            bool meatOK = (infoPtr->Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD);
-            bool woodOK = (infoPtr->Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD);
-            bool readyOK = (r && r->Project == ACT_NULL && meatOK && woodOK);
-            DebugText(QString("[CB f=%1] rngFound=%2 rngPct=%3 rngProj=%4 meat=%5(%6) wood=%7(%8) techCD=%9 ready=%10").arg(frame).arg(r ? 1 : 0).arg(rngPct).arg(rngProj)
+            int mkPct = -1, mkProj = -2;
+            auto mkAll = findBuildingIncludingUnderConstruction(BUILDING_MARKET);
+            if (mkAll) { mkPct = mkAll->Percent; mkProj = mkAll->Project; }
+            bool meatOK = (infoPtr->Meat >= BUILDING_MARKET_WHEEL_UPGRADE_FOOD);
+            bool woodOK = (infoPtr->Wood >= BUILDING_MARKET_WHEEL_UPGRADE_WOOD);
+            bool readyOK = (mk && mk->Project == ACT_NULL && meatOK && woodOK);
+            DebugText(QString("[WHEEL f=%1] mktFound=%2 mktPct=%3 mktProj=%4 meat=%5(%6) wood=%7(%8) techCD=%9 ready=%10").arg(frame).arg(mk ? 1 : 0).arg(mkPct).arg(mkProj)
                 .arg((int)infoPtr->Meat).arg(meatOK ? 1 : 0).arg((int)infoPtr->Wood).arg(woodOK ? 1 : 0).arg(techCooldown).arg(readyOK ? 1 : 0));
         }
-        if (r && r->Project == ACT_NULL &&
-            infoPtr->Meat >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD &&
-            infoPtr->Wood >= BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD) {
-            BuildingAction(r->SN, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW);
-            compositeBowQueued = true;
+        if (mk && mk->Project == ACT_NULL &&
+            infoPtr->Meat >= BUILDING_MARKET_WHEEL_UPGRADE_FOOD &&
+            infoPtr->Wood >= BUILDING_MARKET_WHEEL_UPGRADE_WOOD) {
+            BuildingAction(mk->SN, BUILDING_MARKET_WHEEL_UPGRADE);
+            wheelQueued = true;
             done = true;
-            DebugText(QString("!! TECH CompositeBow f=%1 meat=%2 wood=%3").arg(frame).arg((int)infoPtr->Meat).arg((int)infoPtr->Wood));
+            DebugText(QString("!! TECH Wheel f=%1 meat=%2 wood=%3").arg(frame).arg((int)infoPtr->Meat).arg((int)infoPtr->Wood));
         }
     }
 
@@ -4074,7 +4085,7 @@ void UsrAI::manageTechUpgrade() {
         return;
     }
 
-    bool milUnlocked = (broadswordResearched || compositeBowResearched);
+    bool milUnlocked = (broadswordResearched || wheelResearched);
     if (!milUnlocked) {
         tryArrowTowerTech();
         if (done) techCooldown = 25;
@@ -4181,14 +4192,7 @@ void UsrAI::manageTechUpgrade() {
         }
     }
 
-    // --- 市场：车轮（150食物+100木材） ---
-    if (!DISABLE_MARKET_TECH && !done && !wheelResearched) {
-        auto m = findBuilding(BUILDING_MARKET);
-        if (m && m->Project == ACT_NULL && infoPtr->Meat >= 150 && infoPtr->Wood >= 100) {
-            BuildingAction(m->SN, BUILDING_MARKET_WHEEL_UPGRADE);
-            wheelResearched = true; done = true;
-        }
-    }
+    // --- 市场：车轮（已上移为「主远程兵种解锁科技」，由上方可校验块统一负责，此处不再重复发令） ---
 
     // --- 市场：犁（250食物+75木材） ---
     if (!DISABLE_MARKET_TECH && !done && !marketPlowUpgraded) {
@@ -4268,14 +4272,14 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
             // 反攻期专用编制：只产 复合弓兵(主) + 方阵兵(副)，走独立分支。
             //   若复用通用优先级链，骑兵会吃掉复合弓所需黄金，导致复合弓停产。
             if (counterAtk) {
-                // ① 复合弓兵（主 DPS）：遍历所有空闲靶场并行产，产量随靶场数线性提升。
-                //   真实扣费 = 食物 + 黄金(20)，不扣石头；黄金不足或科技未出时宁可空转。
+                // ① 战车弓兵（主 DPS）：遍历所有空闲靶场并行产，产量随靶场数线性提升。
+                //   真实扣费 = 食物(40) + 木材(70)，不扣黄金；木材不足或科技未出时宁可空转。
                 for (auto &b : infoPtr->buildings) {
                     if (b.Type != BUILDING_RANGE || b.Project != ACT_NULL) continue;
-                    if (compositeBowResearched &&
-                        infoPtr->Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
-                        infoPtr->Gold >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD) {
-                        BuildingAction(b.SN, BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN);
+                    if (wheelResearched &&
+                        infoPtr->Meat >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_FOOD &&
+                        infoPtr->Wood >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD) {
+                        BuildingAction(b.SN, BUILDING_RANGE_CREATE_CHARIOT_ARCHER);
                         trained = true;
                     }
                 }
@@ -4286,22 +4290,23 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
                 int idleRanges = 0;
                 for (auto &b : infoPtr->buildings)
                     if (b.Type == BUILDING_RANGE && b.Project == ACT_NULL) idleRanges++;
-                int goldKeep = BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD * std::max(1, idleRanges);
+                int woodKeep = BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD * std::max(1, idleRanges);
                 int nCompNow = 0, nHopNow = 0;
                 for (auto &a : infoPtr->armies) {
-                    if (a.Sort == AT_COMPOSITE_BOWMAN)      nCompNow++;
+                    if (a.Sort == MAIN_RANGED_SORT)         nCompNow++;
                     else if (a.Sort == AT_HOPLITE)          nHopNow++;
                 }
                 auto colC = findBuilding(BUILDING_COLLAGE);
                 int hopLimitNow = (HOPLITE_RATIO_NUM * nCompNow) / HOPLITE_RATIO_DEN + HOPLITE_RATIO_FLOOR;
                 if (colC && colC->Project == ACT_NULL &&
                     nHopNow < hopLimitNow &&
-                    infoPtr->Meat >= BUILDING_COLLAGE_CREATE_HOPLITE_FOOD + BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
-                    infoPtr->Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD + goldKeep) {
+                    infoPtr->Meat >= BUILDING_COLLAGE_CREATE_HOPLITE_FOOD + BUILDING_RANGE_CREATE_CHARIOT_ARCHER_FOOD &&
+                    infoPtr->Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD &&
+                    infoPtr->Wood >= woodKeep) {
                     BuildingAction(colC->SN, BUILDING_COLLAGE_CREATE_HOPLITE);
                     trained = true;
                     DebugText(QString("[HOPLITE-ATK f=%1] 反攻期产方阵兵 现役hop=%2 comp=%3 limit=%4 meat=%5 gold=%6(kept%7)").arg(frame).arg(nHopNow).arg(nCompNow).arg(hopLimitNow)
-                              .arg((int)infoPtr->Meat).arg((int)infoPtr->Gold).arg(goldKeep));
+                              .arg((int)infoPtr->Meat).arg((int)infoPtr->Gold).arg(woodKeep));
                 }
 
                 // ③ 诊断打印（每 600 帧）：反攻期兵种构成
@@ -4309,7 +4314,7 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
                     int nComp = 0, nBow = 0, nHop = 0, nClub = 0, nCav = 0, nOther = 0;
                     for (auto &a : infoPtr->armies) {
                         if (a.Sort == AT_PRIEST) continue;
-                        else if (a.Sort == AT_COMPOSITE_BOWMAN) nComp++;
+                        else if (a.Sort == MAIN_RANGED_SORT)    nComp++;
                         else if (a.Sort == AT_BOWMAN)           nBow++;
                         else if (a.Sort == AT_HOPLITE)          nHop++;
                         else if (a.Sort == AT_CLUBMAN)          nClub++;
@@ -4317,8 +4322,8 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
                         else nOther++;
                     }
                     DebugText(QString("ARMY | comp:%1 bow:%2 hoplite:%3 club:%4 cav:%5 other:%6 "
-                                      "|| ranges:%7/idle:%8 gold:%9 compositeTech:%10").arg(nComp).arg(nBow).arg(nHop).arg(nClub).arg(nCav).arg(nOther)
-                              .arg(countBuildingsExisting(BUILDING_RANGE)).arg(idleRanges).arg((int)infoPtr->Gold).arg((int)compositeBowResearched));
+                                      "|| ranges:%7/idle:%8 wood:%9 wheelTech:%10").arg(nComp).arg(nBow).arg(nHop).arg(nClub).arg(nCav).arg(nOther)
+                              .arg(countBuildingsExisting(BUILDING_RANGE)).arg(idleRanges).arg((int)infoPtr->Wood).arg((int)wheelResearched));
                 }
             } else {
             // 非反攻期：沿用通用优先级链（骑兵受 DISABLE_CAVALRY_TRAIN 门禁）
@@ -4327,22 +4332,22 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
             if (lateGame && !trained) {
                 for (auto &b : infoPtr->buildings) {
                     if (b.Type != BUILDING_RANGE || b.Project != ACT_NULL) continue;
-                    if (compositeBowResearched &&
-                        infoPtr->Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
-                        infoPtr->Gold >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD) {
-                        BuildingAction(b.SN, BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN);
+                    if (wheelResearched &&
+                        infoPtr->Meat >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_FOOD &&
+                        infoPtr->Wood >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD) {
+                        BuildingAction(b.SN, BUILDING_RANGE_CREATE_CHARIOT_ARCHER);
                         trained = true;
                     }
                 }
             }
 
             // 优先级1：复合弓兵（远程DPS）——判据为 infoPtr->Gold（引擎真实扣费：食物+黄金）
-            if (!trained && compositeBowResearched) {
+            if (!trained && wheelResearched) {
                 auto r = findBuilding(BUILDING_RANGE);
                 if (r && r->Project == ACT_NULL &&
-                    infoPtr->Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD &&
-                    infoPtr->Gold >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD) {
-                    BuildingAction(r->SN, BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN);
+                    infoPtr->Meat >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_FOOD &&
+                    infoPtr->Wood >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD) {
+                    BuildingAction(r->SN, BUILDING_RANGE_CREATE_CHARIOT_ARCHER);
                     trained = true;
                 }
             }
@@ -4378,10 +4383,10 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
                 int idleRanges2 = 0;
                 for (auto &b : infoPtr->buildings)
                     if (b.Type == BUILDING_RANGE && b.Project == ACT_NULL) idleRanges2++;
-                int goldKeep2 = BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_GOLD * std::max(1, idleRanges2);
+                int woodKeep2 = BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD * std::max(1, idleRanges2);
                 int nComp2 = 0, nHop2 = 0;
                 for (auto &a : infoPtr->armies) {
-                    if (a.Sort == AT_COMPOSITE_BOWMAN)      nComp2++;
+                    if (a.Sort == MAIN_RANGED_SORT)         nComp2++;
                     else if (a.Sort == AT_HOPLITE)          nHop2++;
                 }
                 auto colLate = findBuilding(BUILDING_COLLAGE);
@@ -4389,11 +4394,12 @@ void UsrAI::trainMilitaryUnits(bool isWarTime) {
                 if (colLate && colLate->Project == ACT_NULL &&
                     nHop2 < hopLimit2 &&
                     infoPtr->Meat >= BUILDING_COLLAGE_CREATE_HOPLITE_FOOD + 60 &&
-                    infoPtr->Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD + goldKeep2) {
+                    infoPtr->Gold >= BUILDING_COLLAGE_CREATE_HOPLITE_GOLD &&
+                    infoPtr->Wood >= woodKeep2) {
                     BuildingAction(colLate->SN, BUILDING_COLLAGE_CREATE_HOPLITE);
                     trained = true;
                     DebugText(QString("[HOPLITE-LATE f=%1] 后期(lateGame)产方阵兵 现役hop=%2 comp=%3 limit=%4 meat=%5 gold=%6(kept%7)").arg(frame).arg(nHop2).arg(nComp2).arg(hopLimit2)
-                              .arg((int)infoPtr->Meat).arg((int)infoPtr->Gold).arg(goldKeep2));
+                              .arg((int)infoPtr->Meat).arg((int)infoPtr->Gold).arg(woodKeep2));
                 }
             }
 
@@ -5642,7 +5648,7 @@ void UsrAI::manageCounterAttack() {
         //   选塔即 return 站桩、不进推进段 ⇒ 不拉扯。近战不做此判据，投石车射程 10 > 8 照旧压制箭塔。
         const double selfR = sortMaxRangedRange(a.Sort, BL);
         // 仅放行 AT_COMPOSITE_BOWMAN 直接选塔站桩打；其余射程<塔的远程兵保持不打塔（避免冲进塔射程白挨打）。
-        const bool canHitTower = !sortIsRanged(a.Sort) || a.Sort == AT_COMPOSITE_BOWMAN || selfR >= ARROWTOWER_RANGE * BL;
+        const bool canHitTower = !sortIsRanged(a.Sort) || a.Sort == MAIN_RANGED_SORT || selfR >= ARROWTOWER_RANGE * BL;
         // 第二档"打最近任意建筑"里也要把箭塔摘掉，否则绕一圈又落回同一座塔（SN 全图唯一）。
         auto isTowerSN = [&](int sn) -> bool {
             for (auto &b : infoPtr->enemy_buildings)
@@ -5744,8 +5750,16 @@ void UsrAI::manageCounterAttack() {
 
             // 高机动单位"先锋探路"（独立于集结/接战，最优先调度）：派感化的战车弓兵/骑兵直插敌方基地方位；投石车不参与。
             //   stuckTry==0 直奔目标，探到 enemy_buildings 即点亮 enemyBaseScouted；stuckTry>0 朝集结 TC 内缩重发。
+            //   ★ 主力已换成战车弓兵 ⇒ 必须限数，否则全军被当成先锋集体直插敌基地送死。
+            static std::set<int> g_vanguardSN;
+            static int g_vanguardLastFrame = -1;
+            if (frame < g_vanguardLastFrame) { g_vanguardSN.clear(); }   // 新一局
+            g_vanguardLastFrame = frame;
+            const int VANGUARD_MAX = 2;
             if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) &&
-                !enemyBaseScouted && enemySiegeSN == -1) {
+                !enemyBaseScouted && enemySiegeSN == -1 &&
+                (g_vanguardSN.count(a.SN) || (int)g_vanguardSN.size() < VANGUARD_MAX)) {
+                g_vanguardSN.insert(a.SN);
                 issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);   // 先锋直插敌方基地方位
                 marchCmds++;
                 continue;
