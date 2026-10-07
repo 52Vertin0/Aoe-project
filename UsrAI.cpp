@@ -308,6 +308,10 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //   即祭司最多比军队前沿前进 LEAD_MAX 格；超出则把推进目标钉在边界，等军队推进到位，防孤军奔袭被灭（祭死真因）。
 //   前沿口径 = 友军到武器厂的最近距离；约束只作用于【出感化射程】的推进，进射程后的感化不受影响。
 #define PRIEST_WITH_ARMY_LEAD 12.0
+// 反攻期军队推进锚点：军队到武器厂的距离 ≤ 此值(格) 才允许在塔 12 格内站桩打塔(形成保护圈)；
+//   超过此值(还在半路)则跳过打塔、继续推进到武器厂 —— 修祭死根因(军队被塔卡在半路、推不到武器厂、祭司无法从保护圈感化)。
+//   配合 PRIEST_WITH_ARMY_LEAD：军队到武器厂 ≤(本值) 格时，witharmy12 约束放行祭司进 12 格感化射程。
+#define ARMY_SIEGE_PROTECT_RADIUS 24.0
 // 反攻期祭司安全距离：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格；
 // 且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
@@ -5498,6 +5502,10 @@ void UsrAI::manageCounterAttack() {
     if (enemySiegeSN != -1) siege = findEnemyBuilding(BUILDING_SIEGE);
     bool directMarch = (siege != nullptr) || enemyBaseScouted;
 
+    // ★ 武器厂锚点：army 推进到武器厂保护圈内才打塔站桩，否则穿过塔区直推武器厂（修祭死根因）。
+    double siegeGoalDR = targetDR, siegeGoalUR = targetUR;
+    if (siege) { siegeGoalDR = (siege->BlockDR + 1) * BL; siegeGoalUR = (siege->BlockUR + 1) * BL; }
+
     counterFarmerAttack(BL, targetDR, targetUR);
     if (counterPriestGuard(BL)) return;
 
@@ -5511,6 +5519,41 @@ void UsrAI::manageCounterAttack() {
     tagBuilding* rallyTC = findBuilding(BUILDING_CENTER);
     double rallyCtrDR = rallyTC ? (rallyTC->BlockDR + 1) * BL : MAP_L * BL * 0.5;
     double rallyCtrUR = rallyTC ? (rallyTC->BlockUR + 1) * BL : MAP_U * BL * 0.5;
+
+    // ★★★ 2026-10-07 方案A：分段推进（每段先汇合再走）★★★
+    //   病：各自 HumanMove 到敌基地，靠海时被分成两拨，逐个被集火（祭司跟着散掉的重心 ⇒ 被杀）。
+    //   法：把 TC→敌基地 均分 STAGE_N 段，当前段汇合点 stageDR/UR 当推进落点；≥M 个兵到齐（或超时）才推进下一段。
+    //   ⚠ 不动类布局：状态放本函数 static；帧号回退即重置（新一局）。
+    const int STAGE_N = 5;
+    static int g_stageIdx = 1;
+    static int g_stageStartFrame = -1;
+    static int g_stageLastFrame = -1;
+    if (frame < g_stageLastFrame) { g_stageIdx = 1; g_stageStartFrame = -1; }   // 新一局
+    g_stageLastFrame = frame;
+    if (readyToAttack && g_stageStartFrame < 0) g_stageStartFrame = frame;
+    double stageDR = targetDR, stageUR = targetUR;
+    if (readyToAttack) {
+        if (g_stageIdx < 1) g_stageIdx = 1;
+        if (g_stageIdx > STAGE_N) g_stageIdx = STAGE_N;
+        double f = (double)g_stageIdx / (double)STAGE_N;
+        stageDR = rallyCtrDR + (targetDR - rallyCtrDR) * f;
+        stageUR = rallyCtrUR + (targetUR - rallyCtrUR) * f;
+        snapWalkable(stageDR, stageUR, forestGrid);      // 汇合点别落在海/林/矿
+        if (g_stageIdx < STAGE_N) {
+            const double STAGE_R    = 10.0 * BL;          // 到位半径（格）
+            const int    STAGE_MAXF = 600;                // 每段最长 24 秒
+            int nearN = 0;
+            for (auto &a : infoPtr->armies) {
+                if (a.Sort == AT_PRIEST) continue;
+                if (calDistance(a.DR, a.UR, stageDR, stageUR) <= STAGE_R) ++nearN;
+            }
+            if (nearN * 10 >= armyCount * 7 || (frame - g_stageStartFrame) >= STAGE_MAXF) {
+                DebugText(QString("[STAGE f=%1] 段%2->%3 near=%4/%5").arg(frame).arg(g_stageIdx).arg(g_stageIdx+1).arg(nearN).arg(armyCount));
+                ++g_stageIdx; g_stageStartFrame = frame;
+            }
+        }
+    }
+
     tagArmy* priest = nullptr;
 
 // 统一推进出口：直达敌方基地附近目标点，交给引擎全图寻路（可穿越未探索区）。
@@ -5526,7 +5569,7 @@ void UsrAI::manageCounterAttack() {
                           int biasTowerSN = -1) {
         (void)sort;
         if (!canReissue) return;                 // 未到节流窗口：本帧静默，不重复下发
-        double mx = targetDR, my = targetUR;
+        double mx = stageDR, my = stageUR;   // ★ 方案A：推进落点 = 当前段汇合点(最后一段即敌基地)
         // —— Tier-2 落点偏置：塔外侧 standoff 环（塔在 12 格内时不会走到这里，Tier-1 已 return）——
         if (biasTowerSN >= 0) {
             for (auto &b : infoPtr->enemy_buildings) {
@@ -5578,7 +5621,9 @@ void UsrAI::manageCounterAttack() {
             return false;
         };
         int towerSN = findNearestEnemyTower(a.DR, a.UR, TOWER_TARGET_RANGE * BL);
-        if (towerSN >= 0 && canHitTower) {
+        // ★ 到武器厂保护圈内才打塔站桩；否则跳过打塔、继续推进到武器厂（避免被塔卡在半路、推不到武器厂）
+        bool nearSiegeGoal = calDistance(a.DR, a.UR, siegeGoalDR, siegeGoalUR) <= ARMY_SIEGE_PROTECT_RADIUS * BL;
+        if (towerSN >= 0 && canHitTower && nearSiegeGoal) {
             if (a.WorkObjectSN != towerSN) {
                 HumanAction(a.SN, towerSN);
                 DebugText(QString("[TOWER-TGT f=%1] %2 SN=%3 攻击最近敌塔 %4 (R<=%5格)").arg(frame).arg(who).arg(a.SN).arg(towerSN).arg(TOWER_TARGET_RANGE));

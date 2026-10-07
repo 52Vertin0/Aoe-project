@@ -88,8 +88,9 @@ public:
               storageNearGazelleBuilt(0),
               priestMoveCooldown(0),
               priestCounterCooldown(0),
-              wheelResearched(false), wheelQueued(false),
-              broadswordResearched(false), broadswordQueued(false),
+              wheelResearched(false), broadswordResearched(false),
+              compositeBowResearched(false),
+              broadswordQueued(false), compositeBowQueued(false),
               marketFarmUpgraded(false),
               marketWoodUpgraded(false),
               marketPlowUpgraded(false),
@@ -251,8 +252,9 @@ int AddToIns(instruction ins) override {
     // 科技追踪（避免重复下达科技指令）
     bool wheelResearched;
     bool broadswordResearched;
+    bool compositeBowResearched;
     bool broadswordQueued;         // 阔剑已排队（防重复发指令，不等同已研究）
-    bool wheelQueued;              // 车轮已排队（主远程兵种解锁科技）
+    bool compositeBowQueued;       // 复合弓已排队
     bool marketFarmUpgraded;
     bool marketWoodUpgraded;       // 市场·木材加工已研究
     bool marketPlowUpgraded;
