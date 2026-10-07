@@ -5804,9 +5804,23 @@ void UsrAI::manageCounterAttack() {
             //   ★ 主力已换成战车弓兵 ⇒ 必须限数，否则全军被当成先锋集体直插敌基地送死。
             static std::set<int> g_vanguardSN;
             static int g_vanguardLastFrame = -1;
+            static int g_vanguardPruneFrame = -99999;
             if (frame < g_vanguardLastFrame) { g_vanguardSN.clear(); }   // 新一局
             g_vanguardLastFrame = frame;
             const int VANGUARD_MAX = 2;
+            // ★★ 2026-10-07【侦察补员】★★ 台账里【已阵亡/已离场】的先锋必须剔除，
+            //   否则 VANGUARD_MAX 一旦占满，侦察会【永久停摆】。
+            //   OJ 实测代价：反攻 22:00 开打，敌基地到 **24:45** 才发现、武器厂到 **27:11** 才发现
+            //   ⇒ 大军空转 2.75 分钟、祭司只剩 2.8 分钟推进 ⇒ 超时失败(524分)。
+            if (!enemyBaseScouted && enemySiegeSN == -1 && (int)g_vanguardSN.size() >= VANGUARD_MAX &&
+                (frame - g_vanguardPruneFrame >= 60 || frame < g_vanguardPruneFrame)) {
+                g_vanguardPruneFrame = frame;
+                for (auto it = g_vanguardSN.begin(); it != g_vanguardSN.end(); ) {
+                    bool alive = false;
+                    for (auto &x : infoPtr->armies) { if (x.SN == *it && x.Blood > 0) { alive = true; break; } }
+                    if (!alive) it = g_vanguardSN.erase(it); else ++it;
+                }
+            }
             if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) &&
                 !enemyBaseScouted && enemySiegeSN == -1 &&
                 (g_vanguardSN.count(a.SN) || (int)g_vanguardSN.size() < VANGUARD_MAX)) {
