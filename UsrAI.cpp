@@ -237,7 +237,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 棍棒兵 50 食物、无石头/黄金依赖 ⇒ 不吃复合弓的黄金，是空窗期唯一可行的填线兵。起始 4 分钟（更早会拖慢村民与 800 食升铜器）。
 #define ENABLE_EARLY_CLUBMAN true
 #define EARLY_CLUBMAN_START_FRAME 6000   // 4 分钟 × 1500 帧/分钟 = 6000 帧
-#define EARLY_CLUBMAN_TARGET 4           // 前期棍棒兵目标数（改此行即调数量）
+#define EARLY_CLUBMAN_TARGET 8           // 前期棍棒兵目标数（改此行即调数量；4→8 直击 map 前期崩盘桶）
 // 建造/地基保护常量
 #define DEAD_BUILDING_GRACE 1800  // 废弃地基宽限期(帧,30秒)：拉黑后这段时间内仍算"已存在"，
                                   // 给"孤儿地基抢救"时间补救；超时才允许另择新址重建(避免重复建造)
@@ -304,6 +304,10 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define PRIEST_GUARD_MAX_CMDS 12  // 护驾指令每帧上限(独立于普通 attackCmds，保证护驾不被限流饿死)
 // 祭司感化目标选取范围(格)：让祭司更主动地去感化远处的高价值目标。 (投石车射程10格、感化射程14格；本半径仍在护驾召回半径 PRIEST_GUARD_RECALL=30 内，不会脱离保护。)
 #define PRIEST_CONVERT_RANGE 28.0
+// 反攻期祭司推进上限：祭司到武器厂的距离不得小于「军队前沿(最近友军到武器厂距离) − 此值」，
+//   即祭司最多比军队前沿前进 LEAD_MAX 格；超出则把推进目标钉在边界，等军队推进到位，防孤军奔袭被灭（祭死真因）。
+//   前沿口径 = 友军到武器厂的最近距离；约束只作用于【出感化射程】的推进，进射程后的感化不受影响。
+#define PRIEST_WITH_ARMY_LEAD 12.0
 // 反攻期祭司安全距离：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格；
 // 且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
@@ -5250,12 +5254,39 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                         }
                     }
                 }
+                // 随军约束（防孤军奔袭被灭）：祭司推进不得比军队前沿更靠前超过 PRIEST_WITH_ARMY_LEAD 格。
+                //   军队前沿 = 最近友军到武器厂的距离；若目标落点比「前沿 − LEAD_MAX」更靠近武器厂，钉回边界。
+                bool priestWithArmyClamped = false;
+                {
+                    double armyFrontDist = 1e9;
+                    for (auto &a : infoPtr->armies) {
+                        if (a.SN == priestSN || a.MaxBlood <= 0 || a.Blood <= 0) continue;
+                        double dAW = calDistance(a.DR, a.UR, sMemDR, sMemUR);
+                        armyFrontDist = std::min(armyFrontDist, dAW);
+                    }
+                    if (armyFrontDist < 1e8 && dSiege > PRIEST_CONVERT_SIEGE_RANGE * BL) {
+                        double boundary = armyFrontDist - PRIEST_WITH_ARMY_LEAD * BL;  // 祭司允许到武器厂的最小距离
+                        double tgtDist = calDistance(tx, ty, sMemDR, sMemUR);
+                        if (boundary > tgtDist) {   // 目标落点比边界更靠前(更近武器厂) ⇒ 钉回边界
+                            double ux = (sMemDR - priest->DR), uy = (sMemUR - priest->UR);
+                            double ul = std::sqrt(ux * ux + uy * uy) + 1e-6; ux /= ul; uy /= ul;
+                            tx = sMemDR - ux * boundary;
+                            ty = sMemUR - uy * boundary;
+                            tx = max(0.0, min((double)MAP_L * BL, tx));
+                            ty = max(0.0, min((double)MAP_U * BL, ty));
+                            priestWithArmyClamped = true;
+                            if (frame % 50 == 0)
+                                DebugText(QString("[PRIEST-WITH-ARMY f=%1] 钉在军前%2格(%3,%4) front=%5")
+                                          .arg(frame).arg(PRIEST_WITH_ARMY_LEAD, 0, 'f', 0).arg(tx / BL, 0, 'f', 1).arg(ty / BL, 0, 'f', 1).arg(armyFrontDist / BL, 0, 'f', 1));
+                        }
+                    }
+                }
                 if (isPassableAt(tx, ty, forestGrid)) {
                     g_pmCounter++;
                     g_pmLastX = (int)(tx / BL * 10.0); g_pmLastY = (int)(ty / BL * 10.0);
                     HumanMove(priestSN, tx, ty);
                     priestCounterCooldown = 30; priestMoveCooldown = 30;
-                    if (!escaping) {
+                    if (!escaping && !priestWithArmyClamped) {
                         double nearT2 = 1e9; int towerN2 = 0;
                         scanTowerThreat(nearT2, towerN2);
                         DebugText(QString(">> Priest ADVANCE to Siege f=%1 d=%2 nearT=%3 towers=%4 enemy_cleared").arg(frame).arg(dSiege / BL, 0, 'f', 1)
