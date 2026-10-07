@@ -418,6 +418,17 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define WOOD_LOW_LINE  100   // 木头<100 判定"缺木"，临时提高伐木工目标
 #define WOOD_TARGET_BASE 4   // 常态伐木工目标人数（优先食物，木头只保底）
 #define WOOD_TARGET_LOW  8   // 缺木(<WOOD_LOW_LINE)时的伐木工目标人数
+// ★★★ 2026-10-07【战车弓兵·木材经济提档】★★★
+//   主远程兵种换成战车弓兵后，单个兵要 70 木（复合弓只要 20 金），3 座靶场满产 ≈ 420 木/分钟。
+//   原「常态 4 伐木工 + 木到 400 就停采」会把靶场饿死（实测末段主远程兵中位 9→5.5）。
+//   故铜器后（=战车弓兵可用的阶段）整体提档；⚠ 铜器前不动 —— 那时要攒 800 食升铜，不能挤占食物人力。
+#define WOOD_BOOM_ENABLE         true
+#define WOOD_LOW_LINE_BOOM       250    // 缺木线（原 WOOD_LOW_LINE=100）
+#define WOOD_TARGET_BASE_BOOM    9      // 常态伐木工目标（原 4）
+#define WOOD_TARGET_LOW_BOOM     12     // 缺木时伐木工目标（原 8）
+#define WOOD_CAP_STOP_BOOM       900    // 停采水位（原 400）
+#define WOOD_CAP_STOP_LATE_BOOM  900    // WAVE3 后停采水位（原 400）
+#define WOOD_KEEP_MIN_BOOM       5      // 达上限回撤时保留伐木工（原 2）
 // 砍树选树：树到最近已建成仓库/TC 的距离上限（单位=地图区块 BLOCK）。
 // 超过此距离的树一律不派工（宁可让村民干等/转采别的），避免长距离搬运拖垮伐木效率。   若实测"附近树砍光后全员闲置"，适当上调；若仍嫌远，下调到 10。
 #define WOOD_MAX_ANCHOR_DIST 15
@@ -3392,8 +3403,14 @@ void UsrAI::assignIdleSimple() {
         villLastResourceSN[f.SN] = tree->SN;
         return true;
     };
-    // 伐木工目标动态化：缺木(<WOOD_LOW_LINE)时拉高到 WOOD_TARGET_LOW 人抢木，常态 WOOD_TARGET_BASE 人。
-    const int woodTarget = (infoPtr->Wood < WOOD_LOW_LINE) ? WOOD_TARGET_LOW : WOOD_TARGET_BASE;
+    // 伐木工目标动态化：缺木(<woodLowLine)时拉高到 woodTargetLow 人抢木，常态 woodTargetBase 人。
+    //   ★ 2026-10-07：战车弓兵主战期（铜器后）启用「木材提档」，配比/缺木线/停采水位整体抬高（见 WOOD_*_BOOM）。
+    const bool woodBoom     = (WOOD_BOOM_ENABLE && infoPtr->civilizationStage >= CIVILIZATION_BRONZEAGE);
+    const int  woodLowLine  = woodBoom ? WOOD_LOW_LINE_BOOM    : WOOD_LOW_LINE;
+    const int  woodTargetBase = woodBoom ? WOOD_TARGET_BASE_BOOM : WOOD_TARGET_BASE;
+    const int  woodTargetLow  = woodBoom ? WOOD_TARGET_LOW_BOOM  : WOOD_TARGET_LOW;
+    const int  woodKeepMin    = woodBoom ? WOOD_KEEP_MIN_BOOM    : WOOD_KEEP_MIN;
+    const int woodTarget = (infoPtr->Wood < woodLowLine) ? woodTargetLow : woodTargetBase;
     auto center = findBuilding(BUILDING_CENTER);
     double tcDR = center ? (center->BlockDR + 1) * BL : 0;
     double tcUR = center ? (center->BlockUR + 1) * BL : 0;
@@ -3423,7 +3440,15 @@ void UsrAI::assignIdleSimple() {
     }
 
     // 资源停采门禁：存量达上限即停止派/补采该资源，人力转向其他资源
-    const bool woodStop  = (infoPtr->Wood >= (frame >= WAVE3_TIME ? WOOD_CAP_STOP_LATE : WOOD_CAP_STOP));
+    const int  woodCapStop = woodBoom ? (frame >= WAVE3_TIME ? WOOD_CAP_STOP_LATE_BOOM : WOOD_CAP_STOP_BOOM)
+                                      : (frame >= WAVE3_TIME ? WOOD_CAP_STOP_LATE      : WOOD_CAP_STOP);
+    const bool woodStop  = (infoPtr->Wood >= woodCapStop);
+    // 可观测性：木材经济提档状态（每 600 帧一行，纯打印）
+    if (frame % 600 == 0) {
+        DebugText(QString("[WOOD f=%1] boom=%2 base=%3 low=%4 line=%5 cap=%6 workers=%7 stock=%8")
+                  .arg(frame).arg(woodBoom ? 1 : 0).arg(woodTargetBase).arg(woodTargetLow).arg(woodLowLine)
+                  .arg(woodCapStop).arg(woodWorkers).arg((int)infoPtr->Wood));
+    }
     // 石头停采：14分钟(WAVE3_TIME)后不再采石，或存量≥STONE_CAP_STOP，或【建满 MAX_TOWERS 座箭塔后永久停采】。
     // 塔建满后石头再无用途（箭塔是唯一活的石头消耗，铜器塔升级被 DISABLE_TOWER_UPGRADE 封禁）⇒ 继续采石纯属浪费人力。
     // ⚠ 判据须用 countBuildings（仅 Percent==100 的"已建成"），**不能并列 countBuildingsExisting**：
@@ -3730,7 +3755,7 @@ void UsrAI::assignIdleSimple() {
     }
 
     if ((woodStop || stoneStop || goldRich || foodStop) && frame % 10 == 0) {
-        const bool woodHungry = (infoPtr->Wood < WOOD_LOW_LINE);
+        const bool woodHungry = (infoPtr->Wood < woodLowLine);
         for (auto &f : infoPtr->farmers) {
             if (f.FarmerSort != FARMERTYPE_FARMER) continue;
             if (f.NowState != HUMAN_STATE_WORKING && f.NowState != HUMAN_STATE_WALKING) continue;
@@ -3816,7 +3841,7 @@ void UsrAI::assignIdleSimple() {
             } else if (goldRich && isGold && goldWorkers > MIN_GOLD_WORKERS) {
                 // 黄金过剩：采金工撤到只剩保底人数
                 reassigned = reassignToDeficit(f, 1);
-            } else if (woodStop && isWood && woodWorkers > WOOD_KEEP_MIN) {
+            } else if (woodStop && isWood && woodWorkers > woodKeepMin) {
 // "木头滞留区"由派工端解决：主循环 `if (!woodStop && woodWorkers < woodTarget)` 已限制"不超目标就加人"。
                 reassigned = reassignToDeficit(f, 2);
             }
