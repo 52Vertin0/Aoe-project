@@ -126,7 +126,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 农场上限：后期野生食物枯竭后，食物产能 = 农场座数 × 1人/座（代码强制"每座农场有且仅有一人"），
 //   10 座 = 10 个食物工；上限过高会抢占木材/建造工位。
 // 农场间隔 1 格（isFarmAdjacent）仍需选址空间，若实测建不满 10 座可继续下调。
-#define MAX_FARMS 6             // 农场硬上限（10→6：1 农场=75 木+仅容 1 人，木被农场吃掉后靶场就断供；实测反攻末段木常<100）
+#define MAX_FARMS 10            // 农场上限 10 座（还原为原值：6/8 实测都在噪声内，无收益）
 // ⮕ 食物通道：R5 末 5+20+30 = 340 食 vs TC 用率 25%；选址链 = findFarmSiteBest → findBuildSite(兜底)。
 // 农场只选 TC 或已建谷仓周围的紧邻环；按到 TC 的距离评分，TC 环满后再用谷仓环。
 #define FARM_ANCHOR_R_MIN 4      // 锚点外的最近可行环（3x3 锚点 + 隔 1 格 + 3x3 农场）
