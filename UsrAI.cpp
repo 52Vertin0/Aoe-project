@@ -234,6 +234,12 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 低于此数则【完全跳过】（既不建、也不让 needSecondStock 阻塞市场/靶场）。
 // 默认 2：为 1 只离群瞪羚花木材 + 村民长途跋涉不划算。⚠ 改 1 = 有 1 只就建；改 3+ = 必须成群。
 #define MIN_GAZELLE_FOR_SECOND_STOCK 2
+// ★★★ 2026-10-08【第二仓库抢在农场前】★★★
+//   病：农场先吃木材（病根）+ 第二仓库被 frame>WAVE2_TIME(9分) 卡着 ⇒
+//        远距矪羊群的猎人只能跑回 TC/近仓交货，长途往返、采集效率极低。
+//   法：① 抬前第二仓库时机闸 9分 → SECOND_STOCK_FRAME；
+//         ② 只要远距矪羊群还没有就近仓库，【农场让位】（先把仓库盖起来）。
+#define SECOND_STOCK_FRAME       (WAVE1_TIME + 2000)   // 4.7 分钟（原 9 分）：早建仓库才能早高效猎羊
 // 远距浆果群第二谷仓：浆果 resourceSort = HUMAN_GRANARYFOOD → 交付建筑就是【谷仓】(StaticRes.cpp:NUM_STATICRES_Bush)，
 //   在远处浆果群旁建谷仓能直接把往返距离压到 20 格内，比跑回 TC/第一座谷仓高效得多。
 #define MAX_GRANARY 2                   // 谷仓上限：1 座服务 TC 附近浆果 + 1 座服务远距浆果群
@@ -2559,11 +2565,35 @@ void UsrAI::manageBuildings() {
             tryBuildStable(true, "postW1 建马厩(学院前置)");
 
             bool marketReady = (countBuildings(BUILDING_MARKET) >= 1);
+            // ★ 【农场让位第二仓库】：存在远距矪羊群（距 TC>20 且 距所有仓库>20）≥阈值 且 木材够建仓
+            //   ⇒ 农场本帧不开工，先把仓库盖到群边（否则猎人跑 TC 交货，白走路）。
+            //   ⚠ 只在"有远群 + 建得起 + 未达仓库上限" 时让位；仓库好了自然恢复建农场。
+            bool farmYieldToStock = false;
+            if (countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK &&
+                infoPtr->Wood >= BUILD_STOCK_WOOD + 30) {
+                auto ctrF = findBuilding(BUILDING_CENTER);
+                if (ctrF) {
+                    const double blF = (double)BLOCKSIDELENGTH;
+                    const double cDRf = (ctrF->BlockDR + 1) * blF, cURf = (ctrF->BlockUR + 1) * blF;
+                    int farN = 0;
+                    for (auto &r : infoPtr->resources) {
+                        if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) continue;
+                        if (calDistance(cDRf, cURf, r.DR, r.UR) < 20 * blF) continue;
+                        bool covered = false;
+                        for (auto &b : infoPtr->buildings) {
+                            if (b.Type != BUILDING_STOCK) continue;
+                            double gDR = (b.BlockDR + 1) * blF, gUR = (b.BlockUR + 1) * blF;
+                            if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * blF) { covered = true; break; }
+                        }
+                        if (!covered && ++farN >= MIN_GAZELLE_FOR_SECOND_STOCK) { farmYieldToStock = true; break; }
+                    }
+                }
+            }
 // 农场：市场已建 + 木材/食物够才建。前置 = 瞪羚肉仓库【BUILDING_STOCK】已建（瞪羚肉 ProductSort=HUMAN_STOCKFOOD 交付仓库）。
 // 用"地图上任意一座我方仓库"解锁（不限 AI 自建）：否则 tryBuild 的"30 格内有库存→跳过"会让 storageNearGazelleBuilt 永远停在 0 → 农场闸卡死。
         // 另加两道闸：木材加工科技（FARM_WAIT_WOOD_TECH_FRAME）+ 复合弓让木（COMPOSITE_BOW_WOOD_RESERVE）。
         int farmWoodNeed2 = farmWoodNeedNow();
-        if (!builtThisFrame && marketReady && storageNearGazelleBuilt == 1 &&
+        if (!builtThisFrame && !farmYieldToStock && marketReady && storageNearGazelleBuilt == 1 &&
                 (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME) &&
                 (!postBronze || wheelResearched || wheelQueued || frame >= FARM_WAIT_CB_FRAME) &&
                 infoPtr->Wood >= farmWoodNeed2 && infoPtr->Meat >= 100) {
@@ -2617,7 +2647,7 @@ void UsrAI::manageBuildings() {
 
         bool needSecondStock = false;
         if (gazelleAlive > 0 && infoPtr->Wood >= BUILD_STOCK_WOOD + 30 &&
-            countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK && frame > WAVE2_TIME) {
+            countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK && frame > SECOND_STOCK_FRAME) {
             int farGazCnt = 0;
             auto centerP = findBuilding(BUILDING_CENTER);
             if (centerP) {
@@ -2649,7 +2679,7 @@ void UsrAI::manageBuildings() {
         // ⚠ 时机闸须与 needSecondStock 预判定同步（同为 WAVE2_TIME）。
         if (!builtThisFrame && gazelleAlive > 0 &&
             countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK &&
-            frame > WAVE2_TIME && infoPtr->Wood >= BUILD_STOCK_WOOD + 30) {
+            frame > SECOND_STOCK_FRAME && infoPtr->Wood >= BUILD_STOCK_WOOD + 30) {
             auto center = findBuilding(BUILDING_CENTER);
             double BL = (double)BLOCKSIDELENGTH;
             double tcDR = center ? (center->BlockDR + 1) * BL : 0;
