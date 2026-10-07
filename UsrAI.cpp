@@ -325,8 +325,8 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //     · 11/25 死在施法中途（mode=1；感化 400 帧静默期 = 活靶）。
 //   ⇒ 根因不是“没撤”，而是【军队不在旁边】。故在「推进/感化武器厂」分支加硬闸：
 //     卫队不足 ⇒ 既不推进也不施法，而是朝军队重心回撤，等大军跟上。
-#define PRIEST_ESCORT_MIN 4      // 推进/施法所需的最少友军数（非祭司）
-#define PRIEST_ESCORT_R   14.0   // 友军计数半径（格）
+#define PRIEST_ESCORT_MIN 3      // 推进/施法所需的最少友军数（非祭司）
+#define PRIEST_ESCORT_R   18.0   // 友军计数半径（格）
 // 反攻期军队推进锚点：军队到武器厂的距离 ≤ 此值(格) 才允许在塔 12 格内站桩打塔(形成保护圈)；
 //   超过此值(还在半路)则跳过打塔、继续推进到武器厂 —— 修祭死根因(军队被塔卡在半路、推不到武器厂、祭司无法从保护圈感化)。
 //   配合 PRIEST_WITH_ARMY_LEAD：军队到武器厂 ≤(本值) 格时，witharmy12 约束放行祭司进 12 格感化射程。
@@ -5211,25 +5211,13 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
             }
             if (priestEscapeCd > 0) priestEscapeCd--;
             const bool priestAdvStuck = (frame - priestAdvBestFrame > PRIEST_ADV_STUCK_FRAMES);
-            if (!escortOk) {
-                // ★ 卫队不足 ⇒ 绝不孤军前出/施法：朝【非祭司友军质心】回撤，等大军跟上。
-                //   不用遗忘“施法锁死”问题：本分支压根不会发出感化令。
-                double cx = 0, cy = 0; int cn = 0;
-                for (auto &a : infoPtr->armies) {
-                    if (a.SN == priestSN || a.Sort == AT_PRIEST || a.Blood <= 0) continue;
-                    cx += a.DR; cy += a.UR; ++cn;
-                }
-                if (cn > 0 && priestMoveCooldown <= 0) {
-                    cx /= cn; cy /= cn;
-                    if (isPassableAt(cx, cy, forestGrid)) {
-                        HumanMove(priestSN, cx, cy);
-                        priestMoveCooldown = 30;
-                        if (frame % 150 == 0)
-                            DebugText(QString("[PRIEST-ESCORT f=%1] 卫队不足 %2/%3 最近友军=%4格 dS=%5 ⇒ 回撤军心").arg(frame)
-                                      .arg(escortN).arg(PRIEST_ESCORT_MIN).arg(nearestAlly / BL, 0, 'f', 1).arg(dSiege / BL, 0, 'f', 1));
-                    }
-                }
-            } else if (dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL && priest->ConvertCooldown <= 0) {
+            // ★ pe1 教训：把闸门加在「推进」上 ⇒ 祭司到不了终点（pe1：未决 4→27、胜率 39.6%→25%）。
+            //   故改为：「推进照旧（先占位），但【施法必须卫队在旁】」—— 感化 400 帧静默期才是真正的活靶窗口（wb1: 11/25 死在施法中）。
+            if (!escortOk && frame % 300 == 0) {
+                DebugText(QString("[PRIEST-ESCORT f=%1] 卫队不足 %2/%3 最近友军=%4格 dS=%5 ⇒ 只推不施法").arg(frame)
+                          .arg(escortN).arg(PRIEST_ESCORT_MIN).arg(nearestAlly / BL, 0, 'f', 1).arg(dSiege / BL, 0, 'f', 1));
+            }
+            if (escortOk && dSiege <= PRIEST_CONVERT_SIEGE_RANGE * BL && priest->ConvertCooldown <= 0) {
                 // 已在感化射程内 → 直接感化武器厂（冷却中改走下方推进/原地，而非整段跳过落到 legacy 后撤）。
                 HumanAction(priestSN, enemySiegeSN);
                 priestCounterCooldown = 60; priestMoveCooldown = 60;
