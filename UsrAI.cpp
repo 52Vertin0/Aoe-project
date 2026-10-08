@@ -301,7 +301,8 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define COUNTER_ATTACK_MIN_ARMY 12   // 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
                                         // COUNTER_ATTACK_FORCE_TIME = 33000 帧 = 22 分钟：人数不足时到点强制全体反攻。
-                                        // 反攻【唯一】触发路径是超时 ⇒ 本常量直接决定反攻时刻。
+#define COUNTER_ATTACK_POP_FULL 50      // ★ 总人口(farmers + armies，含开局 8 农民；= 引擎人口上限 Human_MaxNum)达到此数即视为可反攻：
+                                        //   人口顶格 ⇒ 农民已满编 + 军队已成型 ⇒ 不再等 COUNTER_ATTACK_MIN_ARMY，直接开推（可早于 22 分强制点）。
 // 农民进攻：反攻后 27 分钟（COUNTER_FARMER_ATTACK_FRAME = 40500 帧）派所有农民进攻敌方基地。
 // 目标三级：① 敌方 TC > ② 最近的【软目标】敌建筑 (非箭塔/非武器厂) > ③ 最近的【箭塔】（本图敌方无 TC，靠 ③ 才可达）； 全部不可见 → 行军到 enemyBaseScouted 记忆方位；仍无则不动。
 // ⚠ 绝不把武器厂当目标：exam 胜条件唯一 = 祭司感化敌方武器厂，农民拆了它 = 自毁胜因（同 ARMY_IGNORE_SIEGE_WORKSHOP）。
@@ -1316,6 +1317,14 @@ void UsrAI::updateState() {
         break;
 
     case DEFENSE_WAVE3:
+        // ★ 2026-10-08【总人口顶格闸】：farmers + armies（含开局 8 农民）达到 COUNTER_ATTACK_POP_FULL(50)
+        //   ⇒ 农民已满编 + 军队已成型 ⇒ 立即转入反攻（可早于 22 分强制点）。
+        if ((int)(infoPtr->farmers.size() + infoPtr->armies.size()) >= COUNTER_ATTACK_POP_FULL) {
+            state = COUNTERATTACK;
+            DebugText(QString(">> POP-FULL COUNTERATTACK! Frame=%1 pop=%2 ageBld=%3")
+                      .arg(frame).arg((int)(infoPtr->farmers.size() + infoPtr->armies.size())).arg(countAgeUpgradeBuildings()));
+            break;
+        }
         // 第三波必须全部消灭：与 COUNTER_ATTACK_FORCE_TIME 同阈值，
         //   避免集结期被「敌数 < 3」的假条件骗进 COUNTERATTACK。
         if (frame > COUNTER_ATTACK_FORCE_TIME) {
@@ -5627,13 +5636,19 @@ void UsrAI::manageCounterAttack() {
     }
     bool gathered     = (armyCount > 0) && (nearRallyN * 100 >= armyCount * GATHER_PCT);
     bool gatherExpire = (frame - g_atkStartFrame) >= GATHER_MAXF;
+    // ★ 2026-10-08【总人口顶格闸】：farmers + armies（含开局 8 农民）达到 COUNTER_ATTACK_POP_FULL(50)
+    //   ⇒ 农民已满编 + 军队已成型 ⇒ 不再等军队人数门槛，直接开推（可早于 22 分强制点）。
+    int  popNow       = (int)(infoPtr->farmers.size() + infoPtr->armies.size());
+    bool popFull      = (popNow >= COUNTER_ATTACK_POP_FULL);
     bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY && (gathered || gatherExpire))
+                         || popFull
                          || (frame >= COUNTER_ATTACK_FORCE_TIME + GATHER_MAXF);
     // 可观测性：每 1500 帧一行集结进度，供回归对比（纯打印，不参与决策）
     if (armyCount > 0 && (frame % 1500) == 0) {
         DebugText(QString("[GATHER f=%1] near=%2/%3 R=%4 gathered=%5 expire=%6 ready=%7")
                   .arg(frame).arg(nearRallyN).arg(armyCount).arg((int)(GATHER_R / BL))
-                  .arg(gathered ? 1 : 0).arg(gatherExpire ? 1 : 0).arg(readyToAttack ? 1 : 0));
+                  .arg(gathered ? 1 : 0).arg(gatherExpire ? 1 : 0).arg(readyToAttack ? 1 : 0)
+                  + QString(" pop=%1 full=%2").arg(popNow).arg(popFull ? 1 : 0));
     }
 
     // ★★★ 2026-10-07 方案A：分段推进（每段先汇合再走）★★★
