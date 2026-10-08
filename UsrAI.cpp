@@ -313,7 +313,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define PRIEST_GUARD_RECALL 30.0  // 召回上限：只调距祭司此半径内的兵回防(避免把反攻大军从全图拉回)
 #define PRIEST_GUARD_MAX_CMDS 12  // 护驾指令每帧上限(独立于普通 attackCmds，保证护驾不被限流饿死)
 // 祭司感化目标选取范围(格)：让祭司更主动地去感化远处的高价值目标。 (投石车射程10格、感化射程14格；本半径仍在护驾召回半径 PRIEST_GUARD_RECALL=30 内，不会脱离保护。)
-#define PRIEST_CONVERT_RANGE 28.0
+#define PRIEST_CONVERT_RANGE 36.0  // ★2026-10-09【神司感化更激进】★ 28→36 格：更多可选感化目标
 // 反攻期祭司推进上限：祭司到武器厂的距离不得小于「军队前沿(最近友军到武器厂距离) − 此值」，
 //   即祭司最多比军队前沿前进 LEAD_MAX 格；超出则把推进目标钉在边界，等军队推进到位，防孤军奔袭被灭（祭死真因）。
 //   前沿口径 = 友军到武器厂的最近距离；约束只作用于【出感化射程】的推进，进射程后的感化不受影响。
@@ -337,7 +337,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
 // 感化武器厂的【施法静默期】(帧)：`HumanAction(祭司, 建筑)` 是"设置转换目标"，重发 = 引擎每帧被重设目标打断、施法进度永远重置。
 //   ⇒ 发令后必须进入静默期，让引擎把整段施法做完（实测需 ~340~440 帧）。
-#define PRIEST_SIEGE_CONVERT_LOCKOUT 400
+#define PRIEST_SIEGE_CONVERT_LOCKOUT 250  // ★感化更激进：400→250 帧（16s→10s），被打断后更快重试
 // 前出感化武器厂：清场半径 / 迟滞锁参数。
 // 清场半径必须【小于】感化射程(12 格)，否则结构死锁：祭司一进清场半径，守在厂旁的敌人就进半径 ⇒
 // localClear 翻假 ⇒ 转"后撤"；一退出又翻真 ⇒ 转"前出" ⇒ 逐帧交替、净位移≈0、永远够不到 12 格。
@@ -352,7 +352,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 实测：祭司起手后敌方箭塔常在射击祭司且塔基本拆不完 ⇒ "等塔清完再感化" = 永不感化（死锁），
 // 故**不设"有塔就不去"的硬闸**。本闸只拦最没希望的一种：**已残血 + 塔就在 14 格内**。
 // 半径复用 PRIEST_SIEGE_CLEAR_TOWER_R（同一语义单一真源）。已起手(WorkObjectSN==武器厂)时不打断（中断施法会重置进度）。
-#define PRIEST_SIEGE_GUARD_HP      0.45  // 起手血量闸：低于此值且最近敌塔 <= CLEAR_TOWER_R 格 ⇒ 本帧不起手
+#define PRIEST_SIEGE_GUARD_HP      0.30  // ★感化更激进：0.45→0.30 残血也敢起手  // 起手血量闸：低于此值且最近敌塔 <= CLEAR_TOWER_R 格 ⇒ 本帧不起手
 // 祭司感化武器厂的【唯一】限制条件 = 敌方全部箭塔拆完（塔是最后防线，拆完意味着敌方军队已全灭）。
 // ⚠ 判据必须是【全局】敌塔数（不是祭司周边 14 格的局部 localClear），否则等于把塔从 14 格外放过。
 // ⚠ 塔数取 infoPtr->enemy_buildings，**受 explored||visible 约束** ⇒ 必须叠加【已探明保险】（见下一条注释）。
@@ -1711,7 +1711,8 @@ void UsrAI::managePriest() {
             if (d <= 12.0 * BL) near12++;
         }
         const bool danger = (lockers >= 2) || (near12 >= 4);
-        const double abortHp = danger ? 0.60 : 0.25;
+        // ★2026-10-09【神司感化更激进】★ 引导中断阈 0.60/0.25 → 0.45/0.15（不轻易打断引导，完成更多感化）
+        const double abortHp = danger ? 0.45 : 0.15;
         if (pBRx > abortHp) return;
 
         // 真要后撤时清掉转化期设置的移动冷却，否则 priestFlee() 会直接 return。
