@@ -234,12 +234,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 低于此数则【完全跳过】（既不建、也不让 needSecondStock 阻塞市场/靶场）。
 // 默认 2：为 1 只离群瞪羚花木材 + 村民长途跋涉不划算。⚠ 改 1 = 有 1 只就建；改 3+ = 必须成群。
 #define MIN_GAZELLE_FOR_SECOND_STOCK 2
-// ★★★ 2026-10-08【第二仓库抢在农场前】★★★
-//   病：农场先吃木材（病根）+ 第二仓库被 frame>WAVE2_TIME(9分) 卡着 ⇒
-//        远距矪羊群的猎人只能跑回 TC/近仓交货，长途往返、采集效率极低。
-//   法：① 抬前第二仓库时机闸 9分 → SECOND_STOCK_FRAME；
-//         ② 只要远距矪羊群还没有就近仓库，【农场让位】（先把仓库盖起来）。
-#define SECOND_STOCK_FRAME       (WAVE1_TIME + 2000)   // 4.7 分钟（原 9 分）：早建仓库才能早高效猎羊
 // 远距浆果群第二谷仓：浆果 resourceSort = HUMAN_GRANARYFOOD → 交付建筑就是【谷仓】(StaticRes.cpp:NUM_STATICRES_Bush)，
 //   在远处浆果群旁建谷仓能直接把往返距离压到 20 格内，比跑回 TC/第一座谷仓高效得多。
 #define MAX_GRANARY 2                   // 谷仓上限：1 座服务 TC 附近浆果 + 1 座服务远距浆果群
@@ -253,7 +247,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 棍棒兵 50 食物、无石头/黄金依赖 ⇒ 不吃复合弓的黄金，是空窗期唯一可行的填线兵。起始 4 分钟（更早会拖慢村民与 800 食升铜器）。
 #define ENABLE_EARLY_CLUBMAN true
 #define EARLY_CLUBMAN_START_FRAME 6000   // 4 分钟 × 1500 帧/分钟 = 6000 帧
-#define EARLY_CLUBMAN_TARGET 8           // 前期棍棒兵目标数（改此行即调数量；6→8 回改，A/B 证 6 有害）
+#define EARLY_CLUBMAN_TARGET 8           // 前期棍棒兵目标数（改此行即调数量；4→8 直击 map 前期崩盘桶）
 // 建造/地基保护常量
 #define DEAD_BUILDING_GRACE 1800  // 废弃地基宽限期(帧,30秒)：拉黑后这段时间内仍算"已存在"，
                                   // 给"孤儿地基抢救"时间补救；超时才允许另择新址重建(避免重复建造)
@@ -301,8 +295,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define COUNTER_ATTACK_MIN_ARMY 12   // 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
                                         // COUNTER_ATTACK_FORCE_TIME = 33000 帧 = 22 分钟：人数不足时到点强制全体反攻。
-#define COUNTER_ATTACK_POP_FULL 50      // ★ 总人口(farmers + armies，含开局 8 农民；= 引擎人口上限 Human_MaxNum)达到此数即视为可反攻：
-                                        //   人口顶格 ⇒ 农民已满编 + 军队已成型 ⇒ 不再等 COUNTER_ATTACK_MIN_ARMY，直接开推（可早于 22 分强制点）。
+                                        // 反攻【唯一】触发路径是超时 ⇒ 本常量直接决定反攻时刻。
 // 农民进攻：反攻后 27 分钟（COUNTER_FARMER_ATTACK_FRAME = 40500 帧）派所有农民进攻敌方基地。
 // 目标三级：① 敌方 TC > ② 最近的【软目标】敌建筑 (非箭塔/非武器厂) > ③ 最近的【箭塔】（本图敌方无 TC，靠 ③ 才可达）； 全部不可见 → 行军到 enemyBaseScouted 记忆方位；仍无则不动。
 // ⚠ 绝不把武器厂当目标：exam 胜条件唯一 = 祭司感化敌方武器厂，农民拆了它 = 自毁胜因（同 ARMY_IGNORE_SIEGE_WORKSHOP）。
@@ -342,6 +335,13 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
+// 逃跑保温期(帧)：只要真的下发过一条逃跑移动令，此后此时长内【不再强制打断引导】、且
+//   【被集火/残血时不再起手感化敌方单位】—— 把"逃"与"感"的抢占从逐帧循环改成单次决策。
+//   实测依据（pe2 48 局 map，g30 祭死局）：死亡前 900 帧内祭司移动令 122 条、帧间隔中位 = 1；
+//   引擎收到移动令后仍停在 WORKING/ATTACKING ⇒ 下一帧又满足"低血中断"⇒ 清节流重发 ⇒
+//   感化 400 帧引导被反复重置、净位移≈0、祭司原地被打死；同时把感化令设的 150 帧静默期一起废掉。
+//   ⚠ 本值是唯一旋钮：调大 = 更保命、单位感化更少；调小 = 更快回到感化。不要另开第二套节流。
+#define PRIEST_FLEE_HOLD 90
 // 感化武器厂的【施法静默期】(帧)：`HumanAction(祭司, 建筑)` 是"设置转换目标"，重发 = 引擎每帧被重设目标打断、施法进度永远重置。
 //   ⇒ 发令后必须进入静默期，让引擎把整段施法做完（实测需 ~340~440 帧）。
 #define PRIEST_SIEGE_CONVERT_LOCKOUT 400
@@ -1317,14 +1317,6 @@ void UsrAI::updateState() {
         break;
 
     case DEFENSE_WAVE3:
-        // ★ 2026-10-08【总人口顶格闸】：farmers + armies（含开局 8 农民）达到 COUNTER_ATTACK_POP_FULL(50)
-        //   ⇒ 农民已满编 + 军队已成型 ⇒ 立即转入反攻（可早于 22 分强制点）。
-        if ((int)(infoPtr->farmers.size() + infoPtr->armies.size()) >= COUNTER_ATTACK_POP_FULL) {
-            state = COUNTERATTACK;
-            DebugText(QString(">> POP-FULL COUNTERATTACK! Frame=%1 pop=%2 ageBld=%3")
-                      .arg(frame).arg((int)(infoPtr->farmers.size() + infoPtr->armies.size())).arg(countAgeUpgradeBuildings()));
-            break;
-        }
         // 第三波必须全部消灭：与 COUNTER_ATTACK_FORCE_TIME 同阈值，
         //   避免集结期被「敌数 < 3」的假条件骗进 COUNTERATTACK。
         if (frame > COUNTER_ATTACK_FORCE_TIME) {
@@ -1556,6 +1548,10 @@ void UsrAI::managePriest() {
         return true;
     };
 
+    // 逃跑保温期起算帧（＝最近一次真的下发逃跑移动令的帧）：逃跑 / 打断 / 施法三档共用同一真源。
+    //   函数内 static ⇒ 一局一进程、每局自动从初值开始（与 counterPriestConvert 的脱困计数同款）。
+    //   ⚠ 不可用 priestMoveCooldown 代替：它被多个模块共用，且被下方打断分支清零，正是本次事故的成因。
+    static int s_priestFleeHoldFrame = -999999;
     // 祭司逃跑：螺旋避障 + 朝安全区 + 卡死检测；enDR/enUR 为威胁敌人坐标（退路用）。
     //   节流(冷却期内不重发) + 死锁检测(下发点被引擎拒收 ⇒ 祭司仍 IDLE 且离该点远 ⇒ 换下一扇区)。
     auto priestFlee = [&](double enDR, double enUR) {
@@ -1635,6 +1631,7 @@ void UsrAI::managePriest() {
                     g_pmFlee++;
                     g_pmLastX = (int)(priestFleeLastX / BL * 10.0); g_pmLastY = (int)(priestFleeLastY / BL * 10.0);
                     HumanMove(priestSN, priestFleeLastX, priestFleeLastY);
+                    s_priestFleeHoldFrame = frame;   // 令已真下发 ⇒ 开始保温
                     priestMoveCooldown = 18;
                     return;   // 沿用旧落点：不再重算，杜绝方向翻转导致的原地抖动
                 }
@@ -1696,6 +1693,7 @@ void UsrAI::managePriest() {
         g_pmFlee++;
         g_pmLastX = (int)(bestX / BL * 10.0); g_pmLastY = (int)(bestY / BL * 10.0);
         HumanMove(priestSN, bestX, bestY);
+        s_priestFleeHoldFrame = frame;   // 令已真下发 ⇒ 开始保温
         priestFleeLastX = bestX; priestFleeLastY = bestY; priestFleeLastFrame = frame;
         priestMoveCooldown = 18;   // 威胁紧迫,缩短决策间隔
         if (frame % 50 == 0)
@@ -1708,21 +1706,29 @@ void UsrAI::managePriest() {
     //   感化是「随机时段」的引导过程，期间 ConvertCooldown 仍为 0；此时重发 HumanAction/移动命令
     //   会把引导打断重来 ⇒ 永远转不完。
     //   例外：残血(≤0.25)强制打断逃命；被多人锁定/近敌过多时提前到 0.60 打断（保命高于感化）。
+    // 危险档判据 + 自身血量比提到此处统一算一次（单一真源）：下方「打断引导」与「逃跑保温期抑制施法」共用。
+    //   ⚠ 不要在下文另写一份同义判据（历史事故全是"同语义写两遍"造成的）。
+    const double pBR = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;   // 必须 (double)：int32 整除会截断成 0/1
+    int priestLockers = 0, priestNear12 = 0;
+    for (auto &e : infoPtr->enemy_armies) {
+        if (e.Blood <= 0) continue;
+        double d = calDistance(pDR, pUR, e.DR, e.UR);
+        if (e.WorkObjectSN == priestSN) priestLockers++;
+        if (d <= 12.0 * BL) priestNear12++;
+    }
+    const bool priestFocused = (priestLockers >= 2) || (priestNear12 >= 4);   // 被集火：锁定祭司的敌 ≥2，或 12 格内敌 ≥4
     if (!canAct) {
-        double pBRx = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;   // 必须 (double)：int32 整除会截断成 0/1
         // 动态后撤阈值：安全时 0.25；被集火 / 近敌过多时提前到 0.60。
         //   转化/攻击期间 canAct=false，若只等 25% 才逃，实战中常被远程集火打死。
-        int lockers = 0, near12 = 0;
-        for (auto &e : infoPtr->enemy_armies) {
-            if (e.Blood <= 0) continue;
-            double d = calDistance(pDR, pUR, e.DR, e.UR);
-            if (e.WorkObjectSN == priestSN) lockers++;
-            if (d <= 12.0 * BL) near12++;
-        }
-        const bool danger = (lockers >= 2) || (near12 >= 4);
-        const double abortHp = danger ? 0.60 : 0.25;
-        if (pBRx > abortHp) return;
+        const double abortHp = priestFocused ? 0.60 : 0.25;
+        if (pBR > abortHp) return;
 
+        // ★ 打断本身必须节流（判据真源 = s_priestFleeHoldFrame）：
+        //   引擎收到移动令后仍可能停在 WORKING/ATTACKING ⇒ 若每帧都清节流重发，就会形成
+        //   「感化 → 打断 → 重发」逐帧循环（pe2 g30：900 帧内 122 条祭司移动令、帧间隔中位 = 1），
+        //   引导被反复重置、祭司净位移≈0、原地被打死。
+        //   ⚠ 原写法 `priestMoveCooldown = 0` 无条件执行 ⇒ 连感化令设的 150 帧静默期一起废掉。
+        if (frame - s_priestFleeHoldFrame < PRIEST_FLEE_HOLD) return;
         // 真要后撤时清掉转化期设置的移动冷却，否则 priestFlee() 会直接 return。
         priestMoveCooldown = 0;
 
@@ -1744,7 +1750,7 @@ void UsrAI::managePriest() {
         for (auto &b : infoPtr->enemy_buildings)
             if (b.Type == BUILDING_ARROWTOWER)
                 nearestE = std::min(nearestE, calDistance(pDR, pUR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL));
-        double pBR = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;   // 必须 (double)：int32 整除会截断成 0/1
+        // pBR(自身血量比) 已在函数上方统一算好（单一真源），此处直接复用。
         {
             // 只读诊断：查「为什么治疗档从不触发」
             int nAlly = 0, nWound = 0; double nearAlly = 1e12;
@@ -1769,8 +1775,15 @@ void UsrAI::managePriest() {
         };
         // 感化检测(无安全门槛)：冷却好 + 视野内有可感化敌(≤PRIEST_CONVERT_RANGE=28 格) 即可，
         //   直接感化 / 靠近感化。感化绝对优先：不要求逃出敌射程、不看血量——冷却好了就转。
+        // 逃跑保温期抑制：刚真的下发过逃跑令、且此刻仍处「被集火 / 残血」⇒ 本帧不起手【单位感化】，
+        //   把祭司让给下方保命/治疗档（保命高于感化，与上方打断例外同一口径）。
+        //   ⚠ 只抑制"感化敌方单位"这一档：感化武器厂在 counterPriestConvert 内，不受影响。
+        //   ⚠ 不是关掉感化（感化单位是承重墙，nc1 实测 27.1% 已证）——只是不在"刚逃过 + 仍危险"的
+        //     窗口里重新起手；否则 400 帧引导每次都被下一帧的逃跑打断，既转不完也逃不掉。
+        const bool fleeHoldSuppress = (frame - s_priestFleeHoldFrame < PRIEST_FLEE_HOLD)
+                                      && (priestFocused || pBR <= 0.25);
         int safeConv = -1;
-        if (priest->ConvertCooldown <= 0 && nearestE <= PRIEST_CONVERT_RANGE * BL) {
+        if (!fleeHoldSuppress && priest->ConvertCooldown <= 0 && nearestE <= PRIEST_CONVERT_RANGE * BL) {
             int t = findConvertTarget(pDR, pUR, PRIEST_CONVERT_RANGE * BL);
             if (t >= 0) safeConv = t;
         }
@@ -2574,35 +2587,11 @@ void UsrAI::manageBuildings() {
             tryBuildStable(true, "postW1 建马厩(学院前置)");
 
             bool marketReady = (countBuildings(BUILDING_MARKET) >= 1);
-            // ★ 【农场让位第二仓库】：存在远距矪羊群（距 TC>20 且 距所有仓库>20）≥阈值 且 木材够建仓
-            //   ⇒ 农场本帧不开工，先把仓库盖到群边（否则猎人跑 TC 交货，白走路）。
-            //   ⚠ 只在"有远群 + 建得起 + 未达仓库上限" 时让位；仓库好了自然恢复建农场。
-            bool farmYieldToStock = false;
-            if (countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK &&
-                infoPtr->Wood >= BUILD_STOCK_WOOD + 30) {
-                auto ctrF = findBuilding(BUILDING_CENTER);
-                if (ctrF) {
-                    const double blF = (double)BLOCKSIDELENGTH;
-                    const double cDRf = (ctrF->BlockDR + 1) * blF, cURf = (ctrF->BlockUR + 1) * blF;
-                    int farN = 0;
-                    for (auto &r : infoPtr->resources) {
-                        if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) continue;
-                        if (calDistance(cDRf, cURf, r.DR, r.UR) < 20 * blF) continue;
-                        bool covered = false;
-                        for (auto &b : infoPtr->buildings) {
-                            if (b.Type != BUILDING_STOCK) continue;
-                            double gDR = (b.BlockDR + 1) * blF, gUR = (b.BlockUR + 1) * blF;
-                            if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * blF) { covered = true; break; }
-                        }
-                        if (!covered && ++farN >= MIN_GAZELLE_FOR_SECOND_STOCK) { farmYieldToStock = true; break; }
-                    }
-                }
-            }
 // 农场：市场已建 + 木材/食物够才建。前置 = 瞪羚肉仓库【BUILDING_STOCK】已建（瞪羚肉 ProductSort=HUMAN_STOCKFOOD 交付仓库）。
 // 用"地图上任意一座我方仓库"解锁（不限 AI 自建）：否则 tryBuild 的"30 格内有库存→跳过"会让 storageNearGazelleBuilt 永远停在 0 → 农场闸卡死。
         // 另加两道闸：木材加工科技（FARM_WAIT_WOOD_TECH_FRAME）+ 复合弓让木（COMPOSITE_BOW_WOOD_RESERVE）。
         int farmWoodNeed2 = farmWoodNeedNow();
-        if (!builtThisFrame && !farmYieldToStock && marketReady && storageNearGazelleBuilt == 1 &&
+        if (!builtThisFrame && marketReady && storageNearGazelleBuilt == 1 &&
                 (marketWoodUpgraded || frame >= FARM_WAIT_WOOD_TECH_FRAME) &&
                 (!postBronze || wheelResearched || wheelQueued || frame >= FARM_WAIT_CB_FRAME) &&
                 infoPtr->Wood >= farmWoodNeed2 && infoPtr->Meat >= 100) {
@@ -2656,7 +2645,7 @@ void UsrAI::manageBuildings() {
 
         bool needSecondStock = false;
         if (gazelleAlive > 0 && infoPtr->Wood >= BUILD_STOCK_WOOD + 30 &&
-            countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK && frame > SECOND_STOCK_FRAME) {
+            countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK && frame > WAVE2_TIME) {
             int farGazCnt = 0;
             auto centerP = findBuilding(BUILDING_CENTER);
             if (centerP) {
@@ -2688,7 +2677,7 @@ void UsrAI::manageBuildings() {
         // ⚠ 时机闸须与 needSecondStock 预判定同步（同为 WAVE2_TIME）。
         if (!builtThisFrame && gazelleAlive > 0 &&
             countBuildingsExisting(BUILDING_STOCK) < MAX_STOCK &&
-            frame > SECOND_STOCK_FRAME && infoPtr->Wood >= BUILD_STOCK_WOOD + 30) {
+            frame > WAVE2_TIME && infoPtr->Wood >= BUILD_STOCK_WOOD + 30) {
             auto center = findBuilding(BUILDING_CENTER);
             double BL = (double)BLOCKSIDELENGTH;
             double tcDR = center ? (center->BlockDR + 1) * BL : 0;
@@ -5636,19 +5625,13 @@ void UsrAI::manageCounterAttack() {
     }
     bool gathered     = (armyCount > 0) && (nearRallyN * 100 >= armyCount * GATHER_PCT);
     bool gatherExpire = (frame - g_atkStartFrame) >= GATHER_MAXF;
-    // ★ 2026-10-08【总人口顶格闸】：farmers + armies（含开局 8 农民）达到 COUNTER_ATTACK_POP_FULL(50)
-    //   ⇒ 农民已满编 + 军队已成型 ⇒ 不再等军队人数门槛，直接开推（可早于 22 分强制点）。
-    int  popNow       = (int)(infoPtr->farmers.size() + infoPtr->armies.size());
-    bool popFull      = (popNow >= COUNTER_ATTACK_POP_FULL);
     bool readyToAttack = (armyCount >= COUNTER_ATTACK_MIN_ARMY && (gathered || gatherExpire))
-                         || popFull
                          || (frame >= COUNTER_ATTACK_FORCE_TIME + GATHER_MAXF);
     // 可观测性：每 1500 帧一行集结进度，供回归对比（纯打印，不参与决策）
     if (armyCount > 0 && (frame % 1500) == 0) {
         DebugText(QString("[GATHER f=%1] near=%2/%3 R=%4 gathered=%5 expire=%6 ready=%7")
                   .arg(frame).arg(nearRallyN).arg(armyCount).arg((int)(GATHER_R / BL))
-                  .arg(gathered ? 1 : 0).arg(gatherExpire ? 1 : 0).arg(readyToAttack ? 1 : 0)
-                  + QString(" pop=%1 full=%2").arg(popNow).arg(popFull ? 1 : 0));
+                  .arg(gathered ? 1 : 0).arg(gatherExpire ? 1 : 0).arg(readyToAttack ? 1 : 0));
     }
 
     // ★★★ 2026-10-07 方案A：分段推进（每段先汇合再走）★★★
@@ -7659,5 +7642,3 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
 
     return false;
 }
-
-
