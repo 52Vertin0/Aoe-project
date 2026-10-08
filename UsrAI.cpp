@@ -270,16 +270,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define KITING_MIN_KEEP      5.0   // 撤退后至少保持的距离(格)：防贴脸，同时不越过自身射程
 #define KITING_HYST          2.0   // 迟滞带宽度(格)：T_IN = T_OUT − 本值，必须为正否则"一撤就被打回"
 #define KITING_LANDING_SLACK 0.5   // 撤退落点相对退出阈值的余量(格)：确保落点真的越过 T_OUT
-// ★★★ 2026-10-08 反攻期「不得后退越过前线」（方案 A）★★★
-//   问题：反攻期军队"自己不推进"。实测（pe2 48 局 map）：13 个超时局按【末段军队位置】分两组——
-//     军队退回自家门口(78~91 格)的 8 局 KIT-S 中位 = **372**；军队在武器厂附近(1.5~21 格)的 5 局 KIT-S 中位 = **28**。
-//     即"打-拉循环"：拉扯第 2/3 档是"朝己方 TC / 朝祭司撤"，反攻期执行起来就是**一路把军队拖回基地**，
-//     净推进≈0 ⇒ 30 分钟到点（KIT-R 明细里单位在中场 (33~38,68~80) 反复 stage=1/2 撤退）。
-//     ⇒ 与项目铁律一致："减少动作型修法在活锁上无出路"，正解是让落点不越线。
-//   做法：用【每单位自己的最深推进点】当"前线锚"（反攻期距己方集结 TC 的最远距离），
-//     撤退落点相对该锚后退不得超过 KIT_FRONT_BACK 格 ⇒ 局部脱离(≤8 格)仍允许，
-//     但"打-拉循环"不能再把整支军队系统性拉回家。侧向档(±0.6/±1.2 rad)不受影响。
-#define KIT_FRONT_BACK 8.0   // 反攻期允许的最大后退量(格)；调大=更保守(更能撤)，调小=更激进(更贴前线)
 // 方阵兵编制比例（3:4 温和档）：
 // 上限公式：hop < HOPLITE_RATIO_NUM/DEN × comp + FLOOR（= 3/4×comp+2 ⇒ 长期趋近 3:4）
 // 逐点对照(comp→hop上限)：0→2 / 2→3 / 4→5 / 6→6 / 8→8 / 10→9 / 20→17 / 40→32（comp≤2 时保底 2 个肉盾）。
@@ -301,6 +291,12 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //   ⚠ 半径小则探索不足、大则接触敌主力：当前取值在两者间折中。
 //   ⚠ "遇敌即结束探路"有害，勿采用（见 processData 相关块注释）。
 #define SCOUT_MAX_DIST 45.0
+// 反攻期武器厂环扫：首个敌建筑探明后，先锋在其周边做小半径环形搜索。
+// 实测（pe2/current/fixM/wbase/club8n，150 局已发现样本）：武器厂距首个敌建筑
+//   中位 6.7 格、P90 6.7 格、最大 7.2 格；故半径取 10 格，保证一进入敌区即可覆盖。
+// 每 600 帧(24 秒)旋转 45°，最多仍只派 VANGUARD_MAX(2) 个高机动单位，不打乱主力推进。
+#define COUNTER_RECON_RING_R 10.0
+#define COUNTER_RECON_STEP_FRAMES 600
 // 人数不足时由强制反攻时间兜底；降低门槛会更早推进、提高门槛则更保守。
 #define COUNTER_ATTACK_MIN_ARMY 12   // 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
@@ -5662,10 +5658,11 @@ void UsrAI::manageCounterAttack() {
     //   ⚠ 只改落点，绝不发攻击令。落点方向取自【我方集结 TC → 塔】而非"单位当前位置 → 塔"：前者跨帧稳定，
     //   后者会随单位移动每帧微调落点 ⇒ 30 帧节流窗口内反复重锚 marchGoal*，搅乱卡死判据。
     auto issueMarch = [&](double fx, double fy, int sn, int sort, int stuckTry, bool canReissue,
-                          int biasTowerSN = -1) {
+                          int biasTowerSN = -1, double forcedGoalDR = -1.0, double forcedGoalUR = -1.0) {
         (void)sort;
         if (!canReissue) return;                 // 未到节流窗口：本帧静默，不重复下发
         double mx = stageDR, my = stageUR;   // ★ 方案A：推进落点 = 当前段汇合点(最后一段即敌基地)
+        if (forcedGoalDR >= 0.0) { mx = forcedGoalDR; my = forcedGoalUR; }   // 先锋环扫等专用落点
         // —— Tier-2 落点偏置：塔外侧 standoff 环（塔在 12 格内时不会走到这里，Tier-1 已 return）——
         if (biasTowerSN >= 0) {
             for (auto &b : infoPtr->enemy_buildings) {
@@ -5813,15 +5810,50 @@ void UsrAI::manageCounterAttack() {
             //   stuckTry==0 直奔目标，探到 enemy_buildings 即点亮 enemyBaseScouted；stuckTry>0 朝集结 TC 内缩重发。
             //   ★ 主力已换成战车弓兵 ⇒ 必须限数，否则全军被当成先锋集体直插敌基地送死。
             static std::set<int> g_vanguardSN;
+            static std::map<int,int> g_vanguardReconSlot;
+            static std::map<int,int> g_vanguardReconLogged;
+            static int g_vanguardReconStep = 0;
+            static int g_vanguardReconStepFrame = -1;
             static int g_vanguardLastFrame = -1;
-            if (frame < g_vanguardLastFrame) { g_vanguardSN.clear(); }   // 新一局
+            if (frame < g_vanguardLastFrame) {
+                g_vanguardSN.clear();
+                g_vanguardReconSlot.clear();
+                g_vanguardReconLogged.clear();
+                g_vanguardReconStep = 0;
+                g_vanguardReconStepFrame = -1;
+            }   // 新一局
             g_vanguardLastFrame = frame;
+            if (g_vanguardReconStepFrame < 0) g_vanguardReconStepFrame = frame;
+            if (frame - g_vanguardReconStepFrame >= COUNTER_RECON_STEP_FRAMES) {
+                g_vanguardReconStep = (g_vanguardReconStep + 1) % 8;
+                g_vanguardReconStepFrame = frame;
+            }
             const int VANGUARD_MAX = 2;
-            if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) &&
-                !enemyBaseScouted && enemySiegeSN == -1 &&
+            if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) && enemySiegeSN == -1 &&
                 (g_vanguardSN.count(a.SN) || (int)g_vanguardSN.size() < VANGUARD_MAX)) {
+                if (!g_vanguardSN.count(a.SN)) g_vanguardReconSlot[a.SN] = (int)g_vanguardSN.size();
                 g_vanguardSN.insert(a.SN);
-                issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);   // 先锋直插敌方基地方位
+                double reconGoalDR = -1.0, reconGoalUR = -1.0;
+                if (enemyBaseScouted) {
+                    // 已探到任一敌建筑：在其周边环扫找武器厂。两只先锋错开 180°。
+                    static const double RING_DX[8] = {1, 0.7071, 0, -0.7071, -1, -0.7071, 0, 0.7071};
+                    static const double RING_DY[8] = {0, 0.7071, 1, 0.7071, 0, -0.7071, -1, -0.7071};
+                    int slot = g_vanguardReconSlot.count(a.SN) ? g_vanguardReconSlot[a.SN] : 0;
+                    int ring = (g_vanguardReconStep + slot * 4) % 8;
+                    reconGoalDR = enemyBaseDR + RING_DX[ring] * COUNTER_RECON_RING_R * BL;
+                    reconGoalUR = enemyBaseUR + RING_DY[ring] * COUNTER_RECON_RING_R * BL;
+                    reconGoalDR = max(0.0, min((double)MAP_L * BL, reconGoalDR));
+                    reconGoalUR = max(0.0, min((double)MAP_U * BL, reconGoalUR));
+                    snapWalkable(reconGoalDR, reconGoalUR, forestGrid);
+                    if (!g_vanguardReconLogged.count(a.SN) || g_vanguardReconLogged[a.SN] != ring) {
+                        DebugText(QString("[RECON f=%1] SN=%2 武器厂未明，环扫敌基(%3,%4) 半径%5格 ring=%6")
+                                  .arg(frame).arg(a.SN)
+                                  .arg(enemyBaseDR / BL, 0, 'f', 1).arg(enemyBaseUR / BL, 0, 'f', 1)
+                                  .arg(COUNTER_RECON_RING_R, 0, 'f', 0).arg(ring));
+                        g_vanguardReconLogged[a.SN] = ring;
+                    }
+                }
+                issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue, -1, reconGoalDR, reconGoalUR);
                 marchCmds++;
                 continue;
             }
@@ -5950,27 +5982,9 @@ void UsrAI::manageCounterAttack() {
                     bool skipAwayStage = (kitingRetStuck.count(a.SN) && kitingRetStuck[a.SN] > 0);
                     // 三档撤退共用的「落点下发」：夹取到地图内 → 可通行则下令并记账。
                     //   记账 5 件套（cmdFrame/retreatFrame/issueDist/moveFrame/stuckTry）任缺一项都会让卡死检测或节流失效。
-                    // ★ 反攻期"前线锚"：单位SN → 本局反攻期内距己方集结TC的最远距离²(像素)。
-                    //   用来实现 KIT_FRONT_BACK 的「不得后退越过前线」（完整论证见文件顶部该常量块）。
-                    //   函数内 static：一局一进程 ⇒ 每局自动从空开始（与 counterPriestConvert 的脱困计数同款）。
-                    static std::map<int, double> s_kitFrontFromHome;
                     auto tryRetreatLanding = [&](double rx, double ry, int stage) -> bool {
                         rx = max(0.0, min((double)MAP_L * BL, rx));
                         ry = max(0.0, min((double)MAP_U * BL, ry));
-                        // ★ 反攻期「不得后退越过前线」（方案 A）：以本单位在反攻期的最深推进点为锚，
-                        //   撤退落点相对该锚后退不得超过 KIT_FRONT_BACK 格。实测依据见文件顶部该常量块
-                        //   （超时局 军队退回门口 KIT-S 中位 372 vs 军队在前 28）。
-                        //   ⚠ 只挡"越线"的落点：本档被否就试下一档/下一帧，侧向档与继续推进不受影响。
-                        if (state == COUNTERATTACK) {
-                            const double homeD2 = (a.DR - rallyCtrDR) * (a.DR - rallyCtrDR)
-                                                + (a.UR - rallyCtrUR) * (a.UR - rallyCtrUR);
-                            double &frontD2 = s_kitFrontFromHome[a.SN];
-                            if (homeD2 > frontD2) frontD2 = homeD2;      // 刷新"最深推进"
-                            const double landD2 = (rx - rallyCtrDR) * (rx - rallyCtrDR)
-                                                + (ry - rallyCtrUR) * (ry - rallyCtrUR);
-                            if ((std::sqrt(frontD2) - std::sqrt(landD2)) > KIT_FRONT_BACK * BL)
-                                return false;   // 越线 ⇒ 本档落点作废
-                        }
                         if (!isPassableAt(rx, ry, forestGrid)) return false;
                         HumanMove(a.SN, rx, ry);
                         marchCmdFrame[a.SN] = frame;
@@ -7642,3 +7656,4 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
 
     return false;
 }
+
