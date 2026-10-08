@@ -408,13 +408,19 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // false = 让路保护：复合弓未研究/排队时需食物同时负担两项 (180+120=300) 才允许插队； ⚠ 该门槛过高（铜器后食物常年在 158~257）⇒ 会把伐木压成"永远晚于复合弓"。
 #define WOOD_TECH_ABSOLUTE_FIRST true
 #define MIN_GOLD_WORKERS 1      // 至少1人挖金！复合弓兵/阔剑兵/方阵兵/投石车/后勤科技真扣黄金
+// ★★★ 2026-10-09【减金工→转木材】★★★ 实测：终局黄金中位 244、反攻期 60%采样 goldRich=1，
+//   而产方阵兵(成本40金)时余额中位 270 ⇒ 黄金几乎从不构成约束；对照反攻期木材中位 106、40%采样<70。
+//   故把金工目标从 食物×3/5 降到 食物×2/5，并加硬上限 4（保肉盾产线 40金/个 不断粮）。
+#define GOLD_WORKER_PER_FOOD_NUM 2   // 金工目标 = 食物工 × NUM/DEN
+#define GOLD_WORKER_PER_FOOD_DEN 5
+#define GOLD_TARGET_MAX 4            // 金工硬上限
 // 资源停采上限：存量达到即停止派/补采该资源，人力转向其他资源
 #define STONE_CAP_STOP 300   // 石头≥300 不再采石（建满 3 座箭塔共需约 300 石）
 // 木材停采阈值保持日常/后期一致，避免阶段切换时阈值降低造成采集抖动。
 #define WOOD_CAP_STOP  400   // 木头≥400 日常停采
 #define WOOD_CAP_STOP_LATE 400 // 反攻准备期(WAVE3_TIME后)木头停采水位（与日常同档）
 #define WOOD_KEEP_MIN  2     // 木头达上限回撤时保留的伐木工人数
-#define GOLD_CAP_STOP  1000  // 黄金≥1000 不再派金工（一场反攻约耗 800~900 黄金，故留 100 余量）
+#define GOLD_CAP_STOP  500   // ★2026-10-09 减金工：1000→500（实测全程峰值中位仅 310，500 仍是 1.6 倍）
                                 // 若上限过低，则采完一矿堆就立即触发 goldRich → 黄金被压到 MIN_GOLD_WORKERS，
                                 // 矿堆才采一半就转采其他资源 → 效率浪费。 现值 = 2 矿堆满额 = 实际反攻所需黄金的安全储备。
 #define FOOD_CAP_STOP  650   // 铜器后食物停采阈值：食物≥650 不再派新食物工
@@ -3479,12 +3485,15 @@ void UsrAI::assignIdleSimple() {
     // 铜器升级要 800 食物 ⇒ 铜器前停采阈值必须 >800，用 FOOD_CAP_STOP_PREBRONZE(850)、铜器后 FOOD_CAP_STOP(500)，
     // 否则食物到 500 就停采+撤食物工，永远攒不到 800。
     const bool foodStop = (infoPtr->Meat >= (postBronze ? FOOD_CAP_STOP : FOOD_CAP_STOP_PREBRONZE));
-    // 黄金目标人数：与食物工数按 FOOD_GOLD_DEN:FOOD_GOLD_NUM(5:3) 配比（复合弓40食+20金 / 方阵60食+40金 ⇒ 100:60）。
+    // 黄金目标人数：★2026-10-09【减金工→转木材】★ 从 食物×3/5 降到 食物×2/5，且 ≤ GOLD_TARGET_MAX(4)。
+    //   依据：产方阵兵(40金)时黄金余额中位 270（=6.8倍成本）、反攻期 60% 采样 goldRich=1
+    //   ⇒ 黄金冗余；同期反攻期木材中位仅 106、40% 采样 <70（连 1 个战车弓兵都造不起）。
     // 黄金过剩(goldRich)时压到 MIN_GOLD_WORKERS，把人力让给食物与木头；铜器前为 0。
     int goldTarget = (!postBronze) ? 0
         : goldRich ? MIN_GOLD_WORKERS
         : std::max(MIN_GOLD_WORKERS,
-                   (int)((double)foodWorkers * FOOD_GOLD_DEN / FOOD_GOLD_NUM + 0.999));
+                   std::min(GOLD_TARGET_MAX,
+                            (int)((double)foodWorkers * GOLD_WORKER_PER_FOOD_NUM / GOLD_WORKER_PER_FOOD_DEN + 0.999)));
 
     // 猎象整队：引擎事实：大象 45 血 / 攻 10 / 不逃跑 / 掉肉 300；村民 25 血 ⇒ 单人、双人必死，必须整队出击。
     // 同一帧下发 MIN 条令 ⇒ 同时出发/抵达/开打，避免 1~3 人散兵被逐个磨死。
