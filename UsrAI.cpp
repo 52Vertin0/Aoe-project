@@ -444,6 +444,19 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define WOOD_CAP_STOP_BOOM       900    // 停采水位（原 400）
 #define WOOD_CAP_STOP_LATE_BOOM  900    // WAVE3 后停采水位（原 400）
 #define WOOD_KEEP_MIN_BOOM       5      // 达上限回撤时保留伐木工（原 2）
+// ★★★ 2026-10-08【远距羚羊群·早期伐木提档】★★★
+//   起因：升铜前常态伐木工只有 WOOD_TARGET_BASE=4，第二仓库要 150 木 ⇒ 实测下单中位被拖到 ~11 分，
+//         猎人只能跑回 TC 交货（白走路），食物效率上不来。
+//   做法：场上存在【远距羚羊群】(距 TC>20 且 距所有仓库>20 的存活瞪羚 ≥ MIN_GAZELLE_FOR_SECOND_STOCK) 时，
+//         铜器前也临时把伐木工目标抬到 8~10，专门把第二仓库那 150 木先攒出来。
+//   为什么可以提前(不与 dsh 的"铜器前不许动"矛盾)：有远距群 ⇒ 食物主要靠猎人就地交货，
+//         抬伐木挤占的是"回 TC 交货的低效食物工"，不是升铜那 800 食的主供给。
+//   自限：仓库一旦盖到群边，这些瞪羚就不再算"远距" ⇒ 提档自动解除（无需额外闸）。
+//   ⚠ 停采水位/达上限保留人数【不改】——沿用常态值，避免铜器前囤木到 900 把食物人力抽空。
+#define WOOD_BOOM_EARLY_GAZELLE  true
+#define WOOD_LOW_LINE_EARLY      150    // 早期提档缺木线（= 第二仓库造价 BUILD_STOCK_WOOD，攒够即达"不缺木"）
+#define WOOD_TARGET_BASE_EARLY   8      // 早期提档常态伐木工（用户定 8~10）
+#define WOOD_TARGET_LOW_EARLY    10     // 早期提档缺木时伐木工
 // 砍树选树：树到最近已建成仓库/TC 的距离上限（单位=地图区块 BLOCK）。
 // 超过此距离的树一律不派工（宁可让村民干等/转采别的），避免长距离搬运拖垮伐木效率。   若实测"附近树砍光后全员闲置"，适当上调；若仍嫌远，下调到 10。
 #define WOOD_MAX_ANCHOR_DIST 15
@@ -3442,12 +3455,36 @@ void UsrAI::assignIdleSimple() {
         villLastResourceSN[f.SN] = tree->SN;
         return true;
     };
+    // ★ 2026-10-08 远距羚羊群检测（口径 = 建造段 isFarGazelle：距 TC>20 且 距所有仓库>20；此处只判"是否存在"，
+    //   不需 stockOrderPending 闸）。只在铜器前算（铜器后已由 woodBoom 覆盖），避免无谓的 O(资源×建筑) 扫描。
+    bool farGazelleHerd = false;
+    if (WOOD_BOOM_EARLY_GAZELLE && infoPtr->civilizationStage < CIVILIZATION_BRONZEAGE) {
+        auto ctrG = findBuilding(BUILDING_CENTER);
+        if (ctrG) {
+            const double blG = (double)BLOCKSIDELENGTH;
+            const double cDRg = (ctrG->BlockDR + 1) * blG, cURg = (ctrG->BlockUR + 1) * blG;
+            int farN = 0;
+            for (auto &r : infoPtr->resources) {
+                if (r.Type != RESOURCE_GAZELLE || r.Cnt <= 0) continue;
+                if (calDistance(cDRg, cURg, r.DR, r.UR) < 20 * blG) continue;
+                bool covered = false;
+                for (auto &b : infoPtr->buildings) {
+                    if (b.Type != BUILDING_STOCK) continue;
+                    double gDR = (b.BlockDR + 1) * blG, gUR = (b.BlockUR + 1) * blG;
+                    if (calDistance(r.DR, r.UR, gDR, gUR) < 20 * blG) { covered = true; break; }
+                }
+                if (!covered && ++farN >= MIN_GAZELLE_FOR_SECOND_STOCK) { farGazelleHerd = true; break; }
+            }
+        }
+    }
     // 伐木工目标动态化：缺木(<woodLowLine)时拉高到 woodTargetLow 人抢木，常态 woodTargetBase 人。
     //   ★ 2026-10-07：战车弓兵主战期（铜器后）启用「木材提档」，配比/缺木线/停采水位整体抬高（见 WOOD_*_BOOM）。
+    //   ★ 2026-10-08：新增「早期提档」——远距羚羊群在场时铜器前也提档（见 WOOD_*_EARLY）；只为攒第二仓库的 150 木。
     const bool woodBoom     = (WOOD_BOOM_ENABLE && infoPtr->civilizationStage >= CIVILIZATION_BRONZEAGE);
-    const int  woodLowLine  = woodBoom ? WOOD_LOW_LINE_BOOM    : WOOD_LOW_LINE;
-    const int  woodTargetBase = woodBoom ? WOOD_TARGET_BASE_BOOM : WOOD_TARGET_BASE;
-    const int  woodTargetLow  = woodBoom ? WOOD_TARGET_LOW_BOOM  : WOOD_TARGET_LOW;
+    const bool woodBoomEarly = (WOOD_BOOM_EARLY_GAZELLE && farGazelleHerd && !woodBoom);
+    const int  woodLowLine  = woodBoom ? WOOD_LOW_LINE_BOOM    : (woodBoomEarly ? WOOD_LOW_LINE_EARLY    : WOOD_LOW_LINE);
+    const int  woodTargetBase = woodBoom ? WOOD_TARGET_BASE_BOOM : (woodBoomEarly ? WOOD_TARGET_BASE_EARLY : WOOD_TARGET_BASE);
+    const int  woodTargetLow  = woodBoom ? WOOD_TARGET_LOW_BOOM  : (woodBoomEarly ? WOOD_TARGET_LOW_EARLY  : WOOD_TARGET_LOW);
     const int  woodKeepMin    = woodBoom ? WOOD_KEEP_MIN_BOOM    : WOOD_KEEP_MIN;
     const int woodTarget = (infoPtr->Wood < woodLowLine) ? woodTargetLow : woodTargetBase;
     auto center = findBuilding(BUILDING_CENTER);
@@ -3484,9 +3521,9 @@ void UsrAI::assignIdleSimple() {
     const bool woodStop  = (infoPtr->Wood >= woodCapStop);
     // 可观测性：木材经济提档状态（每 600 帧一行，纯打印）
     if (frame % 600 == 0) {
-        DebugText(QString("[WOOD f=%1] boom=%2 base=%3 low=%4 line=%5 cap=%6 workers=%7 stock=%8")
-                  .arg(frame).arg(woodBoom ? 1 : 0).arg(woodTargetBase).arg(woodTargetLow).arg(woodLowLine)
-                  .arg(woodCapStop).arg(woodWorkers).arg((int)infoPtr->Wood));
+        DebugText(QString("[WOOD f=%1] boom=%2 early=%3 base=%4 low=%5")
+                  .arg(frame).arg(woodBoom ? 1 : 0).arg(woodBoomEarly ? 1 : 0).arg(woodTargetBase).arg(woodTargetLow)
+                  + QString(" line=%1 cap=%2 w=%3 stock=%4").arg(woodLowLine).arg(woodCapStop).arg(woodWorkers).arg((int)infoPtr->Wood));
     }
     // 石头停采：14分钟(WAVE3_TIME)后不再采石，或存量≥STONE_CAP_STOP，或【建满 MAX_TOWERS 座箭塔后永久停采】。
     // 塔建满后石头再无用途（箭塔是唯一活的石头消耗，铜器塔升级被 DISABLE_TOWER_UPGRADE 封禁）⇒ 继续采石纯属浪费人力。
