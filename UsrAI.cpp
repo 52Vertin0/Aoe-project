@@ -248,28 +248,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define ENABLE_EARLY_CLUBMAN true
 #define EARLY_CLUBMAN_START_FRAME 6000   // 4 分钟 × 1500 帧/分钟 = 6000 帧
 #define EARLY_CLUBMAN_TARGET 8           // 前期棍棒兵目标数（改此行即调数量；4→8 直击 map 前期崩盘桶）
-// ★★★ 2026-10-08 后期反攻【腾人口】：22 分钟资源积压时，让农民自杀把人口位让给军队 ★★★
-//   用户需求：「优化后期反攻时的兵种分布，必要时可以让农民自杀腾出人口，根据 22 分钟时的资源余量做出判断」
-//   背景（结构层）：人口是引擎硬常量 50 ⇒ 军队被算术锁死在 27（= 50 − 22 农民 − 1 祭司）；
-//     实测（pe2 48 局）22 分钟时 33/47 局已精确顶在 Mil=27，此后军队规模冻死。
-//   ⚠ 与 2026-10-06 fixN 的区别（fixN 已实测有害并回退：Mil 27→33 但胜率 61.5%→47.9%）：
-//     fixN 的触发条件是「人口顶到硬顶 + 农民打满上限」⇒ 在**穷局**也照砍农民，纯亏 −27% 采集力
-//     （转换率 <1:1）。本版加【资源余量】闸：只有"钱已经多到花不出去"才腾位。
-//   ★ 资源余量在本项目里的真义 = 积压，不是"采集力过剩"（实测 pe2 帧 33000）：
-//     · Mil=27（顶上限）33 局：胜 64%；其中 Fd+Wd+Gd ≥ 1200 的 11 局胜 **82%**，资源<中位的 16 局胜 50%
-//     · Mil<27 的 14 局：胜 21%，且木材中位仅 86  ⇒ 穷局缺的是资源不是人口
-//     ⇒ 顶到人口上限时资源还在涨，才证明"兵产不出来是人口锁死、不是没钱"。
-//   ⚠⚠ 必须同时压住「农民补练」（见下方 manageEconomy 的 effectiveMaxFarmers）：杀 1 个农民后
-//     `farmerCount 21<22` 与 `totalPop 49<50` 同帧成立 ⇒ 农民自己把位子抢回去，军队一个兵都练不出来。
-//   ⚠ 自杀机制（fixN 已逐层核对引擎源码）：HumanAction(农民SN, 农民SN) → handleFarmerAction 的
-//     `self == obj` 分支 → deleteSelf → 扣血到 0；checkDefeat 只看祭司/TC ⇒ 不会被误判为失败。
-#define POP_SAC_ENABLE        true   // 总开关（回退只需置 false）
-#define POP_SAC_START_FRAME  33000   // 22 分钟（= COUNTER_ATTACK_FORCE_TIME）起才评估，取那一刻的资源余量
-#define POP_SAC_RES_MIN      900     // 资源余量门槛 = Fd+Wd+Gd（≥900 覆盖 23/48 局，其中胜率 70%）
-#define POP_SAC_FARMER_FLOOR 16      // 农民降到 16 个为止（腾 6 人口 ⇒ 军队上限 27→33）
-#define POP_SAC_MAX          6       // 本局最多自杀数（与 FLOOR 互为保险，取小者生效）
-#define POP_SAC_INTERVAL     90      // 两次自杀最小间隔(帧)=3.6 秒（给引擎消化、让军队先占住位子）
-#define POP_SAC_HARD_TOP     50      // = Development::humanNum_Top（引擎硬人口顶；AI 侧读不到该成员，故硬编码）
 // 建造/地基保护常量
 #define DEAD_BUILDING_GRACE 1800  // 废弃地基宽限期(帧,30秒)：拉黑后这段时间内仍算"已存在"，
                                   // 给"孤儿地基抢救"时间补救；超时才允许另择新址重建(避免重复建造)
@@ -292,6 +270,16 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define KITING_MIN_KEEP      5.0   // 撤退后至少保持的距离(格)：防贴脸，同时不越过自身射程
 #define KITING_HYST          2.0   // 迟滞带宽度(格)：T_IN = T_OUT − 本值，必须为正否则"一撤就被打回"
 #define KITING_LANDING_SLACK 0.5   // 撤退落点相对退出阈值的余量(格)：确保落点真的越过 T_OUT
+// ★★★ 2026-10-08 反攻期「不得后退越过前线」（方案 A）★★★
+//   问题：反攻期军队"自己不推进"。实测（pe2 48 局 map）：13 个超时局按【末段军队位置】分两组——
+//     军队退回自家门口(78~91 格)的 8 局 KIT-S 中位 = **372**；军队在武器厂附近(1.5~21 格)的 5 局 KIT-S 中位 = **28**。
+//     即"打-拉循环"：拉扯第 2/3 档是"朝己方 TC / 朝祭司撤"，反攻期执行起来就是**一路把军队拖回基地**，
+//     净推进≈0 ⇒ 30 分钟到点（KIT-R 明细里单位在中场 (33~38,68~80) 反复 stage=1/2 撤退）。
+//     ⇒ 与项目铁律一致："减少动作型修法在活锁上无出路"，正解是让落点不越线。
+//   做法：用【每单位自己的最深推进点】当"前线锚"（反攻期距己方集结 TC 的最远距离），
+//     撤退落点相对该锚后退不得超过 KIT_FRONT_BACK 格 ⇒ 局部脱离(≤8 格)仍允许，
+//     但"打-拉循环"不能再把整支军队系统性拉回家。侧向档(±0.6/±1.2 rad)不受影响。
+#define KIT_FRONT_BACK 8.0   // 反攻期允许的最大后退量(格)；调大=更保守(更能撤)，调小=更激进(更贴前线)
 // 方阵兵编制比例（3:4 温和档）：
 // 上限公式：hop < HOPLITE_RATIO_NUM/DEN × comp + FLOOR（= 3/4×comp+2 ⇒ 长期趋近 3:4）
 // 逐点对照(comp→hop上限)：0→2 / 2→3 / 4→5 / 6→6 / 8→8 / 10→9 / 20→17 / 40→32（comp≤2 时保底 2 个肉盾）。
@@ -2011,82 +1999,6 @@ void UsrAI::manageEconomy() {
     };
 #define ECO_PROF_STAGE(idx, call) do { auto _eco_t0 = ecoNow(); call; ecoAdd(idx, _eco_t0, ecoNow()); } while (0)
     auto ecoT0 = ecoNow();
-    // ★★★ 2026-10-08 后期反攻【腾人口】：判据 / 实测依据 / 与 fixN 的区别见文件顶部 POP_SAC_* 常量块。
-    //   ★ 执行点刻意放在「村民生产」之前：本段先杀，紧随其后的村民生产再按【降级后的上限】判，
-    //     两段同帧串行 ⇒ 不存在"先补后杀"的窗口。
-    static bool s_popSacArmed     = false;     // 一次性置位：置位后农民上限永久降到 POP_SAC_FARMER_FLOOR
-    static int  s_popSacLastFrame = -999999;   // 上次自杀帧（节流）
-    static int  s_popSacCount     = 0;         // 本局累计自杀数（与 POP_SAC_MAX 互为保险）
-    if (POP_SAC_ENABLE) {
-        int nFarmNow = 0;
-        for (auto &f : infoPtr->farmers)
-            if (f.FarmerSort == FARMERTYPE_FARMER) ++nFarmNow;
-        const int totalPopNow = (int)infoPtr->farmers.size() + (int)infoPtr->armies.size();
-        const bool inLateCounter = (state == COUNTERATTACK) && (frame >= POP_SAC_START_FRAME);
-        // 人口必须顶到【引擎硬顶 50】：Human_MaxNum 是"房屋提供上限"，房屋不足时会 <50 造成"假满"
-        //   （fixN 首轮实测：11 分钟就有局判满、农民被砍到 16 而军队才 6 个）⇒ 双口径取或。
-        const bool popAtHardTop = (totalPopNow >= POP_SAC_HARD_TOP)
-                               || ((double)infoPtr->Human_Num >= (double)POP_SAC_HARD_TOP);
-        // ★ 本版核心判据：资源余量 —— 兵产不出来是"没钱"还是"被人口顶死"？只有后者才该腾人口。
-        const double resNow = (double)infoPtr->Meat + (double)infoPtr->Wood + (double)infoPtr->Gold;
-        const bool resSurplus = (resNow >= (double)POP_SAC_RES_MIN);
-        // 腾出来的位子要能立刻被军队占住（主 DPS = 战车弓兵 的单兵费用），否则白扔一份采集力。
-        const bool canRefill = (infoPtr->Meat >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_FOOD)
-                            && (infoPtr->Wood >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD);
-        // ---- 置位：后期反攻 + 人口顶到引擎硬顶 + 资源已积压 + 农民已打满上限 ----
-        if (inLateCounter && popAtHardTop && resSurplus && nFarmNow >= MAX_FARMERS)
-            s_popSacArmed = true;
-        // ---- 执行：降到 FLOOR 为止（每 POP_SAC_INTERVAL 帧放一个）----
-        //   ⚠ 刻意要求"此刻人口仍顶着硬顶"：语义 = 上一个腾出的位子已被军队占住，才腾下一个；
-        //     否则连杀 6 个 ⇒ 人口骤降而靶场产能有限 ⇒ 空位没人接，纯亏 6 份采集力。
-        if (s_popSacArmed && inLateCounter && popAtHardTop && resSurplus && canRefill
-            && nFarmNow > POP_SAC_FARMER_FLOOR && s_popSacCount < POP_SAC_MAX
-            && (frame - s_popSacLastFrame) >= POP_SAC_INTERVAL) {
-            // 选"损失最小"的农民：① 空闲(此刻不产资源) > ② 非采集态 > ③ 正在采集；
-            //   同级取【距 TC 最远】者（往返最费时、反攻期归队最慢）。⚠ 距离须同量纲 ⇒ 统一到像素。
-            double tcDR = 0.0, tcUR = 0.0; bool tcOk = false;
-            for (auto &b : infoPtr->buildings) {
-                if (b.Type == BUILDING_CENTER && b.Project == ACT_NULL) {
-                    tcDR = (b.BlockDR + 1.0) * BLOCKSIDELENGTH;
-                    tcUR = (b.BlockUR + 1.0) * BLOCKSIDELENGTH;
-                    tcOk = true; break;
-                }
-            }
-            int victimSN = -1, bestRank = -1; double bestD2 = -1.0;
-            for (auto &f : infoPtr->farmers) {
-                if (f.FarmerSort != FARMERTYPE_FARMER) continue;
-                if (f.Blood <= 0) continue;
-                const int rank = (f.NowState == HUMAN_STATE_IDLE)       ? 2
-                               : (f.NowState != HUMAN_STATE_WORKING)    ? 1 : 0;
-                double d2 = 0.0;
-                if (tcOk) d2 = (f.DR - tcDR) * (f.DR - tcDR) + (f.UR - tcUR) * (f.UR - tcUR);
-                if (rank > bestRank || (rank == bestRank && d2 > bestD2)) {
-                    bestRank = rank; bestD2 = d2; victimSN = f.SN;
-                }
-            }
-            if (victimSN >= 0) {
-                // ★ 自杀：工作目标设为自己 ⇒ 引擎 handleFarmerAction 的 `self == obj` 分支 ⇒ deleteSelf ⇒ 扣血到 0
-                HumanAction(victimSN, victimSN);
-                s_popSacLastFrame = frame;
-                ++s_popSacCount;
-                // 清死者在本侧账本的残留（这些表只按 SN 记账、没有"单位已死"回调，尸体条目会一直留着）
-                villLastResourceSN.erase(victimSN);
-                gatherStuckFrame.erase(victimSN);
-                huntingGroup.erase(victimSN);
-                pendingRedispatch.erase(victimSN);
-                depositFarmers.erase(victimSN);
-                depositStartFrame.erase(victimSN);
-                buildingFarmerType.erase(victimSN);
-                builderIdleFrame.erase(victimSN);
-                buildRedispatchFrame.erase(victimSN);
-                builderDispatchFrame.erase(victimSN);
-                DebugText(QString("[POP-SAC f=%1] 农民 SN=%2 自杀腾位 | 农民 %3→%4 pop=%5/%6 军队=%7 累计=%8 res=%9")
-                          .arg(frame).arg(victimSN).arg(nFarmNow).arg(nFarmNow - 1)
-                          .arg(totalPopNow).arg((int)infoPtr->Human_MaxNum).arg((int)infoPtr->armies.size()).arg(s_popSacCount)
-                          .arg(QString("Fd%1/Wd%2/Gd%3").arg((int)infoPtr->Meat).arg((int)infoPtr->Wood).arg((int)infoPtr->Gold)));
-            }
-        }
-    }
     // 1. 村民生产：食物够 50 就造人，冲目标数量；铜器升级就绪时暂停造村民，把 TC 与食物留给升级
     auto center = findBuilding(BUILDING_CENTER);
     // 前置建筑就绪才攒升级费（否则食物够也升不了、白停产）；UPGRADING 重试期同样停产，避免新村民吃掉 800 升级费
@@ -2103,11 +2015,7 @@ void UsrAI::manageEconomy() {
 
         int totalPop = infoPtr->farmers.size() + infoPtr->armies.size();
         int currentMaxFarmers = (frame < 13500) ? 16 : MAX_FARMERS;  // W2前限16农，优先升级
-        // ★ 腾人口已置位 ⇒ 农民上限【永久】降到 FLOOR：manageEconomy 跑在 trainMilitaryUnits 之前，
-        //   若仍按 22 判，杀 1 个农民后下一帧"农民缺额"与"人口缺额"同时成立 ⇒ 农民立刻把位子抢回去，
-        //   军队一个兵都练不出来（fixN 的原论证，见文件顶部 POP_SAC_* 常量块）。
-        int effectiveMaxFarmers = s_popSacArmed ? POP_SAC_FARMER_FLOOR : currentMaxFarmers;
-        if (farmerCount < effectiveMaxFarmers && totalPop < infoPtr->Human_MaxNum) {
+        if (farmerCount < currentMaxFarmers && totalPop < infoPtr->Human_MaxNum) {
             // 铜器后：以建筑实际 Project 状态判断军事科技是否真的在研究中（资源已扣），而非乐观布尔值
             // 乐观布尔值在 BuildingAction 发出时即置 true，但资源尚未扣除；必须查 Project 确认科技已"付款"并在执行
             bool postBronze = (infoPtr->civilizationStage >= CIVILIZATION_BRONZEAGE);
@@ -6042,9 +5950,27 @@ void UsrAI::manageCounterAttack() {
                     bool skipAwayStage = (kitingRetStuck.count(a.SN) && kitingRetStuck[a.SN] > 0);
                     // 三档撤退共用的「落点下发」：夹取到地图内 → 可通行则下令并记账。
                     //   记账 5 件套（cmdFrame/retreatFrame/issueDist/moveFrame/stuckTry）任缺一项都会让卡死检测或节流失效。
+                    // ★ 反攻期"前线锚"：单位SN → 本局反攻期内距己方集结TC的最远距离²(像素)。
+                    //   用来实现 KIT_FRONT_BACK 的「不得后退越过前线」（完整论证见文件顶部该常量块）。
+                    //   函数内 static：一局一进程 ⇒ 每局自动从空开始（与 counterPriestConvert 的脱困计数同款）。
+                    static std::map<int, double> s_kitFrontFromHome;
                     auto tryRetreatLanding = [&](double rx, double ry, int stage) -> bool {
                         rx = max(0.0, min((double)MAP_L * BL, rx));
                         ry = max(0.0, min((double)MAP_U * BL, ry));
+                        // ★ 反攻期「不得后退越过前线」（方案 A）：以本单位在反攻期的最深推进点为锚，
+                        //   撤退落点相对该锚后退不得超过 KIT_FRONT_BACK 格。实测依据见文件顶部该常量块
+                        //   （超时局 军队退回门口 KIT-S 中位 372 vs 军队在前 28）。
+                        //   ⚠ 只挡"越线"的落点：本档被否就试下一档/下一帧，侧向档与继续推进不受影响。
+                        if (state == COUNTERATTACK) {
+                            const double homeD2 = (a.DR - rallyCtrDR) * (a.DR - rallyCtrDR)
+                                                + (a.UR - rallyCtrUR) * (a.UR - rallyCtrUR);
+                            double &frontD2 = s_kitFrontFromHome[a.SN];
+                            if (homeD2 > frontD2) frontD2 = homeD2;      // 刷新"最深推进"
+                            const double landD2 = (rx - rallyCtrDR) * (rx - rallyCtrDR)
+                                                + (ry - rallyCtrUR) * (ry - rallyCtrUR);
+                            if ((std::sqrt(frontD2) - std::sqrt(landD2)) > KIT_FRONT_BACK * BL)
+                                return false;   // 越线 ⇒ 本档落点作废
+                        }
                         if (!isPassableAt(rx, ry, forestGrid)) return false;
                         HumanMove(a.SN, rx, ry);
                         marchCmdFrame[a.SN] = frame;
