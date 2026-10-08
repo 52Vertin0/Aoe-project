@@ -253,7 +253,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 棍棒兵 50 食物、无石头/黄金依赖 ⇒ 不吃复合弓的黄金，是空窗期唯一可行的填线兵。起始 4 分钟（更早会拖慢村民与 800 食升铜器）。
 #define ENABLE_EARLY_CLUBMAN true
 #define EARLY_CLUBMAN_START_FRAME 6000   // 4 分钟 × 1500 帧/分钟 = 6000 帧
-#define EARLY_CLUBMAN_TARGET 6           // 前期棍棒兵目标数（改此行即调数量；8→6 回调，降低前期食物占用）
+#define EARLY_CLUBMAN_TARGET 8           // 前期棍棒兵目标数（改此行即调数量；6→8 回改，A/B 证 6 有害）
 // 建造/地基保护常量
 #define DEAD_BUILDING_GRACE 1800  // 废弃地基宽限期(帧,30秒)：拉黑后这段时间内仍算"已存在"，
                                   // 给"孤儿地基抢救"时间补救；超时才允许另择新址重建(避免重复建造)
