@@ -291,12 +291,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //   ⚠ 半径小则探索不足、大则接触敌主力：当前取值在两者间折中。
 //   ⚠ "遇敌即结束探路"有害，勿采用（见 processData 相关块注释）。
 #define SCOUT_MAX_DIST 45.0
-// 反攻期武器厂环扫：首个敌建筑探明后，先锋在其周边做小半径环形搜索。
-// 实测（pe2/current/fixM/wbase/club8n，150 局已发现样本）：武器厂距首个敌建筑
-//   中位 6.7 格、P90 6.7 格、最大 7.2 格；故半径取 10 格，保证一进入敌区即可覆盖。
-// 每 600 帧(24 秒)旋转 45°，最多仍只派 VANGUARD_MAX(2) 个高机动单位，不打乱主力推进。
-#define COUNTER_RECON_RING_R 10.0
-#define COUNTER_RECON_STEP_FRAMES 600
 // 人数不足时由强制反攻时间兜底；降低门槛会更早推进、提高门槛则更保守。
 #define COUNTER_ATTACK_MIN_ARMY 12   // 全体反攻门槛：非祭司军队(含远程/近战/投石车)≥此数才一起反攻，避免单个士兵零散冲出被集火
 #define COUNTER_ATTACK_FORCE_TIME 33000 // 22分钟强制反攻(=33000帧,1500帧/分钟)：即使人数不足也一起进攻
@@ -1786,12 +1780,25 @@ void UsrAI::managePriest() {
             priestMode = 0;   // 转去感化→解除撤退迟滞锁
             double cdist = calDistance(pDR, pUR, convDR, convUR);
             if (cdist <= 12 * BL) {
-                HumanAction(priestSN, convSN);
-                priestConvSN = convSN; priestConvFrame = frame;
-                priestMoveCooldown = 150;
-                if (frame % 50 == 0)
-                    DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
-                return;
+                // ★★ 2026-10-08【安全起手闸】★★ 感化引导期不能移动（活靶窗口）：
+                //   wb1 尸检 11/25 死在引导中；故【濒死(pBR≤0.35) 或 近战贴脸(<4格)时不起手】，
+                //   本帧不 return，落到下方保命撤退闸（先活下来，冷却好了再说）。
+                bool meleeAtCast = false;
+                for (auto &e : infoPtr->enemy_armies) {
+                    if (e.Blood <= 0) continue;
+                    if (calDistance(pDR, pUR, e.DR, e.UR) < 4.0 * BL) { meleeAtCast = true; break; }
+                }
+                if (pBR <= 0.35 || meleeAtCast) {
+                    if (frame % 100 == 0)
+                        DebugText(QString("[PRIEST-SAFECAST f=%1] 不起手 hp=%2 melee=%3").arg(frame).arg(pBR, 0, 'f', 2).arg(meleeAtCast ? 1 : 0));
+                } else {
+                    HumanAction(priestSN, convSN);
+                    priestConvSN = convSN; priestConvFrame = frame;
+                    priestMoveCooldown = 150;
+                    if (frame % 50 == 0)
+                        DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
+                    return;
+                }
             } else {
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
                 // 反攻期 + 武器厂已发现 ⇒ 不主动追敌兵，把移动权让给推进段。
@@ -5658,11 +5665,10 @@ void UsrAI::manageCounterAttack() {
     //   ⚠ 只改落点，绝不发攻击令。落点方向取自【我方集结 TC → 塔】而非"单位当前位置 → 塔"：前者跨帧稳定，
     //   后者会随单位移动每帧微调落点 ⇒ 30 帧节流窗口内反复重锚 marchGoal*，搅乱卡死判据。
     auto issueMarch = [&](double fx, double fy, int sn, int sort, int stuckTry, bool canReissue,
-                          int biasTowerSN = -1, double forcedGoalDR = -1.0, double forcedGoalUR = -1.0) {
+                          int biasTowerSN = -1) {
         (void)sort;
         if (!canReissue) return;                 // 未到节流窗口：本帧静默，不重复下发
         double mx = stageDR, my = stageUR;   // ★ 方案A：推进落点 = 当前段汇合点(最后一段即敌基地)
-        if (forcedGoalDR >= 0.0) { mx = forcedGoalDR; my = forcedGoalUR; }   // 先锋环扫等专用落点
         // —— Tier-2 落点偏置：塔外侧 standoff 环（塔在 12 格内时不会走到这里，Tier-1 已 return）——
         if (biasTowerSN >= 0) {
             for (auto &b : infoPtr->enemy_buildings) {
@@ -5810,50 +5816,15 @@ void UsrAI::manageCounterAttack() {
             //   stuckTry==0 直奔目标，探到 enemy_buildings 即点亮 enemyBaseScouted；stuckTry>0 朝集结 TC 内缩重发。
             //   ★ 主力已换成战车弓兵 ⇒ 必须限数，否则全军被当成先锋集体直插敌基地送死。
             static std::set<int> g_vanguardSN;
-            static std::map<int,int> g_vanguardReconSlot;
-            static std::map<int,int> g_vanguardReconLogged;
-            static int g_vanguardReconStep = 0;
-            static int g_vanguardReconStepFrame = -1;
             static int g_vanguardLastFrame = -1;
-            if (frame < g_vanguardLastFrame) {
-                g_vanguardSN.clear();
-                g_vanguardReconSlot.clear();
-                g_vanguardReconLogged.clear();
-                g_vanguardReconStep = 0;
-                g_vanguardReconStepFrame = -1;
-            }   // 新一局
+            if (frame < g_vanguardLastFrame) { g_vanguardSN.clear(); }   // 新一局
             g_vanguardLastFrame = frame;
-            if (g_vanguardReconStepFrame < 0) g_vanguardReconStepFrame = frame;
-            if (frame - g_vanguardReconStepFrame >= COUNTER_RECON_STEP_FRAMES) {
-                g_vanguardReconStep = (g_vanguardReconStep + 1) % 8;
-                g_vanguardReconStepFrame = frame;
-            }
             const int VANGUARD_MAX = 2;
-            if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) && enemySiegeSN == -1 &&
+            if ((a.Sort == AT_CHARIOT_ARCHER || a.Sort == AT_CAVALRY) &&
+                !enemyBaseScouted && enemySiegeSN == -1 &&
                 (g_vanguardSN.count(a.SN) || (int)g_vanguardSN.size() < VANGUARD_MAX)) {
-                if (!g_vanguardSN.count(a.SN)) g_vanguardReconSlot[a.SN] = (int)g_vanguardSN.size();
                 g_vanguardSN.insert(a.SN);
-                double reconGoalDR = -1.0, reconGoalUR = -1.0;
-                if (enemyBaseScouted) {
-                    // 已探到任一敌建筑：在其周边环扫找武器厂。两只先锋错开 180°。
-                    static const double RING_DX[8] = {1, 0.7071, 0, -0.7071, -1, -0.7071, 0, 0.7071};
-                    static const double RING_DY[8] = {0, 0.7071, 1, 0.7071, 0, -0.7071, -1, -0.7071};
-                    int slot = g_vanguardReconSlot.count(a.SN) ? g_vanguardReconSlot[a.SN] : 0;
-                    int ring = (g_vanguardReconStep + slot * 4) % 8;
-                    reconGoalDR = enemyBaseDR + RING_DX[ring] * COUNTER_RECON_RING_R * BL;
-                    reconGoalUR = enemyBaseUR + RING_DY[ring] * COUNTER_RECON_RING_R * BL;
-                    reconGoalDR = max(0.0, min((double)MAP_L * BL, reconGoalDR));
-                    reconGoalUR = max(0.0, min((double)MAP_U * BL, reconGoalUR));
-                    snapWalkable(reconGoalDR, reconGoalUR, forestGrid);
-                    if (!g_vanguardReconLogged.count(a.SN) || g_vanguardReconLogged[a.SN] != ring) {
-                        DebugText(QString("[RECON f=%1] SN=%2 武器厂未明，环扫敌基(%3,%4) 半径%5格 ring=%6")
-                                  .arg(frame).arg(a.SN)
-                                  .arg(enemyBaseDR / BL, 0, 'f', 1).arg(enemyBaseUR / BL, 0, 'f', 1)
-                                  .arg(COUNTER_RECON_RING_R, 0, 'f', 0).arg(ring));
-                        g_vanguardReconLogged[a.SN] = ring;
-                    }
-                }
-                issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue, -1, reconGoalDR, reconGoalUR);
+                issueMarch(a.DR, a.UR, a.SN, a.Sort, stuckTry, canReissue);   // 先锋直插敌方基地方位
                 marchCmds++;
                 continue;
             }
@@ -7656,4 +7627,5 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
 
     return false;
 }
+
 
