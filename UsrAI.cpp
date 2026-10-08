@@ -376,8 +376,10 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 临时封禁开关：改 true→false 即可恢复建造。
 // 马厩 = 学院前置（Development.cpp:804），学院 = 方阵兵唯一产线（BRONZEAGE + 60食+40金，无额外科技依赖）。
 // 骑兵训练仍由 DISABLE_CAVALRY_TRAIN=true 独立封禁 ⇒ 建马厩不会偷吃复合弓的黄金。
-#define DISABLE_STABLE_BUILD  false   // 马厩建造开关：false=允许建造（作学院前置；骑兵仍不训练）
-#define DISABLE_COLLAGE_BUILD false   // 学院建造开关：false=允许建造（方阵兵产线，后期即可投产）
+#define DISABLE_STABLE_BUILD  true    // ★2026-10-08【全战车弓兵】不造马厩：其唯一用途是学院前置；
+                                      //   实测 bronze 硬前置恒为 m1r1s0(market+range 已经=2)，从不依赖马厩 ⇒ 省 150 木。
+#define DISABLE_COLLAGE_BUILD true    // ★2026-10-08【全战车弓兵】不造学院：方阵兵(肉盾)停产的唯一入口；
+                                      //   省 60食+40金，且避免其占用建造期木材。
 #define DISABLE_GRANARY_BUILD false   // 谷仓建造开关：false=允许建造，实现"瞪羚群中间建仓库优先于农场"
 // 暂时封禁阔剑科技：引擎解锁条件（Development.cpp:602-603/607-608）为
 // (..._FOOD, 0, ..._GOLD) → 阔剑科技/阔剑兵实际扣 食物+黄金（need_Stone=0）。 保留封禁（DISABLE_BROADSWORD_TECH）仅因"暂不研究该科技"的决策；改 false 即解禁。
@@ -408,6 +410,12 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // false = 让路保护：复合弓未研究/排队时需食物同时负担两项 (180+120=300) 才允许插队； ⚠ 该门槛过高（铜器后食物常年在 158~257）⇒ 会把伐木压成"永远晚于复合弓"。
 #define WOOD_TECH_ABSOLUTE_FIRST true
 #define MIN_GOLD_WORKERS 1      // 至少1人挖金！复合弓兵/阔剑兵/方阵兵/投石车/后勤科技真扣黄金
+// ★★★ 2026-10-08【全战车弓兵·减金工】★★★ 战车弓兵只吃 食物+木材（不扣黄金），
+//   阔剑科技已封禁、学院/方阵兵已停建 ⇒ 全场黄金需求仅剩护甲二级科技(50+50)。
+//   故把金工目标从 food×3/5 降到 food×1/4 并加硬上限，富余人力转去木材（靶场瓶颈）。
+#define GOLD_TARGET_MAX 3
+#define GOLD_WORKER_PER_FOOD_NUM 1
+#define GOLD_WORKER_PER_FOOD_DEN 4
 // 资源停采上限：存量达到即停止派/补采该资源，人力转向其他资源
 #define STONE_CAP_STOP 300   // 石头≥300 不再采石（建满 3 座箭塔共需约 300 石）
 // 木材停采阈值保持日常/后期一致，避免阶段切换时阈值降低造成采集抖动。
@@ -1780,25 +1788,12 @@ void UsrAI::managePriest() {
             priestMode = 0;   // 转去感化→解除撤退迟滞锁
             double cdist = calDistance(pDR, pUR, convDR, convUR);
             if (cdist <= 12 * BL) {
-                // ★★ 2026-10-08【安全起手闸】★★ 感化引导期不能移动（活靶窗口）：
-                //   wb1 尸检 11/25 死在引导中；故【濒死(pBR≤0.35) 或 近战贴脸(<4格)时不起手】，
-                //   本帧不 return，落到下方保命撤退闸（先活下来，冷却好了再说）。
-                bool meleeAtCast = false;
-                for (auto &e : infoPtr->enemy_armies) {
-                    if (e.Blood <= 0) continue;
-                    if (calDistance(pDR, pUR, e.DR, e.UR) < 4.0 * BL) { meleeAtCast = true; break; }
-                }
-                if (pBR <= 0.35 || meleeAtCast) {
-                    if (frame % 100 == 0)
-                        DebugText(QString("[PRIEST-SAFECAST f=%1] 不起手 hp=%2 melee=%3").arg(frame).arg(pBR, 0, 'f', 2).arg(meleeAtCast ? 1 : 0));
-                } else {
-                    HumanAction(priestSN, convSN);
-                    priestConvSN = convSN; priestConvFrame = frame;
-                    priestMoveCooldown = 150;
-                    if (frame % 50 == 0)
-                        DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
-                    return;
-                }
+                HumanAction(priestSN, convSN);
+                priestConvSN = convSN; priestConvFrame = frame;
+                priestMoveCooldown = 150;
+                if (frame % 50 == 0)
+                    DebugText(QString("Priest CONVERT(defense) SN=%1").arg(convSN));
+                return;
             } else {
                 double stopDist = 12.0;   // 停12格正好进入引擎感化射程(DIS_PRIEST=12)
                 // 反攻期 + 武器厂已发现 ⇒ 不主动追敌兵，把移动权让给推进段。
@@ -3492,12 +3487,14 @@ void UsrAI::assignIdleSimple() {
     // 铜器升级要 800 食物 ⇒ 铜器前停采阈值必须 >800，用 FOOD_CAP_STOP_PREBRONZE(850)、铜器后 FOOD_CAP_STOP(500)，
     // 否则食物到 500 就停采+撤食物工，永远攒不到 800。
     const bool foodStop = (infoPtr->Meat >= (postBronze ? FOOD_CAP_STOP : FOOD_CAP_STOP_PREBRONZE));
-    // 黄金目标人数：与食物工数按 FOOD_GOLD_DEN:FOOD_GOLD_NUM(5:3) 配比（复合弓40食+20金 / 方阵60食+40金 ⇒ 100:60）。
+    // 黄金目标人数：★2026-10-08【全战车弓兵】减金工★ 战车弓兵只吃 食物+木材（不扣黄金），
+    //   阔剑科技封禁 + 学院/方阵兵停建 ⇒ 黄金只供护甲二级科技(50+50) ⇒ 目标 = food×1/4 且 ≤ GOLD_TARGET_MAX(3)。
     // 黄金过剩(goldRich)时压到 MIN_GOLD_WORKERS，把人力让给食物与木头；铜器前为 0。
     int goldTarget = (!postBronze) ? 0
         : goldRich ? MIN_GOLD_WORKERS
         : std::max(MIN_GOLD_WORKERS,
-                   (int)((double)foodWorkers * FOOD_GOLD_DEN / FOOD_GOLD_NUM + 0.999));
+                   std::min(GOLD_TARGET_MAX,
+                            (int)((double)foodWorkers * GOLD_WORKER_PER_FOOD_NUM / GOLD_WORKER_PER_FOOD_DEN + 0.999)));
 
     // 猎象整队：引擎事实：大象 45 血 / 攻 10 / 不逃跑 / 掉肉 300；村民 25 血 ⇒ 单人、双人必死，必须整队出击。
     // 同一帧下发 MIN 条令 ⇒ 同时出发/抵达/开打，避免 1~3 人散兵被逐个磨死。
