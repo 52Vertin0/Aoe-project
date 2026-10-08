@@ -335,13 +335,6 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
 #define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
-// 逃跑保温期(帧)：只要真的下发过一条逃跑移动令，此后此时长内【不再强制打断引导】、且
-//   【被集火/残血时不再起手感化敌方单位】—— 把"逃"与"感"的抢占从逐帧循环改成单次决策。
-//   实测依据（pe2 48 局 map，g30 祭死局）：死亡前 900 帧内祭司移动令 122 条、帧间隔中位 = 1；
-//   引擎收到移动令后仍停在 WORKING/ATTACKING ⇒ 下一帧又满足"低血中断"⇒ 清节流重发 ⇒
-//   感化 400 帧引导被反复重置、净位移≈0、祭司原地被打死；同时把感化令设的 150 帧静默期一起废掉。
-//   ⚠ 本值是唯一旋钮：调大 = 更保命、单位感化更少；调小 = 更快回到感化。不要另开第二套节流。
-#define PRIEST_FLEE_HOLD 90
 // 感化武器厂的【施法静默期】(帧)：`HumanAction(祭司, 建筑)` 是"设置转换目标"，重发 = 引擎每帧被重设目标打断、施法进度永远重置。
 //   ⇒ 发令后必须进入静默期，让引擎把整段施法做完（实测需 ~340~440 帧）。
 #define PRIEST_SIEGE_CONVERT_LOCKOUT 400
@@ -1548,10 +1541,6 @@ void UsrAI::managePriest() {
         return true;
     };
 
-    // 逃跑保温期起算帧（＝最近一次真的下发逃跑移动令的帧）：逃跑 / 打断 / 施法三档共用同一真源。
-    //   函数内 static ⇒ 一局一进程、每局自动从初值开始（与 counterPriestConvert 的脱困计数同款）。
-    //   ⚠ 不可用 priestMoveCooldown 代替：它被多个模块共用，且被下方打断分支清零，正是本次事故的成因。
-    static int s_priestFleeHoldFrame = -999999;
     // 祭司逃跑：螺旋避障 + 朝安全区 + 卡死检测；enDR/enUR 为威胁敌人坐标（退路用）。
     //   节流(冷却期内不重发) + 死锁检测(下发点被引擎拒收 ⇒ 祭司仍 IDLE 且离该点远 ⇒ 换下一扇区)。
     auto priestFlee = [&](double enDR, double enUR) {
@@ -1631,7 +1620,6 @@ void UsrAI::managePriest() {
                     g_pmFlee++;
                     g_pmLastX = (int)(priestFleeLastX / BL * 10.0); g_pmLastY = (int)(priestFleeLastY / BL * 10.0);
                     HumanMove(priestSN, priestFleeLastX, priestFleeLastY);
-                    s_priestFleeHoldFrame = frame;   // 令已真下发 ⇒ 开始保温
                     priestMoveCooldown = 18;
                     return;   // 沿用旧落点：不再重算，杜绝方向翻转导致的原地抖动
                 }
@@ -1693,7 +1681,6 @@ void UsrAI::managePriest() {
         g_pmFlee++;
         g_pmLastX = (int)(bestX / BL * 10.0); g_pmLastY = (int)(bestY / BL * 10.0);
         HumanMove(priestSN, bestX, bestY);
-        s_priestFleeHoldFrame = frame;   // 令已真下发 ⇒ 开始保温
         priestFleeLastX = bestX; priestFleeLastY = bestY; priestFleeLastFrame = frame;
         priestMoveCooldown = 18;   // 威胁紧迫,缩短决策间隔
         if (frame % 50 == 0)
@@ -1706,29 +1693,21 @@ void UsrAI::managePriest() {
     //   感化是「随机时段」的引导过程，期间 ConvertCooldown 仍为 0；此时重发 HumanAction/移动命令
     //   会把引导打断重来 ⇒ 永远转不完。
     //   例外：残血(≤0.25)强制打断逃命；被多人锁定/近敌过多时提前到 0.60 打断（保命高于感化）。
-    // 危险档判据 + 自身血量比提到此处统一算一次（单一真源）：下方「打断引导」与「逃跑保温期抑制施法」共用。
-    //   ⚠ 不要在下文另写一份同义判据（历史事故全是"同语义写两遍"造成的）。
-    const double pBR = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;   // 必须 (double)：int32 整除会截断成 0/1
-    int priestLockers = 0, priestNear12 = 0;
-    for (auto &e : infoPtr->enemy_armies) {
-        if (e.Blood <= 0) continue;
-        double d = calDistance(pDR, pUR, e.DR, e.UR);
-        if (e.WorkObjectSN == priestSN) priestLockers++;
-        if (d <= 12.0 * BL) priestNear12++;
-    }
-    const bool priestFocused = (priestLockers >= 2) || (priestNear12 >= 4);   // 被集火：锁定祭司的敌 ≥2，或 12 格内敌 ≥4
     if (!canAct) {
+        double pBRx = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;   // 必须 (double)：int32 整除会截断成 0/1
         // 动态后撤阈值：安全时 0.25；被集火 / 近敌过多时提前到 0.60。
         //   转化/攻击期间 canAct=false，若只等 25% 才逃，实战中常被远程集火打死。
-        const double abortHp = priestFocused ? 0.60 : 0.25;
-        if (pBR > abortHp) return;
+        int lockers = 0, near12 = 0;
+        for (auto &e : infoPtr->enemy_armies) {
+            if (e.Blood <= 0) continue;
+            double d = calDistance(pDR, pUR, e.DR, e.UR);
+            if (e.WorkObjectSN == priestSN) lockers++;
+            if (d <= 12.0 * BL) near12++;
+        }
+        const bool danger = (lockers >= 2) || (near12 >= 4);
+        const double abortHp = danger ? 0.60 : 0.25;
+        if (pBRx > abortHp) return;
 
-        // ★ 打断本身必须节流（判据真源 = s_priestFleeHoldFrame）：
-        //   引擎收到移动令后仍可能停在 WORKING/ATTACKING ⇒ 若每帧都清节流重发，就会形成
-        //   「感化 → 打断 → 重发」逐帧循环（pe2 g30：900 帧内 122 条祭司移动令、帧间隔中位 = 1），
-        //   引导被反复重置、祭司净位移≈0、原地被打死。
-        //   ⚠ 原写法 `priestMoveCooldown = 0` 无条件执行 ⇒ 连感化令设的 150 帧静默期一起废掉。
-        if (frame - s_priestFleeHoldFrame < PRIEST_FLEE_HOLD) return;
         // 真要后撤时清掉转化期设置的移动冷却，否则 priestFlee() 会直接 return。
         priestMoveCooldown = 0;
 
@@ -1750,7 +1729,7 @@ void UsrAI::managePriest() {
         for (auto &b : infoPtr->enemy_buildings)
             if (b.Type == BUILDING_ARROWTOWER)
                 nearestE = std::min(nearestE, calDistance(pDR, pUR, (b.BlockDR + 1) * BL, (b.BlockUR + 1) * BL));
-        // pBR(自身血量比) 已在函数上方统一算好（单一真源），此处直接复用。
+        double pBR = (priest->MaxBlood > 0) ? (double)priest->Blood / priest->MaxBlood : 1.0;   // 必须 (double)：int32 整除会截断成 0/1
         {
             // 只读诊断：查「为什么治疗档从不触发」
             int nAlly = 0, nWound = 0; double nearAlly = 1e12;
@@ -1775,15 +1754,8 @@ void UsrAI::managePriest() {
         };
         // 感化检测(无安全门槛)：冷却好 + 视野内有可感化敌(≤PRIEST_CONVERT_RANGE=28 格) 即可，
         //   直接感化 / 靠近感化。感化绝对优先：不要求逃出敌射程、不看血量——冷却好了就转。
-        // 逃跑保温期抑制：刚真的下发过逃跑令、且此刻仍处「被集火 / 残血」⇒ 本帧不起手【单位感化】，
-        //   把祭司让给下方保命/治疗档（保命高于感化，与上方打断例外同一口径）。
-        //   ⚠ 只抑制"感化敌方单位"这一档：感化武器厂在 counterPriestConvert 内，不受影响。
-        //   ⚠ 不是关掉感化（感化单位是承重墙，nc1 实测 27.1% 已证）——只是不在"刚逃过 + 仍危险"的
-        //     窗口里重新起手；否则 400 帧引导每次都被下一帧的逃跑打断，既转不完也逃不掉。
-        const bool fleeHoldSuppress = (frame - s_priestFleeHoldFrame < PRIEST_FLEE_HOLD)
-                                      && (priestFocused || pBR <= 0.25);
         int safeConv = -1;
-        if (!fleeHoldSuppress && priest->ConvertCooldown <= 0 && nearestE <= PRIEST_CONVERT_RANGE * BL) {
+        if (priest->ConvertCooldown <= 0 && nearestE <= PRIEST_CONVERT_RANGE * BL) {
             int t = findConvertTarget(pDR, pUR, PRIEST_CONVERT_RANGE * BL);
             if (t >= 0) safeConv = t;
         }
@@ -5197,6 +5169,14 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 || (holdExpired && PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR && !clearOk)) priestSiegeApproach = 0;
         }
         bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (clearOk || priestSiegeApproach == 1);
+        // ★ P3：推进与起手解耦 —— `clearOk`(敌塔已清够) 只作为【起手】的闸（早路径已在射程内拦住起手），
+        //   不再作为【推进】的闸。原写法 `allowConvertSiege` 一字管两事 ⇒ 塔数未达标 / 武器厂未探明时
+        //   整段推进不执行 ⇒ 祭司落回 legacy 跟随（锚点朝集结 TC）而留在基地。
+        //   实测（pe2 48 局 map 超时桶）：g16/g17/g20 军队已到武器厂脚下（距 1.5/6.1/14.4 格）
+        //   而祭司仍在 86/56/86 格外 ⇒ 这段位移原本就该发生。
+        //   保命仍由两道既有闸承担：escort（施法需 ≥PRIEST_ESCORT_MIN 友军）+ PRIEST_WITH_ARMY_LEAD
+        //   （推进不得比军队前沿更靠前 >12 格）⇒ 军队没上来时祭司仍被钉在军队身边，不会孤军奔袭。
+        const bool allowAdvanceSiege = (enemySiegeSN != -1);
         // managePriest 仍独立按"投石车→近战→远程→村民"感化；本段只负责感化武器厂 + HumanMove 推进。
 
         // 祭司冲进 PRIEST_MIN_DIST_TARGET 格内即强制后撤到大队后方安全距离；
@@ -5204,11 +5184,11 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
         // 局部清场成立时安全距离约束失效（否则 18 格安全 > 12 格感化射程 ⇒ 永远够不到）。
         // 只有确实存在武器厂目标才解除：否则祭司不进后撤分支、停在原地挨打。
-        if (allowConvertSiege && enemySiegeSN != -1) priestTooClose = false;
+        if ((allowConvertSiege || allowAdvanceSiege) && enemySiegeSN != -1) priestTooClose = false;
 
         // 清场后祭司主动前出感化武器厂，优先级高于"后撤保命"。
         //   移动与转换冷却无关（引擎只对转换令管冷却）：入口不看冷却，仅在射程内真发感化令时才判冷却。
-        if (allowConvertSiege && enemySiegeSN != -1) {
+        if ((allowConvertSiege || allowAdvanceSiege) && enemySiegeSN != -1) {
             // 目标用持久记忆的武器厂 SN + 坐标(rallyDR/rallyUR)，不依赖 siege 指针（受实时可见性约束，丢失视野即失效）。
             const double sMemDR = (rallyDR + 1.0) * BL;
             const double sMemUR = (rallyUR + 1.0) * BL;
@@ -7642,3 +7622,4 @@ bool UsrAI::tryAssignFood(tagFarmer* f) {
 
     return false;
 }
+
