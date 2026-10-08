@@ -317,7 +317,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 反攻期祭司推进上限：祭司到武器厂的距离不得小于「军队前沿(最近友军到武器厂距离) − 此值」，
 //   即祭司最多比军队前沿前进 LEAD_MAX 格；超出则把推进目标钉在边界，等军队推进到位，防孤军奔袭被灭（祭死真因）。
 //   前沿口径 = 友军到武器厂的最近距离；约束只作用于【出感化射程】的推进，进射程后的感化不受影响。
-#define PRIEST_WITH_ARMY_LEAD 12.0
+#define PRIEST_WITH_ARMY_LEAD 6.0   // ★跟随距离：神司最多领先军队前沿 6 格（原 12）
 // ★★★ 2026-10-07【祭司随军硬闸】★★★
 //   实测依据（wb1 25 局祭死逐局尸检）：
 //     · 16/25 死亡瞬间【祭司 10 格内无友军】（孤军前出）；
@@ -333,7 +333,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 #define ARMY_SIEGE_PROTECT_RADIUS 24.0
 // 反攻期祭司安全距离：祭司跟随【己方大部队重心】(排除自身)，始终位于大队【后方】(朝 TC 方向) PRIEST_SAFE_BEHIND 格；
 // 且强制与反攻目标(敌基地/武器厂)保持 ≥ PRIEST_MIN_DIST_TARGET 格 —— 祭司永远在大部队身后，不单独前出、不冲进敌射程。
-#define PRIEST_SAFE_BEHIND     8.0   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
+#define PRIEST_SAFE_BEHIND     3.0   // ★跟随距离：跟在大队重心后 3 格（原 8）   // 祭司在大队【身后】(朝 TC 方向)的安全距离(格)
 #define PRIEST_COUNTER_FLEE_HP 0.6  // 反攻期被远程集火时的撤退血量阈值(<=此值且在敌射程内即撤)
 // 感化武器厂的【施法静默期】(帧)：`HumanAction(祭司, 建筑)` 是"设置转换目标"，重发 = 引擎每帧被重设目标打断、施法进度永远重置。
 //   ⇒ 发令后必须进入静默期，让引擎把整段施法做完（实测需 ~340~440 帧）。
@@ -372,7 +372,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //   保留 seen>=1 的意义：列表全空(seen=0) 时无法区分"真拆光"与"视野丢失" ⇒ 仍须拦截（保守）。
 // 组合语义：①武器厂坐标已持久记忆(ssn!=-1 ⇒ 确实推进过) ②当前仍看得见敌建筑(seen>=1) ③视野内敌塔数 <= MAX ⇒ 放行。
 #define PRIEST_TOWERS_CLEAR_MIN_SEEN 1
-#define PRIEST_MIN_DIST_TARGET 18.0  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
+#define PRIEST_MIN_DIST_TARGET 12.0  // ★跟随距离：与反攻目标最小安全距 12 格（原 18）=感化射程  // 祭司与反攻目标(敌基地/武器厂)的最小安全距离(格)
 // 临时封禁开关：改 true→false 即可恢复建造。
 // 马厩 = 学院前置（Development.cpp:804），学院 = 方阵兵唯一产线（BRONZEAGE + 60食+40金，无额外科技依赖）。
 // 骑兵训练仍由 DISABLE_CAVALRY_TRAIN=true 独立封禁 ⇒ 建马厩不会偷吃复合弓的黄金。
@@ -1772,18 +1772,11 @@ void UsrAI::managePriest() {
             //   把引导反复打断重来，转换永远完不成。冷却期内绝不再发令。
             //   拒收检测：下发感化后 ≥15 帧祭司仍是 IDLE 且目标未变 ⇒ 指令被引擎拒收
             //   (真在引导会进入 WORKING 被上方 canAct 闸拦住) ⇒ 提前放行重发，不白等 150 帧。
-            // ★★ 2026-10-08【感化不吃移动节流】★★
-            //   原闸 `if (priestMoveCooldown > 0) { ... if(!rejected) return; }` 用的是「移动令节流」
-            //   （priestApproachMove/priestFlee 每发一条移动令就把 cd 设成 20 帧）；
-            //   实测反攻期该 cd 有 91.7% 时间非零 ⇒ 「敌已在 28 格内」的窗口里 86% 被自家闸门挡掉
-            //   （可起手窗口只剩 5.0%；理论 20s/个 ⇒ 实测 165s/个）。
-            //   故感化改用【自身防重发闸】：
-            //     ① 引导中(WORKING/ATTACKING) 绝不再发 → 重发会打断引导（上方 canAct 闸已兜底，双保险）
-            //     ② 距上次感化令 <15 帧 不再发 → 给引擎 0.6 秒反应时间，保留原「拒收检测后重发」能力
-            //   其余情况（含 priestMoveCooldown>0）一律允许感化。
-            if (priest->NowState == HUMAN_STATE_WORKING ||
-                priest->NowState == HUMAN_STATE_ATTACKING) return;
-            if (priestConvFrame > -999999 && (frame - priestConvFrame) < 15) return;
+            if (priestMoveCooldown > 0) {
+                bool rejected = (priestConvSN == convSN && priest->NowState == HUMAN_STATE_IDLE &&
+                                 priestConvFrame > -999999 && frame - priestConvFrame >= 15);
+                if (!rejected) return;
+            }
             priestMode = 0;   // 转去感化→解除撤退迟滞锁
             double cdist = calDistance(pDR, pUR, convDR, convUR);
             if (cdist <= 12 * BL) {
