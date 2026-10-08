@@ -247,7 +247,11 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 // 棍棒兵 50 食物、无石头/黄金依赖 ⇒ 不吃复合弓的黄金，是空窗期唯一可行的填线兵。起始 4 分钟（更早会拖慢村民与 800 食升铜器）。
 #define ENABLE_EARLY_CLUBMAN true
 #define EARLY_CLUBMAN_START_FRAME 6000   // 4 分钟 × 1500 帧/分钟 = 6000 帧
-#define EARLY_CLUBMAN_TARGET 8           // 前期棍棒兵目标数（改此行即调数量；4→8 直击 map 前期崩盘桶）
+// 前期棍棒兵目标数（改此行即调数量；4→8 直击 map 前期崩盘桶）。
+// ⚠ 2026-10-08 20:00 由 8 → 6（用户指令）：每少 1 个棍棒兵省 50 食物 + 1 人口，
+//   省下的食物/人口留给村民与升铜器。使用点只有一处（trainMilitaryUnits 的前期过渡块），
+//   判据 = frame∈[EARLY_CLUBMAN_START_FRAME, EARLY_CLUBMAN_END_FRAME) 且 nClubNow < 本值。
+#define EARLY_CLUBMAN_TARGET 6
 // 建造/地基保护常量
 #define DEAD_BUILDING_GRACE 1800  // 废弃地基宽限期(帧,30秒)：拉黑后这段时间内仍算"已存在"，
                                   // 给"孤儿地基抢救"时间补救；超时才允许另择新址重建(避免重复建造)
@@ -5169,14 +5173,6 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
                 || (holdExpired && PRIEST_SIEGE_REQUIRE_TOWERS_CLEAR && !clearOk)) priestSiegeApproach = 0;
         }
         bool allowConvertSiege = PRIEST_CONVERT_SIEGE_WHEN_CLEAR && (clearOk || priestSiegeApproach == 1);
-        // ★ P3：推进与起手解耦 —— `clearOk`(敌塔已清够) 只作为【起手】的闸（早路径已在射程内拦住起手），
-        //   不再作为【推进】的闸。原写法 `allowConvertSiege` 一字管两事 ⇒ 塔数未达标 / 武器厂未探明时
-        //   整段推进不执行 ⇒ 祭司落回 legacy 跟随（锚点朝集结 TC）而留在基地。
-        //   实测（pe2 48 局 map 超时桶）：g16/g17/g20 军队已到武器厂脚下（距 1.5/6.1/14.4 格）
-        //   而祭司仍在 86/56/86 格外 ⇒ 这段位移原本就该发生。
-        //   保命仍由两道既有闸承担：escort（施法需 ≥PRIEST_ESCORT_MIN 友军）+ PRIEST_WITH_ARMY_LEAD
-        //   （推进不得比军队前沿更靠前 >12 格）⇒ 军队没上来时祭司仍被钉在军队身边，不会孤军奔袭。
-        const bool allowAdvanceSiege = (enemySiegeSN != -1);
         // managePriest 仍独立按"投石车→近战→远程→村民"感化；本段只负责感化武器厂 + HumanMove 推进。
 
         // 祭司冲进 PRIEST_MIN_DIST_TARGET 格内即强制后撤到大队后方安全距离；
@@ -5184,11 +5180,11 @@ void UsrAI::counterPriestConvert(double BL, double targetDR, double targetUR,
         bool priestTooClose = (pDist < PRIEST_MIN_DIST_TARGET * BL);
         // 局部清场成立时安全距离约束失效（否则 18 格安全 > 12 格感化射程 ⇒ 永远够不到）。
         // 只有确实存在武器厂目标才解除：否则祭司不进后撤分支、停在原地挨打。
-        if ((allowConvertSiege || allowAdvanceSiege) && enemySiegeSN != -1) priestTooClose = false;
+        if (allowConvertSiege && enemySiegeSN != -1) priestTooClose = false;
 
         // 清场后祭司主动前出感化武器厂，优先级高于"后撤保命"。
         //   移动与转换冷却无关（引擎只对转换令管冷却）：入口不看冷却，仅在射程内真发感化令时才判冷却。
-        if ((allowConvertSiege || allowAdvanceSiege) && enemySiegeSN != -1) {
+        if (allowConvertSiege && enemySiegeSN != -1) {
             // 目标用持久记忆的武器厂 SN + 坐标(rallyDR/rallyUR)，不依赖 siege 指针（受实时可见性约束，丢失视野即失效）。
             const double sMemDR = (rallyDR + 1.0) * BL;
             const double sMemUR = (rallyUR + 1.0) * BL;
