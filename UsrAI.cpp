@@ -413,7 +413,7 @@ inline double dist2(double x1, double y1, double x2, double y2) {
 //   故把金工目标从 食物×3/5 降到 食物×2/5，并加硬上限 4（保肉盾产线 40金/个 不断粮）。
 #define GOLD_WORKER_PER_FOOD_NUM 2   // 金工目标 = 食物工 × NUM/DEN
 #define GOLD_WORKER_PER_FOOD_DEN 5
-#define GOLD_TARGET_MAX 4            // 金工硬上限
+#define GOLD_TARGET_MAX 3            // ★2026-10-09【转金工伐木】4→3 金工硬上限（实测 W3+ 金工常驻 4、黄金存量中位 244 仍富余）
 // 资源停采上限：存量达到即停止派/补采该资源，人力转向其他资源
 #define STONE_CAP_STOP 300   // 石头≥300 不再采石（建满 3 座箭塔共需约 300 石）
 // 木材停采阈值保持日常/后期一致，避免阶段切换时阈值降低造成采集抖动。
@@ -3730,6 +3730,9 @@ void UsrAI::assignIdleSimple() {
     //   "伐木滞留区"改由主循环派工端限流（woodTarget）处理。
     // 黄金-食物再平衡：青铜后黄金低于目标、且食物工仍有余量时，把食物工转去采金，每间隔最多转 1 人。
     const bool goldDeficit = (postBronze && !goldRich && goldWorkers < goldTarget);
+    // ★2026-10-09【转金工伐木】★ 金工超目标也开回撤闸：原闸只在 woodStop/stoneStop/goldRich/foodStop 时开，
+    //   W2~反攻期常年全关（实测 goldRich 仅 4~27% 采样命中）⇒ 金工顶在上限无人撤（"goldTarget 只挡新派、在岗不回撤"）。
+    const bool goldOverTarget = (postBronze && !goldRich && goldWorkers > goldTarget);
     if (goldDeficit && frame % FOOD_GOLD_REBALANCE_INTERVAL == 0 &&
         foodWorkers > FOOD_REBALANCE_KEEP) {
         for (auto &f : infoPtr->farmers) {
@@ -3773,7 +3776,7 @@ void UsrAI::assignIdleSimple() {
         }
     }
 
-    if ((woodStop || stoneStop || goldRich || foodStop) && frame % 10 == 0) {
+    if ((woodStop || stoneStop || goldRich || foodStop || goldOverTarget) && frame % 10 == 0) {
         const bool woodHungry = (infoPtr->Wood < woodLowLine);
         for (auto &f : infoPtr->farmers) {
             if (f.FarmerSort != FARMERTYPE_FARMER) continue;
@@ -3859,6 +3862,10 @@ void UsrAI::assignIdleSimple() {
                 reassigned = reassignToDeficit(f, 3);
             } else if (goldRich && isGold && goldWorkers > MIN_GOLD_WORKERS) {
                 // 黄金过剩：采金工撤到只剩保底人数
+                reassigned = reassignToDeficit(f, 1);
+            } else if (goldOverTarget && isGold) {
+                // ★2026-10-09【转金工伐木】未到 goldRich 线但已超过 goldTarget ⇒ 每 10 帧撤 1 人去缺口
+                //   （reassignToDeficit 顺序：金缺→缺木优先进树→食物→木；此处金不缺，故主要落点=伐木）
                 reassigned = reassignToDeficit(f, 1);
             } else if (woodStop && isWood && woodWorkers > woodKeepMin) {
 // "木头滞留区"由派工端解决：主循环 `if (!woodStop && woodWorkers < woodTarget)` 已限制"不超目标就加人"。
